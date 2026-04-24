@@ -1,0 +1,88 @@
+"""OSM data fetchers for the assessment pipeline.
+
+Each function accepts a bbox as (west, south, east, north) in EPSG:4326
+(lon_min, lat_min, lon_max, lat_max) and returns a GeoDataFrame in the
+requested projected CRS. Returns an empty GeoDataFrame (never raises) when
+no features are found for the area.
+"""
+from __future__ import annotations
+
+import logging
+
+import geopandas as gpd
+import osmnx as ox
+
+logger = logging.getLogger(__name__)
+
+_BUILDING_TAGS = {"building": True}
+
+_GREENSPACE_TAGS = {
+    "leisure": ["park", "garden", "nature_reserve", "recreation_ground"],
+    "landuse": ["grass", "park", "recreation_ground", "forest", "meadow", "village_green"],
+}
+
+_POLYGON_GEOM_TYPES = {"Polygon", "MultiPolygon"}
+
+
+def fetch_buildings(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch building footprints within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_BUILDING_TAGS)
+        gdf = gdf[gdf.geometry.geom_type.isin(_POLYGON_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_buildings failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
+def fetch_greenspace(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch parks and green areas within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Only polygon geometries are retained (excludes point amenity tags).
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_GREENSPACE_TAGS)
+        gdf = gdf[gdf.geometry.geom_type.isin(_POLYGON_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_greenspace failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
+def fetch_road_network(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+    network_type: str = "drive",
+) -> gpd.GeoDataFrame:
+    """Fetch road network edges within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Returns the edges GeoDataFrame from the osmnx graph.
+    """
+    try:
+        graph = ox.graph_from_bbox(bbox=bbox, network_type=network_type)
+        _, edges = ox.graph_to_gdfs(graph)
+        if edges.empty:
+            return _empty_gdf(crs)
+        return edges.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_road_network failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
+def _empty_gdf(crs: str) -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(geometry=[], crs=crs)

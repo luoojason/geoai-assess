@@ -1,0 +1,100 @@
+"""Assessment map renderer — produces a multi-layer Folium map for sub-tract analysis."""
+from __future__ import annotations
+
+import geopandas as gpd
+import folium
+
+
+def render_assessment_map(
+    study_area: gpd.GeoDataFrame,
+    buildings: gpd.GeoDataFrame,
+    greenspace: gpd.GeoDataFrame,
+    roads: gpd.GeoDataFrame,
+    metrics: dict,
+) -> str:
+    """Render buildings, greenspace, and roads onto a single Folium map.
+
+    Each non-empty layer becomes a FeatureGroup. A metrics panel is shown
+    in the top-right corner. Returns m._repr_html_().
+
+    Raises:
+        ValueError: if study_area is empty or None.
+    """
+    if study_area is None or study_area.empty:
+        raise ValueError("study_area must be a non-empty GeoDataFrame")
+
+    study_4326 = study_area.to_crs("EPSG:4326")
+    centroid = study_4326.geometry.union_all().centroid
+    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=13, tiles="CartoDB positron")
+
+    # Study area boundary
+    fg_area = folium.FeatureGroup(name="Study Area", show=True)
+    folium.GeoJson(
+        study_4326.__geo_interface__,
+        style_function=lambda _: {
+            "fillOpacity": 0.0,
+            "color": "#333333",
+            "weight": 2,
+        },
+    ).add_to(fg_area)
+    fg_area.add_to(m)
+
+    if not buildings.empty:
+        fg_b = folium.FeatureGroup(name="Buildings", show=True)
+        folium.GeoJson(
+            buildings.to_crs("EPSG:4326").__geo_interface__,
+            style_function=lambda _: {
+                "fillColor": "#555555",
+                "fillOpacity": 0.6,
+                "color": "#333333",
+                "weight": 0.5,
+            },
+        ).add_to(fg_b)
+        fg_b.add_to(m)
+
+    if not greenspace.empty:
+        fg_g = folium.FeatureGroup(name="Greenspace", show=True)
+        folium.GeoJson(
+            greenspace.to_crs("EPSG:4326").__geo_interface__,
+            style_function=lambda _: {
+                "fillColor": "#2d8a4e",
+                "fillOpacity": 0.5,
+                "color": "#1a5c33",
+                "weight": 0.5,
+            },
+        ).add_to(fg_g)
+        fg_g.add_to(m)
+
+    if not roads.empty:
+        fg_r = folium.FeatureGroup(name="Roads", show=True)
+        folium.GeoJson(
+            roads.to_crs("EPSG:4326").__geo_interface__,
+            style_function=lambda _: {
+                "color": "#3a7abf",
+                "weight": 1,
+                "opacity": 0.8,
+            },
+        ).add_to(fg_r)
+        fg_r.add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+
+    bldg_pct = f"{metrics.get('building_coverage_ratio', 0.0):.1%}"
+    green_pct = f"{metrics.get('greenspace_coverage_ratio', 0.0):.1%}"
+    road_den = f"{metrics.get('road_density_km_per_km2', 0.0):.1f}"
+    panel_html = f"""
+    <div style="
+        position: fixed; top: 10px; right: 10px; z-index: 1000;
+        background: white; padding: 10px 14px; border-radius: 6px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 13px;
+        font-family: sans-serif; line-height: 1.6;
+    ">
+        <b style="font-size:14px">Assessment Metrics</b><br>
+        Building Coverage: <b>{bldg_pct}</b><br>
+        Greenspace Coverage: <b>{green_pct}</b><br>
+        Road Density: <b>{road_den} km/km&sup2;</b>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(panel_html))
+
+    return m._repr_html_()
