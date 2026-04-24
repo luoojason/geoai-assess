@@ -7,6 +7,7 @@ They return 0.0 / zero-dict when layers are empty.
 from __future__ import annotations
 
 import geopandas as gpd
+import pandas as pd
 
 
 def compute_building_coverage(
@@ -61,3 +62,27 @@ def compute_road_density(
         return 0.0
     length_km = roads.geometry.length.sum() / 1_000
     return float(length_km / area_km2)
+
+
+def compute_far(
+    buildings: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> float:
+    """Return Floor Area Ratio = sum(footprint * stories) / study_area area.
+
+    Uses 'building:levels' column when present; defaults to 1.0 per building
+    when the column is missing or NaN. Returns 0.0 when buildings is empty.
+    """
+    if buildings.empty:
+        return 0.0
+    if buildings.crs != study_area.crs:
+        buildings = buildings.to_crs(study_area.crs)
+    area_total = study_area.geometry.area.sum()
+    if area_total == 0:
+        return 0.0
+    if "building:levels" in buildings.columns:
+        levels = pd.to_numeric(buildings["building:levels"], errors="coerce").fillna(1.0).clip(lower=1.0)
+    else:
+        levels = pd.Series(1.0, index=buildings.index)
+    floor_area = (buildings.geometry.area * levels).sum()
+    return float(floor_area / area_total)

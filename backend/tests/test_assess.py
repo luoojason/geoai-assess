@@ -152,6 +152,89 @@ class TestMetrics:
 
 
 # ---------------------------------------------------------------------------
+# TestFAR
+# ---------------------------------------------------------------------------
+
+class TestFAR:
+    def test_far_correct(self):
+        from backend.assess.metrics import compute_far
+
+        # 2-story 500×500 building in 1000×1000 study area → FAR = 0.5
+        buildings = gpd.GeoDataFrame(
+            {"building:levels": ["2"]},
+            geometry=[box(0, 0, 500, 500)],
+            crs="EPSG:5070",
+        )
+        far = compute_far(buildings, STUDY)
+        assert abs(far - 0.5) < 1e-6
+
+    def test_far_empty_returns_zero(self):
+        from backend.assess.metrics import compute_far
+
+        assert compute_far(_empty_gdf(), STUDY) == 0.0
+
+    def test_far_missing_levels_defaults_to_one(self):
+        from backend.assess.metrics import compute_far
+
+        # No building:levels column → treated as 1-story → FAR = 0.25
+        buildings = _sq(0, 0, 500, 500)
+        far = compute_far(buildings, STUDY)
+        assert abs(far - 0.25) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# TestInterventions
+# ---------------------------------------------------------------------------
+
+class TestInterventions:
+    def test_interventions_low_greenspace_flagged(self):
+        from backend.assess.interventions import generate_interventions
+
+        metrics = {
+            "greenspace_coverage_ratio": 0.02,
+            "greenspace_area_m2": 500.0,
+            "building_coverage_ratio": 0.3,
+            "road_density_km_per_km2": 5.0,
+            "far": 1.0,
+        }
+        results = generate_interventions(metrics)
+        assert len(results) > 0
+        severities = {r["severity"] for r in results}
+        assert "high" in severities
+
+    def test_interventions_all_ok_returns_empty(self):
+        from backend.assess.interventions import generate_interventions
+
+        metrics = {
+            "greenspace_coverage_ratio": 0.15,
+            "greenspace_area_m2": 20_000.0,
+            "building_coverage_ratio": 0.35,
+            "road_density_km_per_km2": 8.0,
+            "far": 1.5,
+        }
+        assert generate_interventions(metrics) == []
+
+    def test_interventions_severity_keys_present(self):
+        from backend.assess.interventions import generate_interventions
+
+        metrics = {
+            "greenspace_coverage_ratio": 0.02,
+            "greenspace_area_m2": 500.0,
+            "building_coverage_ratio": 0.75,
+            "road_density_km_per_km2": 1.0,
+            "far": 4.0,
+        }
+        results = generate_interventions(metrics)
+        assert len(results) > 0
+        for item in results:
+            assert "category" in item
+            assert "finding" in item
+            assert "recommendation" in item
+            assert "standard" in item
+            assert item["severity"] in ("high", "medium", "low")
+
+
+# ---------------------------------------------------------------------------
 # TestAssessEndpoint
 # ---------------------------------------------------------------------------
 
@@ -195,6 +278,9 @@ class TestAssessEndpoint:
         assert "building_coverage_ratio" in data["metrics"]
         assert "greenspace_coverage_ratio" in data["metrics"]
         assert "road_density_km_per_km2" in data["metrics"]
+        assert "far" in data["metrics"]
+        assert "interventions" in data
+        assert isinstance(data["interventions"], list)
         assert len(data["map_html"]) > 500
 
     def test_assess_200_with_custom_bbox(self, client):

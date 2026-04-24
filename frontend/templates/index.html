@@ -47,6 +47,22 @@
     .divider { border: none; border-top: 1px solid #e2e8f0; }
 
     .optional-label { font-size: 0.75rem; color: #a0aec0; font-weight: 400; margin-left: 4px; }
+
+    .interventions { display: flex; flex-direction: column; gap: 8px; }
+    .intervention-card { border-radius: 6px; padding: 10px 12px; font-size: 0.82rem; border-left: 3px solid; }
+    .intervention-card.high { background: #fff5f5; border-color: #e53e3e; }
+    .intervention-card.medium { background: #fffbeb; border-color: #d97706; }
+    .intervention-card.low { background: #ebf8ff; border-color: #3182ce; }
+    .intervention-card .card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .intervention-card .badge { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 3px; }
+    .badge.high { background: #e53e3e; color: white; }
+    .badge.medium { background: #d97706; color: white; }
+    .badge.low { background: #3182ce; color: white; }
+    .intervention-card .category { font-weight: 600; color: #2d3748; }
+    .intervention-card .finding { color: #4a5568; margin-bottom: 4px; }
+    .intervention-card .rec { color: #2d3748; }
+    .intervention-card .std { font-size: 0.75rem; color: #718096; margin-top: 4px; font-style: italic; }
+    .interventions-ok { font-size: 0.85rem; color: #38a169; font-weight: 500; text-align: center; padding: 8px; }
   </style>
 </head>
 <body>
@@ -97,6 +113,14 @@
         <div class="row"><span class="label">Greenspace coverage</span><span class="value" id="m-green">—</span></div>
         <div class="row"><span class="label">Greenspace area</span><span class="value" id="m-green-area">—</span></div>
         <div class="row"><span class="label">Road density</span><span class="value" id="m-road">—</span></div>
+        <div class="row"><span class="label">Floor Area Ratio</span><span class="value" id="m-far">—</span></div>
+      </div>
+
+      <hr class="divider" />
+
+      <h2>Interventions</h2>
+      <div class="interventions" id="interventions-panel">
+        <div class="interventions-ok">Run an assessment to see interventions</div>
       </div>
     </div>
 
@@ -189,6 +213,23 @@
         document.getElementById("m-green").textContent = (data.metrics.greenspace_coverage_ratio * 100).toFixed(1) + "%";
         document.getElementById("m-green-area").textContent = (data.metrics.greenspace_area_m2 / 1e4).toFixed(1) + " ha";
         document.getElementById("m-road").textContent = data.metrics.road_density_km_per_km2.toFixed(2) + " km/km²";
+        document.getElementById("m-far").textContent = (data.metrics.far ?? 0).toFixed(2);
+
+        const panel = document.getElementById("interventions-panel");
+        if (!data.interventions || data.interventions.length === 0) {
+          panel.innerHTML = '<div class="interventions-ok">✓ No issues detected</div>';
+        } else {
+          panel.innerHTML = data.interventions.map(iv => `
+            <div class="intervention-card ${iv.severity}">
+              <div class="card-header">
+                <span class="badge ${iv.severity}">${iv.severity}</span>
+                <span class="category">${iv.category}</span>
+              </div>
+              <div class="finding">${iv.finding}</div>
+              <div class="rec">${iv.recommendation}</div>
+              <div class="std">${iv.standard}</div>
+            </div>`).join("");
+        }
 
         const mapArea = document.getElementById("map-area");
         document.getElementById("map-placeholder")?.remove();

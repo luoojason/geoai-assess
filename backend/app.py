@@ -25,7 +25,9 @@ from backend.assess import (
     compute_building_coverage,
     compute_greenspace_coverage,
     compute_road_density,
+    compute_far,
     render_assessment_map,
+    generate_interventions,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,7 @@ class AssessResponse(BaseModel):
     metrics: dict
     map_html: str
     study_area_display: str
+    interventions: list
 
 
 @app.post("/assess", response_model=AssessResponse, dependencies=_assess_deps)
@@ -129,7 +132,9 @@ async def assess(body: AssessRequest):
             "greenspace_coverage_ratio": greenspace_metrics["ratio"],
             "greenspace_area_m2": greenspace_metrics["area_m2"],
             "road_density_km_per_km2": compute_road_density(roads, study_area),
+            "far": compute_far(buildings, study_area),
         }
+        interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
             render_assessment_map, study_area, buildings, greenspace, roads, metrics
         )
@@ -141,12 +146,19 @@ async def assess(body: AssessRequest):
             "greenspace_coverage_ratio": 0.0,
             "greenspace_area_m2": 0.0,
             "road_density_km_per_km2": 0.0,
+            "far": 0.0,
         }
+        interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
             render_assessment_map, study_area, _empty, _empty, _empty, metrics
         )
 
-    return AssessResponse(metrics=metrics, map_html=map_html, study_area_display=study_area_display)
+    return AssessResponse(
+        metrics=metrics,
+        map_html=map_html,
+        study_area_display=study_area_display,
+        interventions=interventions,
+    )
 
 
 if __name__ == "__main__":
