@@ -181,7 +181,7 @@ class TestAssessEndpoint:
             crs="EPSG:4326",
         )
 
-        with patch("backend.app.collect_county_boundaries", return_value=county_gdf), \
+        with patch("backend.gis.collector_lite.collect_county_boundaries", return_value=county_gdf), \
              patch("backend.app.fetch_buildings", return_value=fake_poly_gdf.to_crs("EPSG:5070")), \
              patch("backend.app.fetch_greenspace", return_value=fake_poly_gdf.to_crs("EPSG:5070")), \
              patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")):
