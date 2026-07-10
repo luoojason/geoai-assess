@@ -8,6 +8,26 @@ from backend import hcas
 
 FRANKLIN = ("39", "049")  # Franklin County, OH
 
+_CANNED_LLM = (
+    {
+        "factors": [
+            {
+                "factor": "greenspace access",
+                "metric": "greenspace_coverage",
+                "rationale": "Green space correlates with better mental and physical health.",
+            }
+        ],
+        "notes": "Air quality not yet measurable by the registry.",
+    },
+    {"input_tokens": 900, "output_tokens": 200, "cache_read_input_tokens": 0},
+)
+
+
+@pytest.fixture(autouse=True)
+def _mock_llm(monkeypatch):
+    """No test in this file talks to the real API; step-2 tests override as needed."""
+    monkeypatch.setattr(hcas, "_llm_structured", lambda *a, **k: _CANNED_LLM)
+
 
 def _project(tmp_path, **kw):
     db = tmp_path / "hcas.db"
@@ -106,3 +126,42 @@ class TestEndpoints:
         assert client.post(f"/hcas/projects/{pid}/steps/2/run", headers=self.HDRS).status_code == 200
         assert client.get(f"/hcas/projects/{pid}", headers=self.HDRS).status_code == 200
         assert client.get("/hcas/projects/nope", headers=self.HDRS).status_code == 404
+
+
+class TestStep2:
+    CANNED = _CANNED_LLM
+
+    def test_step2_records_model_and_usage(self, tmp_path):
+        pid, db = _project(tmp_path)
+        hcas.confirm_step(pid, 1, hcas.run_step(pid, 1, db=db), db=db)
+        draft = hcas.run_step(pid, 2, db=db)
+        assert draft["factors"][0]["metric"] in hcas.METRICS
+        step2 = hcas.get_project(pid, db=db)["steps"][1]
+        assert step2["model"] == "claude-opus-4-8"
+        assert step2["usage"]["output_tokens"] == 200
+
+    def test_step2_uses_human_edited_area(self, tmp_path, monkeypatch):
+        prompts = []
+
+        def fake_llm(system, prompt, schema, model="m"):
+            prompts.append(prompt)
+            return self.CANNED
+
+        monkeypatch.setattr(hcas, "_llm_structured", fake_llm)
+        pid, db = _project(tmp_path)
+        draft1 = hcas.run_step(pid, 1, db=db)
+        hcas.confirm_step(pid, 1, {**draft1, "place_name": "Edited Place, OH"}, db=db)
+        hcas.run_step(pid, 2, db=db)
+        assert "Edited Place, OH" in prompts[0]
+
+    def test_step2_llm_failure_leaves_no_draft(self, tmp_path, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("LLM stopped with refusal")
+
+        monkeypatch.setattr(hcas, "_llm_structured", boom)
+        pid, db = _project(tmp_path)
+        hcas.confirm_step(pid, 1, hcas.run_step(pid, 1, db=db), db=db)
+        with pytest.raises(RuntimeError):
+            hcas.run_step(pid, 2, db=db)
+        steps = hcas.get_project(pid, db=db)["steps"]
+        assert [s["step"] for s in steps] == [1]  # no step-2 row written

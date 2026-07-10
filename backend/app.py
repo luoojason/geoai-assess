@@ -313,11 +313,14 @@ async def hcas_get_project(pid: str):
 @app.post("/hcas/projects/{pid}/steps/{step}/run", dependencies=_assess_deps)
 async def hcas_run_step(pid: str, step: int):
     try:
-        return {"ai_draft": hcas.run_step(pid, step)}
+        # to_thread: LLM-backed steps block for seconds-to-minutes
+        return {"ai_draft": await asyncio.to_thread(hcas.run_step, pid, step)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.post("/hcas/projects/{pid}/steps/{step}/confirm", dependencies=_assess_deps)

@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # LLM (HCAS reasoning steps) — None falls through to the SDK's env/profile chain
+    anthropic_api_key: str | None = None
+
     # Default projected CRS for CONUS counties (EPSG:5070 = CONUS Albers Equal Area)
     default_crs: str = "EPSG:5070"
 
