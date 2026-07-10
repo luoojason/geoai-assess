@@ -146,6 +146,52 @@ def _run_step_1(meta: dict) -> dict:
     }
 
 
+def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> tuple[dict, dict]:
+    """ponytail: subscription fallback — shells out to `claude -p` (Claude Code CLI,
+    Max plan) when no API key is configured. The schema is not server-enforced on
+    this path, so validate client-side and retry once with the validation error;
+    the API-key path is the production one."""
+    import subprocess
+
+    import jsonschema
+
+    def call(extra: str) -> tuple[dict, dict]:
+        full = (
+            f"{prompt}\n\nRespond with ONLY a JSON object valid against this JSON Schema "
+            f"— no markdown fences, no prose. Every schema field is required and every "
+            f"array item must match its item type exactly:\n{json.dumps(schema)}{extra}"
+        )
+        proc = subprocess.run(
+            ["claude", "-p", full, "--output-format", "json",
+             "--model", model, "--append-system-prompt", system, "--max-turns", "1"],
+            capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"claude CLI failed (rc={proc.returncode}): {proc.stderr[-800:]} | {proc.stdout[-400:]}"
+            )
+        out = json.loads(proc.stdout)
+        text = out["result"].strip()
+        if text.startswith("```"):
+            text = text.strip("`").removeprefix("json").strip()
+        usage = {
+            k: out.get("usage", {}).get(k, 0)
+            for k in ("input_tokens", "output_tokens", "cache_read_input_tokens")
+        }
+        usage["via"] = "claude-cli"
+        return json.loads(text), usage
+
+    parsed, usage = call("")
+    try:
+        jsonschema.validate(parsed, schema)
+    except jsonschema.ValidationError as exc:
+        parsed, usage = call(
+            f"\n\nYour previous attempt failed schema validation: {exc.message}. Fix it."
+        )
+        jsonschema.validate(parsed, schema)
+    return parsed, usage
+
+
 def _llm_structured(
     system: str,
     prompt: str,
@@ -154,9 +200,14 @@ def _llm_structured(
 ) -> tuple[dict, dict]:
     """One structured-output call. Returns (parsed_json, usage). Raises RuntimeError
     on refusal/truncation so the step surfaces a clear error instead of a bad draft."""
+    import os
+
     import anthropic
 
     from backend.config import settings
+
+    if not settings.anthropic_api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+        return _llm_via_claude_cli(system, prompt, schema, model)
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     resp = client.messages.create(
@@ -475,16 +526,19 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         ]
     if not results["interventions"]:
         lines.append("All computed metrics fall within acceptable ranges.")
+    def _strs(key: str) -> list[str]:
+        return [x for x in framework.get(key, []) if isinstance(x, str) and x.strip()]
+
     lines += [
         "\n## Assumptions",
-        *[f"- {x}" for x in framework.get("assumptions", [])],
+        *[f"- {x}" for x in _strs("assumptions")],
         "\n## Limitations",
-        *[f"- {x}" for x in framework.get("limitations", [])],
+        *[f"- {x}" for x in _strs("limitations")],
         "\n## References",
         *[
             f"- {cited[t]['authors']} ({cited[t]['year']}). {t}. _{cited[t]['journal']}_."
             + (f" doi:{cited[t]['doi']}" if cited[t]["doi"] else "")
-            for t in framework.get("references", [])
+            for t in _strs("references")
             if t in cited
         ],
     ]
