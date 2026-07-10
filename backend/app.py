@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backend import hcas
 from backend.config import settings
 from backend.auth import require_basic_auth, require_geoai_header, require_rate_limit
 from backend.gis.counties import list_states, list_counties
@@ -261,6 +262,57 @@ async def compare(body: CompareRequest):
         ),
         diff=diff,
     )
+
+
+# ---------------------------------------------------------------------------
+# HCAS — 8-step gated assessment (backend/hcas.py)
+# ---------------------------------------------------------------------------
+
+class HcasProjectRequest(BaseModel):
+    title: str
+    state_fips: str
+    county_fips: str
+    gate_mode: str = "gated"
+
+
+class HcasConfirmRequest(BaseModel):
+    human_final: dict
+    edit_seconds: float | None = None
+
+
+@app.post("/hcas/projects", dependencies=_assess_deps)
+async def hcas_create_project(body: HcasProjectRequest):
+    try:
+        pid = hcas.create_project(body.title, body.state_fips, body.county_fips, body.gate_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"project_id": pid}
+
+
+@app.get("/hcas/projects/{pid}", dependencies=_assess_deps)
+async def hcas_get_project(pid: str):
+    try:
+        return hcas.get_project(pid)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+
+
+@app.post("/hcas/projects/{pid}/steps/{step}/run", dependencies=_assess_deps)
+async def hcas_run_step(pid: str, step: int):
+    try:
+        return {"ai_draft": hcas.run_step(pid, step)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/hcas/projects/{pid}/steps/{step}/confirm", dependencies=_assess_deps)
+async def hcas_confirm_step(pid: str, step: int, body: HcasConfirmRequest):
+    try:
+        return hcas.confirm_step(pid, step, body.human_final, body.edit_seconds)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 if __name__ == "__main__":
