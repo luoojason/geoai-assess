@@ -61,7 +61,7 @@ _assess_deps = [
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/states")
@@ -267,6 +267,11 @@ async def compare(body: CompareRequest):
 # ---------------------------------------------------------------------------
 # HCAS — 8-step gated assessment (backend/hcas.py)
 # ---------------------------------------------------------------------------
+
+@app.get("/hcas", response_class=HTMLResponse)
+async def hcas_wizard(request: Request):
+    return templates.TemplateResponse(request, "hcas.html")
+
 
 class HcasProjectRequest(BaseModel):
     title: str

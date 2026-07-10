@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HCAS — Gated Assessment</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ponytail: one-file wizard; real frontend is the M4 serving milestone */
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; display: flex; height: 100vh; color: #222; }
+  #rail { width: 260px; background: #f4f1ec; padding: 16px; overflow-y: auto; border-right: 1px solid #ddd; }
+  #main { flex: 1; padding: 20px 28px; overflow-y: auto; }
+  .step { padding: 8px 10px; margin: 4px 0; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  .step.active { background: #e2d9c8; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #ccc; color: #fff; }
+  .badge.drafted { background: #c9a227; } .badge.confirmed { background: #3a7d44; } .badge.stale { background: #b3452f; }
+  textarea { width: 100%; min-height: 320px; font: 13px/1.4 ui-monospace, monospace; padding: 10px; box-sizing: border-box; }
+  button { padding: 7px 16px; border: 0; border-radius: 6px; background: #2f2a25; color: #fff; cursor: pointer; margin-right: 8px; }
+  button:disabled { opacity: .4; cursor: default; }
+  select, input[type=text] { padding: 6px; margin-right: 8px; }
+  #msg { color: #b3452f; min-height: 1.3em; margin: 8px 0; }
+  h1 { font-size: 20px; } h2 { font-size: 16px; }
+</style>
+</head>
+<body>
+<div id="rail">
+  <h1>HCAS</h1>
+  <div id="setup">
+    <input type="text" id="title" placeholder="Project title" style="width:95%;margin-bottom:8px">
+    <select id="state"></select>
+    <select id="county" style="max-width:230px;margin-top:8px"></select>
+    <p><button onclick="createProject()">Create project</button></p>
+  </div>
+  <div id="steps"></div>
+</div>
+<div id="main">
+  <h2 id="steptitle">Create a project to begin</h2>
+  <div id="msg"></div>
+  <textarea id="artifact" placeholder="Run the step to draft its artifact; edit it here, then Confirm." hidden></textarea>
+  <p>
+    <button id="runbtn" onclick="runStep()" hidden>Run step</button>
+    <button id="confirmbtn" onclick="confirmStep()" hidden>Confirm</button>
+  </p>
+</div>
+<script>
+const HDRS = { "X-Requested-With": "geoai", "Content-Type": "application/json" };
+let pid = null, current = 1, project = null, draftShownAt = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: HDRS, ...opts });
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.detail || r.status);
+  return body;
+}
+
+async function loadStates() {
+  const { states } = await api("/states");
+  state.innerHTML = states.map(s => `<option value="${s.state_fips}">${s.state_name}</option>`).join("");
+  state.value = "39";
+  await loadCounties();
+  state.onchange = loadCounties;
+}
+async function loadCounties() {
+  const { counties } = await api(`/counties/${state.value}`);
+  county.innerHTML = counties.map(c => `<option value="${c.county_fips}">${c.county_name}</option>`).join("");
+}
+
+async function createProject() {
+  try {
+    const body = { title: title.value || "Untitled", state_fips: state.value, county_fips: county.value };
+    pid = (await api("/hcas/projects", { method: "POST", body: JSON.stringify(body) })).project_id;
+    document.getElementById("setup").hidden = true;
+    await refresh();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function refresh() {
+  project = await api(`/hcas/projects/${pid}`);
+  const byStep = Object.fromEntries(project.steps.map(s => [s.step, s]));
+  steps.innerHTML = [1,2,3,4,5,6,7,8].map(n => {
+    const s = byStep[n], status = s ? s.status : "pending";
+    return `<div class="step ${n === current ? "active" : ""}" onclick="select(${n})">
+      <b>${n}</b> ${STEP_TITLES[n-1]} <span class="badge ${status}">${status}</span></div>`;
+  }).join("");
+  select(current);
+}
+
+function select(n) {
+  current = n;
+  const s = project && project.steps.find(x => x.step === n);
+  steptitle.textContent = `Step ${n}: ${STEP_TITLES[n-1]}`;
+  artifact.hidden = false; runbtn.hidden = false; confirmbtn.hidden = false;
+  artifact.value = s ? JSON.stringify(s.human_final ?? s.ai_draft, null, 2) : "";
+  confirmbtn.disabled = !s;
+  msg.textContent = "";
+  document.querySelectorAll(".step").forEach((el, i) => el.classList.toggle("active", i === n - 1));
+}
+
+async function runStep() {
+  try {
+    const { ai_draft } = await api(`/hcas/projects/${pid}/steps/${current}/run`, { method: "POST" });
+    draftShownAt = Date.now();
+    await refresh();
+    artifact.value = JSON.stringify(ai_draft, null, 2);
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function confirmStep() {
+  try {
+    const human_final = JSON.parse(artifact.value);
+    const edit_seconds = draftShownAt ? (Date.now() - draftShownAt) / 1000 : null;
+    await api(`/hcas/projects/${pid}/steps/${current}/confirm`,
+      { method: "POST", body: JSON.stringify({ human_final, edit_seconds }) });
+    if (current < 8) current += 1;
+    await refresh();
+  } catch (e) { msg.textContent = "Confirm failed: " + e.message; }
+}
+
+const STEP_TITLES = ["Study area intake","Factor & metric selection","Data retrieval",
+  "Solution framework","GIS database construction","Workflow design",
+  "GIS procedure execution","Report assembly"];
+loadStates();
+</script>
+</body>
+</html>
