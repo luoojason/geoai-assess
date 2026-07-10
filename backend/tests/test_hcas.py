@@ -23,10 +23,23 @@ _CANNED_LLM = (
 )
 
 
+def _fake_gdf(n=0):
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    return gpd.GeoDataFrame(geometry=[Point(i, i) for i in range(n)], crs="EPSG:5070")
+
+
 @pytest.fixture(autouse=True)
-def _mock_llm(monkeypatch):
-    """No test in this file talks to the real API; step-2 tests override as needed."""
+def _mock_llm_and_fetchers(monkeypatch):
+    """No test in this file talks to the real API or Overpass; override as needed."""
     monkeypatch.setattr(hcas, "_llm_structured", lambda *a, **k: _CANNED_LLM)
+    all_layers = {layer for layers in hcas.METRIC_LAYERS.values() for layer in layers}
+    monkeypatch.setattr(
+        hcas,
+        "_layer_fetchers",
+        lambda: {name: (lambda bbox: _fake_gdf()) for name in all_layers},
+    )
 
 
 def _project(tmp_path, **kw):
@@ -165,3 +178,82 @@ class TestStep2:
             hcas.run_step(pid, 2, db=db)
         steps = hcas.get_project(pid, db=db)["steps"]
         assert [s["step"] for s in steps] == [1]  # no step-2 row written
+
+
+class TestStep3:
+    def _through_step_2(self, tmp_path):
+        pid, db = _project(tmp_path)
+        hcas.confirm_step(pid, 1, hcas.run_step(pid, 1, db=db), db=db)
+        hcas.confirm_step(pid, 2, hcas.run_step(pid, 2, db=db), db=db)
+        return pid, db
+
+    def test_step3_fetches_only_needed_layers(self, tmp_path, monkeypatch):
+        called = []
+
+        def make(name):
+            def fetch(bbox):
+                called.append(name)
+                return _fake_gdf(3)
+            return fetch
+
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers",
+            lambda: {n: make(n) for n in ("buildings", "greenspace", "roads", "parking",
+                                          "sidewalks", "transit_stops", "facilities")},
+        )
+        pid, db = self._through_step_2(tmp_path)  # canned step 2 -> greenspace only
+        draft = hcas.run_step(pid, 3, db=db)
+        assert called == ["greenspace"]
+        assert draft["kind"] == "layer_inventory"
+        assert draft["layers"] == [{"layer": "greenspace", "feature_count": 3, "crs": "EPSG:5070"}]
+        assert len(draft["bbox"]) == 4
+
+    def test_step3_bbox_brackets_centroid(self, tmp_path):
+        pid, db = self._through_step_2(tmp_path)
+        draft = hcas.run_step(pid, 3, db=db)
+        lat, lon = hcas.get_project(pid, db=db)["steps"][0]["ai_draft"]["centroid"]
+        west, south, east, north = draft["bbox"]
+        assert west < lon < east and south < lat < north
+
+
+class TestStep4:
+    def test_step4_grounds_on_theories_and_confirmed_artifacts(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_llm(system, prompt, schema, model="m"):
+            captured.update(system=system, prompt=prompt, schema=schema)
+            return (
+                {
+                    "framework": "Greenspace-led health equity assessment.",
+                    "theoretical_basis": [
+                        {"theory": "WHO Healthy Cities", "application": "settings-based lens"}
+                    ],
+                    "assumptions": ["OSM greenspace tagging is representative."],
+                    "limitations": ["Built-environment metrics only."],
+                    "references": [],
+                },
+                {"input_tokens": 2000, "output_tokens": 400, "cache_read_input_tokens": 0},
+            )
+
+        pid, db = _project(tmp_path)
+        for n in (1, 2, 3):
+            hcas.confirm_step(pid, n, hcas.run_step(pid, n, db=db), db=db)
+        monkeypatch.setattr(hcas, "_llm_structured", fake_llm)
+        draft = hcas.run_step(pid, 4, db=db)
+
+        assert "WHO Healthy Cities" in captured["system"]          # mock KG present
+        assert "greenspace_coverage" in captured["prompt"]         # confirmed step-2 factors
+        assert "greenspace: 0 features" in captured["prompt"]      # step-3 inventory
+        assert set(captured["schema"]["properties"]) == {
+            "framework", "theoretical_basis", "assumptions", "limitations", "references"
+        }
+        assert draft["framework"].startswith("Greenspace-led")
+        step4 = hcas.get_project(pid, db=db)["steps"][3]
+        assert step4["model"] == "claude-opus-4-8"
+
+    def test_reference_enum_matches_database(self):
+        from backend.assess.references import REFERENCES
+
+        enum = hcas._STEP4_SCHEMA["properties"]["references"]["items"]["enum"]
+        db_titles = {r["title"] for refs in REFERENCES.values() for r in refs}
+        assert set(enum) == db_titles and enum  # enum-locked citations, non-empty

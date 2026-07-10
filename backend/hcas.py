@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from backend.assess.references import REFERENCES
 from backend.gis.counties import build_place_name, centroid_of_county, lookup_county
 
 DB_PATH = Path(__file__).with_name("hcas.db")
@@ -26,7 +27,10 @@ DB_PATH = Path(__file__).with_name("hcas.db")
 STEPS = [
     (1, "scope", "Study area intake", "deterministic"),
     (2, "methodology", "Factor & metric selection", "structured"),
-    (3, "data", "Data retrieval", "tool_loop"),
+    # ponytail: step 3 is deterministic, not an LLM tool loop — confirmed metrics
+    # imply their layers via a static dict; add an LLM loop when sources become
+    # open-ended (ACS/EJScreen handlers, arbitrary data requests)
+    (3, "data", "Data retrieval", "deterministic"),
     (4, "methodology", "Solution framework", "structured"),
     (5, "gis", "GIS database construction", "deterministic"),
     (6, "gis", "Workflow design", "structured"),
@@ -45,6 +49,18 @@ METRICS = {
     "pedestrian_density_km_per_km2": "sidewalk/path length km per km2",
     "transit_access": "transit stop count and density per km2",
     "facility_access": "community facility count and density per km2 (hospitals, clinics, pharmacies, schools, libraries, groceries)",
+}
+
+# Which OSM layers each metric needs (step 3 fetches the union).
+METRIC_LAYERS = {
+    "building_coverage_ratio": ["buildings"],
+    "greenspace_coverage": ["greenspace"],
+    "road_density_km_per_km2": ["roads"],
+    "far": ["buildings"],
+    "parking_coverage_ratio": ["parking"],
+    "pedestrian_density_km_per_km2": ["sidewalks"],
+    "transit_access": ["transit_stops"],
+    "facility_access": ["facilities"],
 }
 
 _STEP2_SYSTEM = (
@@ -159,10 +175,14 @@ def _llm_structured(
     return json.loads(text), usage
 
 
+def _confirmed(project: dict, step: int) -> dict:
+    """The human-approved artifact for a step (edited version wins)."""
+    row = next(s for s in project["steps"] if s["step"] == step)
+    return row.get("human_final") or row["ai_draft"]
+
+
 def _run_step_2(project: dict) -> tuple[dict, str | None, dict | None]:
-    area = next(s for s in project["steps"] if s["step"] == 1)
-    artifact = area.get("human_final") or area["ai_draft"]
-    place = artifact.get("place_name", "the study area")
+    place = _confirmed(project, 1).get("place_name", "the study area")
     model = "claude-opus-4-8"
     prompt = (
         f"Study area: {place}.\n"
@@ -173,13 +193,185 @@ def _run_step_2(project: dict) -> tuple[dict, str | None, dict | None]:
     return draft, model, usage
 
 
+# Step 3 — fetch the union of layers the confirmed metrics need. Fetchers are in
+# a patchable dict; each returns an empty GeoDataFrame on failure (never raises),
+# so a zero feature_count in the inventory is the human's cue at the gate.
+def _layer_fetchers() -> dict:
+    from backend.assess import (
+        fetch_buildings,
+        fetch_facilities,
+        fetch_greenspace,
+        fetch_parking,
+        fetch_road_network,
+        fetch_sidewalks,
+        fetch_transit_stops,
+    )
+
+    return {
+        "buildings": fetch_buildings,
+        "greenspace": fetch_greenspace,
+        "roads": fetch_road_network,
+        "parking": fetch_parking,
+        "sidewalks": fetch_sidewalks,
+        "transit_stops": fetch_transit_stops,
+        "facilities": fetch_facilities,
+    }
+
+
+def _bbox_from_centroid(lat: float, lon: float, radius_m: float = 5000) -> list[float]:
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    buf = (
+        gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326")
+        .to_crs("EPSG:5070")
+        .buffer(radius_m)
+        .to_crs("EPSG:4326")
+    )
+    west, south, east, north = buf.total_bounds
+    return [float(west), float(south), float(east), float(north)]
+
+
+def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    factors = _confirmed(project, 2)["factors"]
+    names = sorted({layer for f in factors for layer in METRIC_LAYERS[f["metric"]]})
+    lat, lon = _confirmed(project, 1)["centroid"]
+    bbox = _bbox_from_centroid(lat, lon)
+    fetchers = _layer_fetchers()
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        gdfs = list(ex.map(lambda n: fetchers[n](tuple(bbox)), names))
+    inventory = [
+        {"layer": n, "feature_count": int(len(g)), "crs": str(g.crs)}
+        for n, g in zip(names, gdfs)
+    ]
+    return {
+        "kind": "layer_inventory",
+        "bbox": bbox,
+        "radius_m": 5000,
+        "layers": inventory,
+    }, None, None
+
+
+# ponytail: this dict IS the mock knowledgebase — the kg.community_summary /
+# rag.passages surface as canned data. Swaps for Prof. Wang's live KG behind
+# the same lookup once their team settles methods and interface.
+KG_THEORIES = [
+    {
+        "name": "WHO Healthy Cities",
+        "summary": "Health is created in the settings of everyday life; city governance, "
+        "urban planning, and community participation are primary levers for population "
+        "health, not only healthcare provision.",
+        "source": "WHO European Healthy Cities Network (1986-)",
+    },
+    {
+        "name": "Social Determinants of Health",
+        "summary": "Health outcomes are driven by conditions in the environments where "
+        "people live, work, and play: economic stability, education, healthcare access, "
+        "neighborhood and built environment, and social context.",
+        "source": "Healthy People 2030, US HHS",
+    },
+    {
+        "name": "Barton & Grant Health Map",
+        "summary": "A settlement-scale ecosystem model of health: people at the centre, "
+        "ringed by lifestyle, community, local economy, activities, built environment, "
+        "and natural environment; planning interventions act on the outer rings to "
+        "influence the centre.",
+        "source": "Barton & Grant (2006), Journal of the Royal Society for the Promotion of Health",
+    },
+    {
+        "name": "Urban Green Space and Health",
+        "summary": "Access to urban green space reduces stress and cardiovascular risk and "
+        "increases physical activity; benefits are strongest for disadvantaged groups, "
+        "making greenspace provision a health-equity intervention.",
+        "source": "WHO Regional Office for Europe (2016), Urban green spaces and health review",
+    },
+    {
+        "name": "Walkability and Active Living",
+        "summary": "Street connectivity, land-use mix, pedestrian infrastructure, and "
+        "destination density determine everyday physical activity; walkable environments "
+        "lower obesity and chronic-disease burden.",
+        "source": "Active Living Research synthesis (Sallis et al.)",
+    },
+]
+
+_REFERENCE_TITLES = sorted({ref["title"] for refs in REFERENCES.values() for ref in refs})
+
+_STEP4_SYSTEM = (
+    "You are the methodology engine of HCAS, drafting the solution framework for a "
+    "healthy-community assessment — the academic deliverable a human researcher will "
+    "review and edit. Ground the framework ONLY in the theories below, and cite ONLY "
+    "from the reference database below (by exact title). Be honest in assumptions and "
+    "limitations: OSM completeness varies, FAR carries a levels_tagged_pct honesty flag, "
+    "and the current metric registry measures the built environment only.\n\n"
+    "THEORIES (the knowledgebase):\n"
+    + "\n".join(f"- {t['name']}: {t['summary']} [{t['source']}]" for t in KG_THEORIES)
+    + "\n\nREFERENCE DATABASE:\n"
+    + "\n".join(
+        f"- {r['title']} ({r['authors']}, {r['year']}, {r['journal']})"
+        for refs in REFERENCES.values()
+        for r in refs
+    )
+)
+
+_STEP4_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "framework": {"type": "string"},
+        "theoretical_basis": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "theory": {"type": "string", "enum": [t["name"] for t in KG_THEORIES]},
+                    "application": {"type": "string"},
+                },
+                "required": ["theory", "application"],
+                "additionalProperties": False,
+            },
+        },
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "references": {
+            "type": "array",
+            "items": {"type": "string", "enum": _REFERENCE_TITLES},
+        },
+    },
+    "required": ["framework", "theoretical_basis", "assumptions", "limitations", "references"],
+    "additionalProperties": False,
+}
+
+
+def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
+    place = _confirmed(project, 1).get("place_name", "the study area")
+    factors = _confirmed(project, 2)["factors"]
+    inventory = _confirmed(project, 3)["layers"]
+    model = "claude-opus-4-8"
+    prompt = (
+        f"Study area: {place}.\n"
+        f"Assessment project: {project['meta']['title']}.\n\n"
+        "Confirmed factors and metrics:\n"
+        + "\n".join(f"- {f['factor']} -> {f['metric']}: {f['rationale']}" for f in factors)
+        + "\n\nCollected data layers:\n"
+        + "\n".join(f"- {l['layer']}: {l['feature_count']} features" for l in inventory)
+        + "\n\nDraft the solution framework for this assessment."
+    )
+    draft, usage = _llm_structured(_STEP4_SYSTEM, prompt, _STEP4_SCHEMA, model=model)
+    return draft, model, usage
+
+
 def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
     if step == 1:
         return _run_step_1(project["meta"]), None, None
     if step == 2:
         return _run_step_2(project)
+    if step == 3:
+        return _run_step_3(project)
+    if step == 4:
+        return _run_step_4(project)
     n, phase, title, kind = STEPS[step - 1]
-    # ponytail: stub artifact; real runners land per the build plan (W2: 3-4, W3: 5-8)
+    # ponytail: stub artifact; real runners land per the build plan (W3: 5-8)
     return {"stub": True, "step": n, "phase": phase, "title": title, "runner": kind}, None, None
 
 
