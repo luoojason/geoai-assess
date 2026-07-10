@@ -8,19 +8,34 @@ from backend import hcas
 
 FRANKLIN = ("39", "049")  # Franklin County, OH
 
-_CANNED_LLM = (
-    {
-        "factors": [
-            {
-                "factor": "greenspace access",
-                "metric": "greenspace_coverage",
-                "rationale": "Green space correlates with better mental and physical health.",
-            }
-        ],
-        "notes": "Air quality not yet measurable by the registry.",
-    },
-    {"input_tokens": 900, "output_tokens": 200, "cache_read_input_tokens": 0},
-)
+_CANNED_USAGE = {"input_tokens": 900, "output_tokens": 200, "cache_read_input_tokens": 0}
+
+_CANNED_STEP2 = {
+    "factors": [
+        {
+            "factor": "greenspace access",
+            "metric": "greenspace_coverage",
+            "rationale": "Green space correlates with better mental and physical health.",
+        }
+    ],
+    "notes": "Air quality not yet measurable by the registry.",
+}
+
+_CANNED_STEP4 = {
+    "framework": "Greenspace-led health equity assessment.",
+    "theoretical_basis": [{"theory": "WHO Healthy Cities", "application": "settings-based lens"}],
+    "assumptions": ["OSM greenspace tagging is representative."],
+    "limitations": ["Built-environment metrics only."],
+    "references": ["The relationship between greenspace and health: a systematic review"],
+}
+
+_CANNED_LLM = (_CANNED_STEP2, _CANNED_USAGE)
+
+
+def _canned_llm(system, prompt, schema, model="m"):
+    """Schema-aware canned LLM: step-4 calls get framework shape."""
+    shape = _CANNED_STEP4 if "framework" in schema["properties"] else _CANNED_STEP2
+    return shape, _CANNED_USAGE
 
 
 def _fake_gdf(n=0):
@@ -33,7 +48,7 @@ def _fake_gdf(n=0):
 @pytest.fixture(autouse=True)
 def _mock_llm_and_fetchers(monkeypatch):
     """No test in this file talks to the real API or Overpass; override as needed."""
-    monkeypatch.setattr(hcas, "_llm_structured", lambda *a, **k: _CANNED_LLM)
+    monkeypatch.setattr(hcas, "_llm_structured", _canned_llm)
     all_layers = {layer for layers in hcas.METRIC_LAYERS.values() for layer in layers}
     monkeypatch.setattr(
         hcas,
@@ -257,3 +272,48 @@ class TestStep4:
         enum = hcas._STEP4_SCHEMA["properties"]["references"]["items"]["enum"]
         db_titles = {r["title"] for refs in REFERENCES.values() for r in refs}
         assert set(enum) == db_titles and enum  # enum-locked citations, non-empty
+
+
+class TestSteps5to8:
+    def test_full_walk_produces_metrics_interventions_and_report(self, tmp_path, monkeypatch):
+        # 3 fake greenspace features covering ~0 area -> ratio 0 -> intervention fires
+        all_layers = {l for ls in hcas.METRIC_LAYERS.values() for l in ls}
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers",
+            lambda: {n: (lambda bbox: _fake_gdf(3)) for n in all_layers},
+        )
+        pid, db = _project(tmp_path)
+        _walk(pid, db)
+        steps = {s["step"]: s for s in hcas.get_project(pid, db=db)["steps"]}
+
+        results = steps[7]["ai_draft"]
+        assert set(results["metrics"]) == {"greenspace_coverage_ratio", "greenspace_area_m2"}
+        assert results["metrics"]["greenspace_coverage_ratio"] == 0.0
+        assert any(iv["category"] == "Greenspace" for iv in results["interventions"])
+
+        md = steps[8]["ai_draft"]["markdown"]
+        assert "# Healthy Community Assessment: Franklin County, Ohio, USA" in md
+        assert "Greenspace-led health equity assessment." in md
+        assert "greenspace access" in md and "greenspace_coverage_ratio" in md
+        assert "Bowler, D.E. et al. (2010)" in md  # full citation resolved from title
+
+    def test_step7_respects_human_edited_workflow(self, tmp_path):
+        pid, db = _project(tmp_path)
+        for n in (1, 2, 3, 4, 5):
+            hcas.confirm_step(pid, n, hcas.run_step(pid, n, db=db), db=db)
+        plan = hcas.run_step(pid, 6, db=db)
+        # human deletes every compute step
+        edited = {**plan, "steps": [s for s in plan["steps"] if s["action"] != "compute"]}
+        hcas.confirm_step(pid, 6, edited, db=db)
+        results = hcas.run_step(pid, 7, db=db)
+        assert results["metrics"] == {}
+        assert results["interventions"] == []
+
+    def test_step6_workflow_derives_from_confirmed_metrics(self, tmp_path):
+        pid, db = _project(tmp_path)
+        for n in (1, 2, 3, 4, 5):
+            hcas.confirm_step(pid, n, hcas.run_step(pid, n, db=db), db=db)
+        plan = hcas.run_step(pid, 6, db=db)
+        computes = [s for s in plan["steps"] if s["action"] == "compute"]
+        assert computes == [{"action": "compute", "metric": "greenspace_coverage", "layers": ["greenspace"]}]
+        assert plan["steps"][-1]["action"] == "assemble_report"

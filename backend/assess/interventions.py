@@ -24,7 +24,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
     far = metrics.get("far", 0.0)
 
     # --- Greenspace coverage ---
-    if green_ratio < 0.05:
+    if "greenspace_coverage_ratio" in metrics and green_ratio < 0.05:
         results.append({
             "category": "Greenspace",
             "finding": f"Greenspace coverage is {green_ratio:.1%} — critically below recommended minimums.",
@@ -33,7 +33,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
             "severity": "high",
             "references": get_references("Greenspace"),
         })
-    elif green_ratio < 0.10:
+    elif "greenspace_coverage_ratio" in metrics and green_ratio < 0.10:
         results.append({
             "category": "Greenspace",
             "finding": f"Greenspace coverage is {green_ratio:.1%} — below APA recommended threshold.",
@@ -44,7 +44,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
         })
 
     # --- Greenspace area (absolute park deficit) ---
-    if green_area_m2 < 10_000 and green_ratio < 0.10:
+    if "greenspace_area_m2" in metrics and green_area_m2 < 10_000 and green_ratio < 0.10:
         results.append({
             "category": "Park Access",
             "finding": f"Total greenspace area is {green_area_m2/1e4:.2f} ha — less than 1 hectare in the study area.",
@@ -55,7 +55,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
         })
 
     # --- Building coverage ---
-    if bldg_ratio > 0.80:
+    if "building_coverage_ratio" in metrics and bldg_ratio > 0.80:
         results.append({
             "category": "Building Density",
             "finding": f"Building coverage is {bldg_ratio:.1%} — extreme density with minimal open space.",
@@ -64,7 +64,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
             "severity": "high",
             "references": get_references("Building Density"),
         })
-    elif bldg_ratio > 0.60:
+    elif "building_coverage_ratio" in metrics and bldg_ratio > 0.60:
         results.append({
             "category": "Building Density",
             "finding": f"Building coverage is {bldg_ratio:.1%} — above typical maximum lot coverage limits.",
@@ -75,7 +75,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
         })
 
     # --- Road density (low connectivity) ---
-    if road_density < 2.0 and road_density > 0.0:
+    if "road_density_km_per_km2" in metrics and road_density < 2.0 and road_density > 0.0:
         results.append({
             "category": "Road Connectivity",
             "finding": f"Road density is {road_density:.2f} km/km² — poor street network connectivity.",
@@ -86,7 +86,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
         })
 
     # --- Road density (overdevelopment / traffic risk) ---
-    if road_density > 20.0:
+    if "road_density_km_per_km2" in metrics and road_density > 20.0:
         results.append({
             "category": "Road Connectivity",
             "finding": f"Road density is {road_density:.2f} km/km² — very high, indicating potential traffic congestion risk.",
@@ -133,7 +133,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
         })
 
     # --- FAR (floor area ratio) ---
-    if far > 5.0:
+    if "far" in metrics and far > 5.0:
         results.append({
             "category": "Floor Area Ratio",
             "finding": f"FAR is {far:.2f} — very high floor area ratio indicating extreme vertical density.",
@@ -142,7 +142,7 @@ def generate_interventions(metrics: dict) -> list[dict]:
             "severity": "high",
             "references": get_references("Floor Area Ratio"),
         })
-    elif far > 3.0:
+    elif "far" in metrics and far > 3.0:
         results.append({
             "category": "Floor Area Ratio",
             "finding": f"FAR is {far:.2f} — above typical mid-rise residential threshold.",

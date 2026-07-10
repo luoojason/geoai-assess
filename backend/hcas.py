@@ -32,10 +32,13 @@ STEPS = [
     # open-ended (ACS/EJScreen handlers, arbitrary data requests)
     (3, "data", "Data retrieval", "deterministic"),
     (4, "methodology", "Solution framework", "structured"),
+    # ponytail: 5-8 are deterministic in v1 — the metric set is closed, so the
+    # workflow, execution, and report derive from confirmed artifacts; LLM
+    # narration/design returns when procedures become open-ended (CodeSpec etc.)
     (5, "gis", "GIS database construction", "deterministic"),
-    (6, "gis", "Workflow design", "structured"),
-    (7, "gis", "GIS procedure execution", "tool_loop"),
-    (8, "report", "Report assembly", "structured"),
+    (6, "gis", "Workflow design", "deterministic"),
+    (7, "gis", "GIS procedure execution", "deterministic"),
+    (8, "report", "Report assembly", "deterministic"),
 ]
 
 # The metric registry the LLM selects from — mirrors backend/assess/metrics.py.
@@ -218,17 +221,21 @@ def _layer_fetchers() -> dict:
     }
 
 
-def _bbox_from_centroid(lat: float, lon: float, radius_m: float = 5000) -> list[float]:
+def _study_area(lat: float, lon: float, radius_m: float = 5000):
+    """5km circular study area around the centroid, in EPSG:5070."""
     import geopandas as gpd
     from shapely.geometry import Point
 
-    buf = (
+    buffered = (
         gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326")
         .to_crs("EPSG:5070")
         .buffer(radius_m)
-        .to_crs("EPSG:4326")
     )
-    west, south, east, north = buf.total_bounds
+    return gpd.GeoDataFrame(geometry=buffered, crs="EPSG:5070")
+
+
+def _bbox_from_centroid(lat: float, lon: float, radius_m: float = 5000) -> list[float]:
+    west, south, east, north = _study_area(lat, lon, radius_m).to_crs("EPSG:4326").total_bounds
     return [float(west), float(south), float(east), float(north)]
 
 
@@ -361,18 +368,136 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
     return draft, model, usage
 
 
+# Step 7 computation: metric -> flat result entries (same key shape app.py's
+# /assess uses, so generate_interventions' thresholds apply unchanged).
+def _metric_computers() -> dict:
+    from backend import assess as a
+
+    return {
+        "building_coverage_ratio": lambda L, sa: {
+            "building_coverage_ratio": a.compute_building_coverage(L["buildings"], sa)
+        },
+        "greenspace_coverage": lambda L, sa: (
+            lambda g: {"greenspace_coverage_ratio": g["ratio"], "greenspace_area_m2": g["area_m2"]}
+        )(a.compute_greenspace_coverage(L["greenspace"], sa)),
+        "road_density_km_per_km2": lambda L, sa: {
+            "road_density_km_per_km2": a.compute_road_density(L["roads"], sa)
+        },
+        "far": lambda L, sa: {"far": a.compute_far(L["buildings"], sa)},
+        "parking_coverage_ratio": lambda L, sa: {
+            "parking_coverage_ratio": a.compute_parking_coverage(L["parking"], sa)
+        },
+        "pedestrian_density_km_per_km2": lambda L, sa: {
+            "pedestrian_density_km_per_km2": a.compute_pedestrian_density(L["sidewalks"], sa)
+        },
+        "transit_access": lambda L, sa: (
+            lambda t: {"transit_stop_count": t["stop_count"], "transit_stop_density_per_km2": t["stop_density_per_km2"]}
+        )(a.compute_transit_access(L["transit_stops"], sa)),
+        "facility_access": lambda L, sa: a.compute_facility_access(L["facilities"], sa),
+    }
+
+
+def _run_step_5(project: dict) -> tuple[dict, str | None, dict | None]:
+    inv = _confirmed(project, 3)
+    return {
+        "kind": "gis_database",
+        "crs": "EPSG:5070 (CONUS Albers Equal Area)",
+        "extent_bbox_4326": inv["bbox"],
+        "study_area": f"{inv['radius_m']}m circular buffer around the county centroid",
+        "layers": inv["layers"],
+        "storage": "layers fetched from OSM per run; artifacts persisted in the audit store",
+    }, None, None
+
+
+def _run_step_6(project: dict) -> tuple[dict, str | None, dict | None]:
+    metrics = sorted({f["metric"] for f in _confirmed(project, 2)["factors"]})
+    steps = [
+        {"action": "compute", "metric": m, "layers": METRIC_LAYERS[m]} for m in metrics
+    ]
+    steps.append({"action": "generate_interventions", "input": "all computed metrics"})
+    steps.append({"action": "assemble_report", "input": "confirmed artifacts of steps 1-7"})
+    return {"kind": "workflow", "steps": steps}, None, None
+
+
+def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend.assess import generate_interventions
+
+    # Execute the human-confirmed workflow: a deleted compute step stays deleted.
+    plan = [s for s in _confirmed(project, 6)["steps"] if s["action"] == "compute"]
+    metrics_wanted = [s["metric"] for s in plan]
+    names = sorted({layer for m in metrics_wanted for layer in METRIC_LAYERS[m]})
+    lat, lon = _confirmed(project, 1)["centroid"]
+    bbox = tuple(_bbox_from_centroid(lat, lon))
+    fetchers = _layer_fetchers()
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        layers = dict(zip(names, ex.map(lambda n: fetchers[n](bbox), names)))
+    study_area = _study_area(lat, lon)
+    computers = _metric_computers()
+    metrics: dict = {}
+    for m in metrics_wanted:
+        metrics.update(computers[m](layers, study_area))
+    metrics = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in metrics.items()}
+    return {
+        "kind": "execution_results",
+        "metrics": metrics,
+        "interventions": generate_interventions(metrics),
+    }, None, None
+
+
+def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
+    area = _confirmed(project, 1)
+    factors = _confirmed(project, 2)["factors"]
+    framework = _confirmed(project, 4)
+    results = _confirmed(project, 7)
+    cited = {r["title"]: r for refs in REFERENCES.values() for r in refs}
+
+    lines = [
+        f"# Healthy Community Assessment: {area.get('place_name', 'study area')}",
+        f"\n_Project: {project['meta']['title']}_\n",
+        "## Methodology",
+        framework.get("framework", ""),
+        "\n### Theoretical basis",
+        *[f"- **{t['theory']}** — {t['application']}" for t in framework.get("theoretical_basis", [])],
+        "\n### Factors and metrics",
+        *[f"- {f['factor']} → `{f['metric']}`: {f['rationale']}" for f in factors],
+        "\n## Results",
+        *[f"- `{k}`: {v}" for k, v in results["metrics"].items()],
+        "\n## Recommended interventions",
+    ]
+    for iv in results["interventions"]:
+        lines += [
+            f"### {iv['category']} ({iv['severity']})",
+            f"{iv['finding']}",
+            f"**Recommendation:** {iv['recommendation']}",
+            f"_Standard: {iv['standard']}_",
+        ]
+    if not results["interventions"]:
+        lines.append("All computed metrics fall within acceptable ranges.")
+    lines += [
+        "\n## Assumptions",
+        *[f"- {x}" for x in framework.get("assumptions", [])],
+        "\n## Limitations",
+        *[f"- {x}" for x in framework.get("limitations", [])],
+        "\n## References",
+        *[
+            f"- {cited[t]['authors']} ({cited[t]['year']}). {t}. _{cited[t]['journal']}_."
+            + (f" doi:{cited[t]['doi']}" if cited[t]["doi"] else "")
+            for t in framework.get("references", [])
+            if t in cited
+        ],
+    ]
+    return {"kind": "report_markdown", "markdown": "\n".join(lines)}, None, None
+
+
 def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
     if step == 1:
         return _run_step_1(project["meta"]), None, None
     if step == 2:
         return _run_step_2(project)
-    if step == 3:
-        return _run_step_3(project)
-    if step == 4:
-        return _run_step_4(project)
-    n, phase, title, kind = STEPS[step - 1]
-    # ponytail: stub artifact; real runners land per the build plan (W3: 5-8)
-    return {"stub": True, "step": n, "phase": phase, "title": title, "runner": kind}, None, None
+    runners = {3: _run_step_3, 4: _run_step_4, 5: _run_step_5, 6: _run_step_6, 7: _run_step_7, 8: _run_step_8}
+    return runners[step](project)
 
 
 # ---------------------------------------------------------------------------
