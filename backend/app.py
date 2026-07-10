@@ -17,15 +17,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.config import settings
 from backend.auth import require_basic_auth, require_geoai_header, require_rate_limit
-from backend.gis.counties import lookup_county, list_states, list_counties
+from backend.gis.counties import list_states, list_counties
 from backend.assess import (
     fetch_buildings,
     fetch_greenspace,
     fetch_road_network,
+    fetch_parking,
+    fetch_sidewalks,
+    fetch_transit_stops,
     compute_building_coverage,
     compute_greenspace_coverage,
     compute_road_density,
     compute_far,
+    compute_parking_coverage,
+    compute_pedestrian_density,
+    compute_transit_access,
     render_assessment_map,
     generate_interventions,
 )
@@ -85,11 +91,30 @@ class AssessResponse(BaseModel):
 
 @app.post("/assess", response_model=AssessResponse, dependencies=_assess_deps)
 async def assess(body: AssessRequest):
-    """Run a structured sub-tract community assessment for a county or custom bbox.
+    """Run a structured sub-tract community assessment for a county or custom bbox."""
+    metrics, interventions, map_html, study_area_display = await _run_assessment(body)
+    return AssessResponse(
+        metrics=metrics,
+        map_html=map_html,
+        study_area_display=study_area_display,
+        interventions=interventions,
+    )
 
-    Fetches OSM buildings, greenspace, and road network; computes coverage and
-    density metrics; renders a multi-layer Folium map. No LLM calls are made.
-    """
+
+class ReportResponse(BaseModel):
+    area: str
+    generated_at: str
+    metrics: dict
+    intervention_count: int
+    high_severity_count: int
+    medium_severity_count: int
+    low_severity_count: int
+    top_issues: list[str]
+    map_html: str
+
+
+async def _run_assessment(body: AssessRequest) -> tuple[dict, list, str, str]:
+    """Shared assessment logic used by /assess, /report, and /compare."""
     import geopandas as _gpd
     from shapely.geometry import box as _box
 
@@ -121,25 +146,34 @@ async def assess(body: AssessRequest):
         study_area_display = county_row.iloc[0].get("NAME", target_geoid)
 
     try:
-        buildings, greenspace, roads = await asyncio.gather(
+        buildings, greenspace, roads, parking, sidewalks, transit_stops = await asyncio.gather(
             asyncio.to_thread(fetch_buildings, osm_bbox),
             asyncio.to_thread(fetch_greenspace, osm_bbox),
             asyncio.to_thread(fetch_road_network, osm_bbox),
+            asyncio.to_thread(fetch_parking, osm_bbox),
+            asyncio.to_thread(fetch_sidewalks, osm_bbox),
+            asyncio.to_thread(fetch_transit_stops, osm_bbox),
         )
         greenspace_metrics = compute_greenspace_coverage(greenspace, study_area)
+        transit_metrics = compute_transit_access(transit_stops, study_area)
         metrics = {
             "building_coverage_ratio": compute_building_coverage(buildings, study_area),
             "greenspace_coverage_ratio": greenspace_metrics["ratio"],
             "greenspace_area_m2": greenspace_metrics["area_m2"],
             "road_density_km_per_km2": compute_road_density(roads, study_area),
             "far": compute_far(buildings, study_area),
+            "parking_coverage_ratio": compute_parking_coverage(parking, study_area),
+            "pedestrian_density_km_per_km2": compute_pedestrian_density(sidewalks, study_area),
+            "transit_stop_count": transit_metrics["stop_count"],
+            "transit_stop_density_per_km2": transit_metrics["stop_density_per_km2"],
         }
         interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
-            render_assessment_map, study_area, buildings, greenspace, roads, metrics
+            render_assessment_map, study_area, buildings, greenspace, roads, metrics,
+            parking, sidewalks, transit_stops,
         )
     except Exception as exc:
-        logger.warning(f"/assess OSM fetch/render failed: {exc} — returning partial result")
+        logger.warning(f"OSM fetch/render failed: {exc} — returning partial result")
         _empty = _gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
         metrics = {
             "building_coverage_ratio": 0.0,
@@ -147,17 +181,85 @@ async def assess(body: AssessRequest):
             "greenspace_area_m2": 0.0,
             "road_density_km_per_km2": 0.0,
             "far": 0.0,
+            "parking_coverage_ratio": 0.0,
+            "pedestrian_density_km_per_km2": 0.0,
+            "transit_stop_count": 0,
+            "transit_stop_density_per_km2": 0.0,
         }
         interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
-            render_assessment_map, study_area, _empty, _empty, _empty, metrics
+            render_assessment_map, study_area, _empty, _empty, _empty, metrics,
+            _empty, _empty, _empty,
         )
 
-    return AssessResponse(
+    return metrics, interventions, map_html, study_area_display
+
+
+@app.post("/report", response_model=ReportResponse, dependencies=_assess_deps)
+async def report(body: AssessRequest):
+    """Run full assessment and return structured report JSON."""
+    from datetime import datetime, timezone
+
+    metrics, interventions, map_html, study_area_display = await _run_assessment(body)
+
+    high = [i for i in interventions if i["severity"] == "high"]
+    medium = [i for i in interventions if i["severity"] == "medium"]
+    low = [i for i in interventions if i["severity"] == "low"]
+
+    return ReportResponse(
+        area=study_area_display,
+        generated_at=datetime.now(timezone.utc).isoformat(),
         metrics=metrics,
+        intervention_count=len(interventions),
+        high_severity_count=len(high),
+        medium_severity_count=len(medium),
+        low_severity_count=len(low),
+        top_issues=[i["finding"] for i in high],
         map_html=map_html,
-        study_area_display=study_area_display,
-        interventions=interventions,
+    )
+
+
+class CompareRequest(BaseModel):
+    area_a: AssessRequest
+    area_b: AssessRequest
+
+
+class CompareResponse(BaseModel):
+    area_a: AssessResponse
+    area_b: AssessResponse
+    diff: dict
+
+
+@app.post("/compare", response_model=CompareResponse, dependencies=_assess_deps)
+async def compare(body: CompareRequest):
+    """Run two assessments concurrently and return a metric diff (area_b - area_a)."""
+    (metrics_a, interventions_a, map_a, display_a), (metrics_b, interventions_b, map_b, display_b) = (
+        await asyncio.gather(
+            _run_assessment(body.area_a),
+            _run_assessment(body.area_b),
+        )
+    )
+
+    diff = {
+        k: (metrics_b[k] - metrics_a[k])
+        for k in metrics_a
+        if isinstance(metrics_a[k], (int, float)) and k in metrics_b
+    }
+
+    return CompareResponse(
+        area_a=AssessResponse(
+            metrics=metrics_a,
+            map_html=map_a,
+            study_area_display=display_a,
+            interventions=interventions_a,
+        ),
+        area_b=AssessResponse(
+            metrics=metrics_b,
+            map_html=map_b,
+            study_area_display=display_b,
+            interventions=interventions_b,
+        ),
+        diff=diff,
     )
 
 

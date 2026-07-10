@@ -84,5 +84,81 @@ def fetch_road_network(
         return _empty_gdf(crs)
 
 
+_PARKING_TAGS = {"amenity": "parking", "parking": True}
+
+_SIDEWALK_TAGS = {
+    "highway": ["footway", "path", "pedestrian", "sidewalk"],
+}
+
+_TRANSIT_TAGS = {
+    "public_transport": ["stop_position", "platform"],
+    "highway": "bus_stop",
+    "railway": ["station", "halt", "tram_stop"],
+}
+
+_LINE_GEOM_TYPES = {"LineString", "MultiLineString"}
+_POINT_GEOM_TYPES = {"Point", "MultiPoint"}
+
+
+def fetch_parking(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch parking areas within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Only polygon geometries are retained.
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_PARKING_TAGS)
+        gdf = gdf[gdf.geometry.geom_type.isin(_POLYGON_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_parking failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
+def fetch_sidewalks(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch sidewalk and pedestrian path edges within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Only LineString geometries are retained.
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_SIDEWALK_TAGS)
+        gdf = gdf[gdf.geometry.geom_type.isin(_LINE_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_sidewalks failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
+def fetch_transit_stops(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch transit stops within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Only Point geometries are retained.
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_TRANSIT_TAGS)
+        gdf = gdf[gdf.geometry.geom_type.isin(_POINT_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_transit_stops failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
 def _empty_gdf(crs: str) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=[], crs=crs)

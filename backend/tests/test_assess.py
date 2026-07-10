@@ -258,6 +258,7 @@ class TestAssessEndpoint:
     def test_assess_200_with_mocked_osm(self, client):
         fake_poly_gdf = gpd.GeoDataFrame(geometry=[box(-83.1, 39.9, -83.0, 40.0)], crs="EPSG:4326")
         fake_line_gdf = gpd.GeoDataFrame(geometry=[LineString([(-83.05, 39.95), (-83.04, 39.95)])], crs="EPSG:4326")
+        fake_empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
         county_gdf = gpd.GeoDataFrame(
             {"GEOID": ["39049"], "NAME": ["Franklin County"]},
             geometry=[box(-83.2, 39.8, -82.8, 40.2)],
@@ -267,7 +268,10 @@ class TestAssessEndpoint:
         with patch("backend.gis.collector_lite.collect_county_boundaries", return_value=county_gdf), \
              patch("backend.app.fetch_buildings", return_value=fake_poly_gdf.to_crs("EPSG:5070")), \
              patch("backend.app.fetch_greenspace", return_value=fake_poly_gdf.to_crs("EPSG:5070")), \
-             patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")):
+             patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")), \
+             patch("backend.app.fetch_parking", return_value=fake_empty), \
+             patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
             resp = client.post("/assess", json={"state_fips": "39", "county_fips": "049"})
 
         assert resp.status_code == 200
@@ -279,6 +283,10 @@ class TestAssessEndpoint:
         assert "greenspace_coverage_ratio" in data["metrics"]
         assert "road_density_km_per_km2" in data["metrics"]
         assert "far" in data["metrics"]
+        assert "parking_coverage_ratio" in data["metrics"]
+        assert "pedestrian_density_km_per_km2" in data["metrics"]
+        assert "transit_stop_count" in data["metrics"]
+        assert "transit_stop_density_per_km2" in data["metrics"]
         assert "interventions" in data
         assert isinstance(data["interventions"], list)
         assert len(data["map_html"]) > 500
@@ -286,10 +294,14 @@ class TestAssessEndpoint:
     def test_assess_200_with_custom_bbox(self, client):
         fake_gdf = gpd.GeoDataFrame(geometry=[box(-83.1, 39.9, -83.0, 40.0)], crs="EPSG:4326")
         fake_line_gdf = gpd.GeoDataFrame(geometry=[LineString([(-83.05, 39.95), (-83.04, 39.95)])], crs="EPSG:4326")
+        fake_empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
 
         with patch("backend.app.fetch_buildings", return_value=fake_gdf.to_crs("EPSG:5070")), \
              patch("backend.app.fetch_greenspace", return_value=fake_gdf.to_crs("EPSG:5070")), \
-             patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")):
+             patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")), \
+             patch("backend.app.fetch_parking", return_value=fake_empty), \
+             patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
             resp = client.post("/assess", json={
                 "state_fips": "39",
                 "county_fips": "049",
@@ -300,3 +312,81 @@ class TestAssessEndpoint:
         data = resp.json()
         assert "map_html" in data
         assert data["metrics"]["building_coverage_ratio"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# TestNewOsmFetchers
+# ---------------------------------------------------------------------------
+
+class TestNewOsmFetchers:
+    def test_fetch_parking_returns_gdf(self):
+        from backend.assess.osm_layers import fetch_parking
+
+        fake_gdf = gpd.GeoDataFrame(geometry=[box(-83.1, 39.9, -83.0, 40.0)], crs="EPSG:4326")
+        with patch("backend.assess.osm_layers.ox.features_from_bbox", return_value=fake_gdf):
+            result = fetch_parking((-83.1, 39.9, -83.0, 40.0))
+        assert isinstance(result, gpd.GeoDataFrame)
+        assert result.crs.to_epsg() == 5070
+
+    def test_fetch_sidewalks_returns_gdf(self):
+        from backend.assess.osm_layers import fetch_sidewalks
+
+        fake_gdf = gpd.GeoDataFrame(
+            geometry=[LineString([(-83.05, 39.95), (-83.04, 39.95)])], crs="EPSG:4326"
+        )
+        with patch("backend.assess.osm_layers.ox.features_from_bbox", return_value=fake_gdf):
+            result = fetch_sidewalks((-83.1, 39.9, -83.0, 40.0))
+        assert isinstance(result, gpd.GeoDataFrame)
+        assert result.crs.to_epsg() == 5070
+
+    def test_fetch_transit_stops_returns_gdf(self):
+        from backend.assess.osm_layers import fetch_transit_stops
+        from shapely.geometry import Point
+
+        fake_gdf = gpd.GeoDataFrame(geometry=[Point(-83.05, 39.95)], crs="EPSG:4326")
+        with patch("backend.assess.osm_layers.ox.features_from_bbox", return_value=fake_gdf):
+            result = fetch_transit_stops((-83.1, 39.9, -83.0, 40.0))
+        assert isinstance(result, gpd.GeoDataFrame)
+        assert result.crs.to_epsg() == 5070
+
+    def test_fetch_parking_returns_empty_on_exception(self):
+        from backend.assess.osm_layers import fetch_parking
+
+        with patch("backend.assess.osm_layers.ox.features_from_bbox", side_effect=Exception("timeout")):
+            result = fetch_parking((-83.1, 39.9, -83.0, 40.0))
+        assert result.empty
+
+
+# ---------------------------------------------------------------------------
+# TestNewMetrics
+# ---------------------------------------------------------------------------
+
+class TestNewMetrics:
+    def test_parking_coverage_correct(self):
+        from backend.assess.metrics import compute_parking_coverage
+
+        parking = _sq(0, 0, 500, 500)
+        ratio = compute_parking_coverage(parking, STUDY)
+        assert abs(ratio - 0.25) < 1e-6
+
+    def test_pedestrian_density_correct(self):
+        from backend.assess.metrics import compute_pedestrian_density
+
+        sidewalks = _line_gdf(1000.0)
+        density = compute_pedestrian_density(sidewalks, STUDY)
+        assert abs(density - 1.0) < 1e-6
+
+    def test_transit_access_returns_dict(self):
+        from backend.assess.metrics import compute_transit_access
+        from shapely.geometry import Point
+
+        stops = gpd.GeoDataFrame(geometry=[Point(500, 500), Point(200, 200)], crs="EPSG:5070")
+        result = compute_transit_access(stops, STUDY)
+        assert result["stop_count"] == 2
+        assert result["stop_density_per_km2"] > 0.0
+
+    def test_transit_empty_returns_zeros(self):
+        from backend.assess.metrics import compute_transit_access
+
+        result = compute_transit_access(_empty_gdf(), STUDY)
+        assert result == {"stop_count": 0, "stop_density_per_km2": 0.0}

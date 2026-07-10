@@ -63,6 +63,29 @@
     .intervention-card .rec { color: #2d3748; }
     .intervention-card .std { font-size: 0.75rem; color: #718096; margin-top: 4px; font-style: italic; }
     .interventions-ok { font-size: 0.85rem; color: #38a169; font-weight: 500; text-align: center; padding: 8px; }
+
+    .refs-toggle { font-size: 0.75rem; color: #4299e1; cursor: pointer; background: none; border: none; padding: 4px 0 0; text-align: left; }
+    .refs-toggle:hover { text-decoration: underline; }
+    .refs-list { display: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid #e2e8f0; }
+    .refs-list.open { display: block; }
+    .ref-item { font-size: 0.74rem; color: #718096; margin-bottom: 4px; }
+    .ref-item strong { color: #4a5568; }
+
+    .btn-secondary { width: 100%; padding: 8px; background: #fff; color: #2b6cb0; border: 1.5px solid #2b6cb0; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: background 0.15s; margin-top: 6px; }
+    .btn-secondary:hover { background: #ebf8ff; }
+
+    .compare-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #4a5568; cursor: pointer; }
+    .compare-toggle input[type=checkbox] { width: auto; }
+    .compare-section { display: none; padding: 10px; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
+    .compare-section.visible { display: block; }
+    .compare-section h3 { font-size: 0.78rem; font-weight: 600; color: #718096; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
+
+    .compare-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-top: 8px; }
+    .compare-table th { background: #edf2f7; padding: 5px 8px; text-align: left; font-weight: 600; color: #4a5568; }
+    .compare-table td { padding: 4px 8px; border-bottom: 1px solid #e2e8f0; }
+    .compare-table .diff-pos { color: #38a169; }
+    .compare-table .diff-neg { color: #e53e3e; }
+    .compare-result { margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -101,7 +124,25 @@
         </div>
       </div>
 
-      <button class="btn" id="run-btn" onclick="runAssess()">Run Assessment</button>
+      <label class="compare-toggle">
+        <input type="checkbox" id="compare-mode" onchange="toggleCompareMode()" />
+        Compare mode
+      </label>
+
+      <div class="compare-section" id="compare-section">
+        <h3>Area B</h3>
+        <div class="field">
+          <label for="state-select-b">State B</label>
+          <select id="state-select-b"><option value="">Select a state…</option></select>
+        </div>
+        <div class="field" style="margin-top:8px">
+          <label for="county-select-b">County B</label>
+          <select id="county-select-b" disabled><option value="">Select a state first</option></select>
+        </div>
+      </div>
+
+      <button class="btn" id="run-btn" onclick="handleRun()">Run Assessment</button>
+      <button class="btn-secondary" id="export-btn" style="display:none" onclick="exportReport()">Export Report</button>
 
       <div class="status" id="status-msg"></div>
 
@@ -114,6 +155,9 @@
         <div class="row"><span class="label">Greenspace area</span><span class="value" id="m-green-area">—</span></div>
         <div class="row"><span class="label">Road density</span><span class="value" id="m-road">—</span></div>
         <div class="row"><span class="label">Floor Area Ratio</span><span class="value" id="m-far">—</span></div>
+        <div class="row"><span class="label">Parking Coverage</span><span class="value" id="m-parking">—</span></div>
+        <div class="row"><span class="label">Pedestrian Density</span><span class="value" id="m-ped">—</span></div>
+        <div class="row"><span class="label">Transit Stops</span><span class="value" id="m-transit">—</span></div>
       </div>
 
       <hr class="divider" />
@@ -135,8 +179,10 @@
   </div>
 
   <script>
-    async function loadStates() {
-      const sel = document.getElementById("state-select");
+    let _lastPayload = null;
+
+    async function loadStatesInto(selId) {
+      const sel = document.getElementById(selId);
       try {
         const res = await fetch("/states");
         const data = await res.json();
@@ -152,13 +198,13 @@
       }
     }
 
-    document.getElementById("state-select").addEventListener("change", async function () {
-      const countySel = document.getElementById("county-select");
-      if (!this.value) { countySel.disabled = true; countySel.innerHTML = '<option value="">Select a state first</option>'; return; }
+    async function loadCountiesInto(stateFips, selId) {
+      const countySel = document.getElementById(selId);
+      if (!stateFips) { countySel.disabled = true; countySel.innerHTML = '<option value="">Select a state first</option>'; return; }
       countySel.disabled = true;
       countySel.innerHTML = '<option value="">Loading…</option>';
       try {
-        const res = await fetch(`/counties/${this.value}`);
+        const res = await fetch(`/counties/${stateFips}`);
         const data = await res.json();
         countySel.innerHTML = '<option value="">Select a county…</option>';
         data.counties.forEach(c => {
@@ -171,19 +217,86 @@
       } catch {
         countySel.innerHTML = '<option value="">Failed to load counties</option>';
       }
+    }
+
+    document.getElementById("state-select").addEventListener("change", function () {
+      loadCountiesInto(this.value, "county-select");
     });
+    document.getElementById("state-select-b").addEventListener("change", function () {
+      loadCountiesInto(this.value, "county-select-b");
+    });
+
+    function toggleCompareMode() {
+      const on = document.getElementById("compare-mode").checked;
+      document.getElementById("compare-section").classList.toggle("visible", on);
+      document.getElementById("run-btn").textContent = on ? "Run Comparison" : "Run Assessment";
+    }
+
+    function handleRun() {
+      if (document.getElementById("compare-mode").checked) runCompare();
+      else runAssess();
+    }
+
+    function buildPayload(stateSel, countySel) {
+      const stateFips = document.getElementById(stateSel).value;
+      const countyFips = document.getElementById(countySel).value;
+      const west = document.getElementById("bbox-west")?.value;
+      const south = document.getElementById("bbox-south")?.value;
+      const east = document.getElementById("bbox-east")?.value;
+      const north = document.getElementById("bbox-north")?.value;
+      const hasBbox = west && south && east && north;
+      const p = { state_fips: stateFips, county_fips: countyFips || "000" };
+      if (hasBbox) p.bbox = [parseFloat(west), parseFloat(south), parseFloat(east), parseFloat(north)];
+      return { stateFips, countyFips, hasBbox, payload: p };
+    }
+
+    function renderInterventionCards(interventions) {
+      if (!interventions || interventions.length === 0)
+        return '<div class="interventions-ok">✓ No issues detected</div>';
+      return interventions.map((iv, idx) => {
+        const refs = (iv.references || []).map(r =>
+          `<div class="ref-item"><strong>${r.title}</strong> — ${r.authors} (${r.year}), <em>${r.journal}</em></div>`
+        ).join("");
+        const refsHtml = refs
+          ? `<button class="refs-toggle" onclick="toggleRefs(${idx})">▶ References (${iv.references.length})</button>
+             <div class="refs-list" id="refs-${idx}">${refs}</div>`
+          : "";
+        return `<div class="intervention-card ${iv.severity}">
+          <div class="card-header">
+            <span class="badge ${iv.severity}">${iv.severity}</span>
+            <span class="category">${iv.category}</span>
+          </div>
+          <div class="finding">${iv.finding}</div>
+          <div class="rec">${iv.recommendation}</div>
+          <div class="std">${iv.standard}</div>
+          ${refsHtml}
+        </div>`;
+      }).join("");
+    }
+
+    function toggleRefs(idx) {
+      const list = document.getElementById(`refs-${idx}`);
+      const btn = list.previousElementSibling;
+      list.classList.toggle("open");
+      btn.textContent = (list.classList.contains("open") ? "▼" : "▶") + btn.textContent.slice(1);
+    }
+
+    function applyMetrics(metrics) {
+      document.getElementById("m-bldg").textContent = (metrics.building_coverage_ratio * 100).toFixed(1) + "%";
+      document.getElementById("m-green").textContent = (metrics.greenspace_coverage_ratio * 100).toFixed(1) + "%";
+      document.getElementById("m-green-area").textContent = (metrics.greenspace_area_m2 / 1e4).toFixed(1) + " ha";
+      document.getElementById("m-road").textContent = metrics.road_density_km_per_km2.toFixed(2) + " km/km²";
+      document.getElementById("m-far").textContent = (metrics.far ?? 0).toFixed(2);
+      document.getElementById("m-parking").textContent = ((metrics.parking_coverage_ratio ?? 0) * 100).toFixed(1) + "%";
+      document.getElementById("m-ped").textContent = (metrics.pedestrian_density_km_per_km2 ?? 0).toFixed(2) + " km/km²";
+      document.getElementById("m-transit").textContent = (metrics.transit_stop_count ?? 0) + " stops";
+    }
 
     async function runAssess() {
       const btn = document.getElementById("run-btn");
       const status = document.getElementById("status-msg");
-      const stateFips = document.getElementById("state-select").value;
-      const countyFips = document.getElementById("county-select").value;
-      const west = document.getElementById("bbox-west").value;
-      const south = document.getElementById("bbox-south").value;
-      const east = document.getElementById("bbox-east").value;
-      const north = document.getElementById("bbox-north").value;
+      const { stateFips, countyFips, hasBbox, payload } = buildPayload("state-select", "county-select");
 
-      const hasBbox = west && south && east && north;
       if (!stateFips || (!countyFips && !hasBbox)) {
         status.textContent = "Select a state and county (or enter a custom bbox).";
         status.className = "status error";
@@ -193,9 +306,7 @@
       btn.disabled = true;
       status.textContent = "Fetching OSM data…";
       status.className = "status";
-
-      const payload = { state_fips: stateFips, county_fips: countyFips || "000" };
-      if (hasBbox) payload.bbox = [parseFloat(west), parseFloat(south), parseFloat(east), parseFloat(north)];
+      _lastPayload = payload;
 
       try {
         const res = await fetch("/assess", {
@@ -203,43 +314,19 @@
           headers: { "Content-Type": "application/json", "X-Requested-With": "geoai" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || `HTTP ${res.status}`);
-        }
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || `HTTP ${res.status}`); }
         const data = await res.json();
 
-        document.getElementById("m-bldg").textContent = (data.metrics.building_coverage_ratio * 100).toFixed(1) + "%";
-        document.getElementById("m-green").textContent = (data.metrics.greenspace_coverage_ratio * 100).toFixed(1) + "%";
-        document.getElementById("m-green-area").textContent = (data.metrics.greenspace_area_m2 / 1e4).toFixed(1) + " ha";
-        document.getElementById("m-road").textContent = data.metrics.road_density_km_per_km2.toFixed(2) + " km/km²";
-        document.getElementById("m-far").textContent = (data.metrics.far ?? 0).toFixed(2);
-
-        const panel = document.getElementById("interventions-panel");
-        if (!data.interventions || data.interventions.length === 0) {
-          panel.innerHTML = '<div class="interventions-ok">✓ No issues detected</div>';
-        } else {
-          panel.innerHTML = data.interventions.map(iv => `
-            <div class="intervention-card ${iv.severity}">
-              <div class="card-header">
-                <span class="badge ${iv.severity}">${iv.severity}</span>
-                <span class="category">${iv.category}</span>
-              </div>
-              <div class="finding">${iv.finding}</div>
-              <div class="rec">${iv.recommendation}</div>
-              <div class="std">${iv.standard}</div>
-            </div>`).join("");
-        }
+        applyMetrics(data.metrics);
+        document.getElementById("interventions-panel").innerHTML = renderInterventionCards(data.interventions);
 
         const mapArea = document.getElementById("map-area");
         document.getElementById("map-placeholder")?.remove();
         let iframe = document.getElementById("assess-iframe");
-        if (!iframe) {
-          iframe = document.createElement("iframe");
-          iframe.id = "assess-iframe";
-          mapArea.appendChild(iframe);
-        }
+        if (!iframe) { iframe = document.createElement("iframe"); iframe.id = "assess-iframe"; mapArea.appendChild(iframe); }
         iframe.srcdoc = data.map_html;
+
+        document.getElementById("export-btn").style.display = "";
         status.textContent = `Assessment complete — ${data.study_area_display}`;
         status.className = "status";
       } catch (err) {
@@ -250,7 +337,98 @@
       }
     }
 
-    loadStates();
+    async function exportReport() {
+      if (!_lastPayload) return;
+      const status = document.getElementById("status-msg");
+      status.textContent = "Generating report…";
+      try {
+        const res = await fetch("/report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Requested-With": "geoai" },
+          body: JSON.stringify(_lastPayload),
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || `HTTP ${res.status}`); }
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "geoassess-report.json";
+        a.click();
+        status.textContent = "Report downloaded.";
+      } catch (err) {
+        status.textContent = `Export error: ${err.message}`;
+        status.className = "status error";
+      }
+    }
+
+    async function runCompare() {
+      const btn = document.getElementById("run-btn");
+      const status = document.getElementById("status-msg");
+      const { stateFips: sfA, countyFips: cfA, hasBbox: hbA, payload: pA } = buildPayload("state-select", "county-select");
+      const { stateFips: sfB, countyFips: cfB, hasBbox: hbB, payload: pB } = buildPayload("state-select-b", "county-select-b");
+
+      if (!sfA || (!cfA && !hbA)) { status.textContent = "Area A: select a state and county."; status.className = "status error"; return; }
+      if (!sfB || (!cfB && !hbB)) { status.textContent = "Area B: select a state and county."; status.className = "status error"; return; }
+
+      btn.disabled = true;
+      status.textContent = "Running comparison…";
+      status.className = "status";
+
+      try {
+        const res = await fetch("/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Requested-With": "geoai" },
+          body: JSON.stringify({ area_a: pA, area_b: pB }),
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || `HTTP ${res.status}`); }
+        const data = await res.json();
+
+        applyMetrics(data.area_a.metrics);
+        document.getElementById("interventions-panel").innerHTML = renderInterventionCards(data.area_a.interventions);
+
+        const mapArea = document.getElementById("map-area");
+        document.getElementById("map-placeholder")?.remove();
+
+        const metricLabels = {
+          building_coverage_ratio: "Building Coverage",
+          greenspace_coverage_ratio: "Greenspace Coverage",
+          greenspace_area_m2: "Greenspace Area (m²)",
+          road_density_km_per_km2: "Road Density (km/km²)",
+          far: "FAR",
+          parking_coverage_ratio: "Parking Coverage",
+          pedestrian_density_km_per_km2: "Pedestrian Density (km/km²)",
+          transit_stop_count: "Transit Stops",
+          transit_stop_density_per_km2: "Transit Density (stops/km²)",
+        };
+        const rows = Object.keys(metricLabels).map(k => {
+          const vA = data.area_a.metrics[k] ?? 0;
+          const vB = data.area_b.metrics[k] ?? 0;
+          const diff = data.diff[k] ?? 0;
+          const fmt = v => typeof v === "number" ? v.toFixed(3) : v;
+          const cls = diff > 0 ? "diff-pos" : diff < 0 ? "diff-neg" : "";
+          return `<tr><td>${metricLabels[k]}</td><td>${fmt(vA)}</td><td>${fmt(vB)}</td><td class="${cls}">${diff >= 0 ? "+" : ""}${fmt(diff)}</td></tr>`;
+        }).join("");
+
+        mapArea.innerHTML = `<div class="compare-result" style="padding:20px;overflow-y:auto;height:100%">
+          <h3 style="margin-bottom:10px;font-size:1rem">${data.area_a.study_area_display} vs ${data.area_b.study_area_display}</h3>
+          <table class="compare-table">
+            <thead><tr><th>Metric</th><th>Area A</th><th>Area B</th><th>Diff (B−A)</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+
+        status.textContent = `Comparison complete`;
+        status.className = "status";
+      } catch (err) {
+        status.textContent = `Error: ${err.message}`;
+        status.className = "status error";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    loadStatesInto("state-select");
+    loadStatesInto("state-select-b");
   </script>
 </body>
 </html>

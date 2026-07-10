@@ -86,3 +86,57 @@ def compute_far(
         levels = pd.Series(1.0, index=buildings.index)
     floor_area = (buildings.geometry.area * levels).sum()
     return float(floor_area / area_total)
+
+
+def compute_parking_coverage(
+    parking: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> float:
+    """Return parking area / study_area area (0.0–1.0).
+
+    Returns 0.0 when parking is empty. Handles CRS mismatch.
+    """
+    if parking.empty:
+        return 0.0
+    if parking.crs != study_area.crs:
+        parking = parking.to_crs(study_area.crs)
+    area_total = study_area.geometry.area.sum()
+    if area_total == 0:
+        return 0.0
+    return min(float(parking.geometry.area.sum() / area_total), 1.0)
+
+
+def compute_pedestrian_density(
+    sidewalks: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> float:
+    """Return total sidewalk length in km per study_area area in km².
+
+    Returns 0.0 when sidewalks is empty. Handles CRS mismatch.
+    """
+    if sidewalks.empty:
+        return 0.0
+    if sidewalks.crs != study_area.crs:
+        sidewalks = sidewalks.to_crs(study_area.crs)
+    area_km2 = study_area.geometry.area.sum() / 1_000_000
+    if area_km2 == 0:
+        return 0.0
+    return float(sidewalks.geometry.length.sum() / 1_000 / area_km2)
+
+
+def compute_transit_access(
+    transit_stops: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> dict[str, float | int]:
+    """Return {'stop_count': int, 'stop_density_per_km2': float}.
+
+    Returns zeros when transit_stops is empty. Handles CRS mismatch.
+    """
+    if transit_stops.empty:
+        return {"stop_count": 0, "stop_density_per_km2": 0.0}
+    if transit_stops.crs != study_area.crs:
+        transit_stops = transit_stops.to_crs(study_area.crs)
+    area_km2 = study_area.geometry.area.sum() / 1_000_000
+    count = len(transit_stops)
+    density = float(count / area_km2) if area_km2 > 0 else 0.0
+    return {"stop_count": count, "stop_density_per_km2": density}

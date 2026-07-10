@@ -11,6 +11,9 @@ def render_assessment_map(
     greenspace: gpd.GeoDataFrame,
     roads: gpd.GeoDataFrame,
     metrics: dict,
+    parking: gpd.GeoDataFrame | None = None,
+    sidewalks: gpd.GeoDataFrame | None = None,
+    transit_stops: gpd.GeoDataFrame | None = None,
 ) -> str:
     """Render buildings, greenspace, and roads onto a single Folium map.
 
@@ -77,11 +80,53 @@ def render_assessment_map(
         ).add_to(fg_r)
         fg_r.add_to(m)
 
+    if parking is not None and not parking.empty:
+        fg_p = folium.FeatureGroup(name="Parking", show=False)
+        folium.GeoJson(
+            parking.to_crs("EPSG:4326").__geo_interface__,
+            style_function=lambda _: {
+                "fillColor": "#e07b00",
+                "fillOpacity": 0.5,
+                "color": "#a05500",
+                "weight": 0.5,
+            },
+        ).add_to(fg_p)
+        fg_p.add_to(m)
+
+    if sidewalks is not None and not sidewalks.empty:
+        fg_sw = folium.FeatureGroup(name="Sidewalks", show=False)
+        folium.GeoJson(
+            sidewalks.to_crs("EPSG:4326").__geo_interface__,
+            style_function=lambda _: {
+                "color": "#7b4fa6",
+                "weight": 1.5,
+                "opacity": 0.8,
+            },
+        ).add_to(fg_sw)
+        fg_sw.add_to(m)
+
+    if transit_stops is not None and not transit_stops.empty:
+        fg_ts = folium.FeatureGroup(name="Transit Stops", show=False)
+        folium.GeoJson(
+            transit_stops.to_crs("EPSG:4326").__geo_interface__,
+            style_function=lambda _: {
+                "fillColor": "#0d9488",
+                "fillOpacity": 0.9,
+                "color": "#0f766e",
+                "weight": 1,
+                "radius": 5,
+            },
+        ).add_to(fg_ts)
+        fg_ts.add_to(m)
+
     folium.LayerControl(collapsed=False).add_to(m)
 
     bldg_pct = f"{metrics.get('building_coverage_ratio', 0.0):.1%}"
     green_pct = f"{metrics.get('greenspace_coverage_ratio', 0.0):.1%}"
     road_den = f"{metrics.get('road_density_km_per_km2', 0.0):.1f}"
+    park_pct = f"{metrics.get('parking_coverage_ratio', 0.0):.1%}"
+    ped_den = f"{metrics.get('pedestrian_density_km_per_km2', 0.0):.1f}"
+    transit_ct = metrics.get('transit_stop_count', 0)
     panel_html = f"""
     <div style="
         position: fixed; top: 10px; right: 10px; z-index: 1000;
@@ -92,7 +137,10 @@ def render_assessment_map(
         <b style="font-size:14px">Assessment Metrics</b><br>
         Building Coverage: <b>{bldg_pct}</b><br>
         Greenspace Coverage: <b>{green_pct}</b><br>
-        Road Density: <b>{road_den} km/km&sup2;</b>
+        Road Density: <b>{road_den} km/km&sup2;</b><br>
+        Parking Coverage: <b>{park_pct}</b><br>
+        Pedestrian Density: <b>{ped_den} km/km&sup2;</b><br>
+        Transit Stops: <b>{transit_ct}</b>
     </div>
     """
     m.get_root().html.add_child(folium.Element(panel_html))
