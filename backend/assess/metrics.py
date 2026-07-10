@@ -142,6 +142,32 @@ def compute_transit_access(
     return {"stop_count": count, "stop_density_per_km2": density}
 
 
+def compute_land_use_mix(
+    landuse: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> dict[str, float | int]:
+    """Return {'land_use_mix': float 0-1, 'land_use_categories': int}.
+
+    Normalized Shannon entropy of landuse polygon areas by 'landuse' tag:
+    0.0 = single use, 1.0 = perfectly even mix. Zeros when landuse is empty
+    or carries no 'landuse' column.
+    """
+    import numpy as np
+
+    if landuse.empty or "landuse" not in landuse.columns:
+        return {"land_use_mix": 0.0, "land_use_categories": 0}
+    if landuse.crs != study_area.crs:
+        landuse = landuse.to_crs(study_area.crs)
+    areas = landuse.assign(_a=landuse.geometry.area).groupby("landuse")["_a"].sum()
+    areas = areas[areas > 0]
+    k = len(areas)
+    if k <= 1:
+        return {"land_use_mix": 0.0, "land_use_categories": int(k)}
+    p = areas / areas.sum()
+    entropy = float(-(p * np.log(p)).sum() / np.log(k))
+    return {"land_use_mix": round(entropy, 6), "land_use_categories": int(k)}
+
+
 def compute_facility_access(
     facilities: gpd.GeoDataFrame,
     study_area: gpd.GeoDataFrame,

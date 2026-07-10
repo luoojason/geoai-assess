@@ -317,3 +317,71 @@ class TestSteps5to8:
         computes = [s for s in plan["steps"] if s["action"] == "compute"]
         assert computes == [{"action": "compute", "metric": "greenspace_coverage", "layers": ["greenspace"]}]
         assert plan["steps"][-1]["action"] == "assemble_report"
+
+
+class TestMapAndAudit:
+    def test_step7_stores_map_and_flags_availability(self, tmp_path):
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=7)
+        step7 = hcas.get_project(pid, db=db)["steps"][6]
+        assert step7["ai_draft"]["map_available"] is True
+        assert "_map_html" not in step7["ai_draft"]  # kept out of the artifact
+        html = hcas.get_map(pid, db=db)
+        assert "Assessment Metrics" in html
+
+    def test_get_map_before_step7_raises(self, tmp_path):
+        pid, db = _project(tmp_path)
+        with pytest.raises(KeyError):
+            hcas.get_map(pid, db=db)
+
+    def test_audit_csv_covers_all_steps(self, tmp_path):
+        pid, db = _project(tmp_path)
+        _walk(pid, db)
+        csv_text = hcas.export_audit_csv(db=db)
+        lines = csv_text.strip().splitlines()
+        assert len(lines) == 9  # header + 8 steps
+        assert lines[0].startswith("project_id,title,step,status")
+        assert f"{pid},test,2,confirmed" in csv_text
+        assert "claude-opus-4-8" in csv_text  # model recorded for LLM steps
+
+
+class TestLandUseMix:
+    def test_even_two_way_mix_scores_one(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        from backend.assess import compute_land_use_mix
+
+        landuse = gpd.GeoDataFrame(
+            {"landuse": ["residential", "commercial"]},
+            geometry=[box(0, 0, 100, 100), box(100, 0, 200, 100)],
+            crs="EPSG:5070",
+        )
+        study = gpd.GeoDataFrame(geometry=[box(0, 0, 200, 100)], crs="EPSG:5070")
+        result = compute_land_use_mix(landuse, study)
+        assert result == {"land_use_mix": 1.0, "land_use_categories": 2}
+
+    def test_single_use_scores_zero(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        from backend.assess import compute_land_use_mix
+
+        landuse = gpd.GeoDataFrame(
+            {"landuse": ["residential"]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:5070"
+        )
+        study = gpd.GeoDataFrame(geometry=[box(0, 0, 200, 100)], crs="EPSG:5070")
+        assert compute_land_use_mix(landuse, study)["land_use_mix"] == 0.0
+
+    def test_empty_returns_zeros(self):
+        from backend.assess import compute_land_use_mix
+
+        study = _fake_gdf(1)
+        assert compute_land_use_mix(_fake_gdf(), study) == {
+            "land_use_mix": 0.0,
+            "land_use_categories": 0,
+        }
+
+    def test_registry_wiring(self):
+        assert "land_use_mix" in hcas.METRICS
+        assert hcas.METRIC_LAYERS["land_use_mix"] == ["landuse"]

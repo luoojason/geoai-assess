@@ -331,6 +331,26 @@ async def hcas_confirm_step(pid: str, step: int, body: HcasConfirmRequest):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+# No CSRF-header dep on the two GETs below: they are read-only and opened as
+# plain browser links (a target=_blank anchor can't send X-Requested-With).
+_hcas_link_deps = [Depends(require_rate_limit), Depends(require_basic_auth)]
+
+
+@app.get("/hcas/projects/{pid}/map", response_class=HTMLResponse, dependencies=_hcas_link_deps)
+async def hcas_map(pid: str):
+    try:
+        return HTMLResponse(hcas.get_map(pid))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/hcas/audit.csv", dependencies=_hcas_link_deps)
+async def hcas_audit_csv():
+    from fastapi.responses import Response
+
+    return Response(hcas.export_audit_csv(), media_type="text/csv")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.app:app", host=settings.host, port=settings.port, reload=settings.debug)

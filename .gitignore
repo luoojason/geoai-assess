@@ -10,3 +10,4 @@ venv/
 logs/
 .omc/
 backend/hcas.db
+cache/

@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from backend.assess.references import REFERENCES
 from backend.gis.counties import build_place_name, centroid_of_county, lookup_county
@@ -52,6 +55,7 @@ METRICS = {
     "pedestrian_density_km_per_km2": "sidewalk/path length km per km2",
     "transit_access": "transit stop count and density per km2",
     "facility_access": "community facility count and density per km2 (hospitals, clinics, pharmacies, schools, libraries, groceries)",
+    "land_use_mix": "normalized Shannon entropy of OSM landuse polygon areas (0 = single use, 1 = even mix)",
 }
 
 # Which OSM layers each metric needs (step 3 fetches the union).
@@ -64,6 +68,7 @@ METRIC_LAYERS = {
     "pedestrian_density_km_per_km2": ["sidewalks"],
     "transit_access": ["transit_stops"],
     "facility_access": ["facilities"],
+    "land_use_mix": ["landuse"],
 }
 
 _STEP2_SYSTEM = (
@@ -112,6 +117,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
     drafted_at REAL,
     confirmed_at REAL,
     PRIMARY KEY (project_id, step)
+);
+CREATE TABLE IF NOT EXISTS maps (
+    project_id TEXT PRIMARY KEY,   -- Folium HTML kept out of the artifact JSON
+    html TEXT NOT NULL,
+    created_at REAL
 );
 """
 
@@ -255,6 +265,7 @@ def _layer_fetchers() -> dict:
         fetch_buildings,
         fetch_facilities,
         fetch_greenspace,
+        fetch_landuse,
         fetch_parking,
         fetch_road_network,
         fetch_sidewalks,
@@ -269,6 +280,7 @@ def _layer_fetchers() -> dict:
         "sidewalks": fetch_sidewalks,
         "transit_stops": fetch_transit_stops,
         "facilities": fetch_facilities,
+        "landuse": fetch_landuse,
     }
 
 
@@ -445,6 +457,7 @@ def _metric_computers() -> dict:
             lambda t: {"transit_stop_count": t["stop_count"], "transit_stop_density_per_km2": t["stop_density_per_km2"]}
         )(a.compute_transit_access(L["transit_stops"], sa)),
         "facility_access": lambda L, sa: a.compute_facility_access(L["facilities"], sa),
+        "land_use_mix": lambda L, sa: a.compute_land_use_mix(L["landuse"], sa),
     }
 
 
@@ -490,11 +503,93 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     for m in metrics_wanted:
         metrics.update(computers[m](layers, study_area))
     metrics = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in metrics.items()}
-    return {
+
+    artifact = {
         "kind": "execution_results",
         "metrics": metrics,
         "interventions": generate_interventions(metrics),
-    }, None, None
+    }
+    try:
+        from backend.assess import render_assessment_map
+
+        empty = _empty_layer()
+        slim = {n: _slim_for_map(g) for n, g in layers.items()}
+        # ponytail: stashed under _map_html; run_step pops it into the maps table
+        # so the multi-MB HTML never bloats the editable artifact JSON
+        html = render_assessment_map(
+            study_area,
+            slim.get("buildings", empty),
+            slim.get("greenspace", empty),
+            slim.get("roads", empty),
+            metrics,
+            parking=slim.get("parking"),
+            sidewalks=slim.get("sidewalks"),
+            transit_stops=slim.get("transit_stops"),
+            facilities=slim.get("facilities"),
+        )
+        if len(html) > 150_000_000:
+            raise RuntimeError(f"rendered map too large ({len(html)/1e6:.0f} MB)")
+        artifact["_map_html"] = html
+        artifact["map_available"] = True
+    except Exception as exc:  # map is a bonus, never fails the step
+        logger.warning(f"step 7 map render failed: {exc}")
+        artifact["map_available"] = False
+    return artifact, None, None
+
+
+def _slim_for_map(gdf):
+    """Geometry-only + 2m simplification: OSM tag columns (hundreds of mostly-NaN
+    keys serialized per feature) and full-precision vertices are what made raw
+    Franklin County maps ~500 MB."""
+    if gdf is None or gdf.empty:
+        return gdf
+    g = gdf[["geometry"]].copy()
+    g["geometry"] = g.geometry.simplify(2.0)
+    return g[~g.geometry.is_empty]
+
+
+def _empty_layer():
+    import geopandas as gpd
+
+    return gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+
+
+def get_map(pid: str, db: Path | None = None) -> str:
+    db = db or DB_PATH
+    with _conn(db) as conn:
+        row = conn.execute("SELECT html FROM maps WHERE project_id = ?", (pid,)).fetchone()
+    if row is None:
+        raise KeyError(f"no map rendered yet for project {pid}")
+    return row["html"]
+
+
+def export_audit_csv(db: Path | None = None) -> str:
+    """Every step row across all projects, flattened — the HITL ablation dataset."""
+    import csv
+    import io
+
+    db = db or DB_PATH
+    with _conn(db) as conn:
+        rows = conn.execute(
+            "SELECT p.id, p.meta_json, a.step, a.status, a.data_json, a.drafted_at, a.confirmed_at"
+            " FROM artifacts a JOIN projects p ON p.id = a.project_id ORDER BY p.id, a.step"
+        ).fetchall()
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow([
+        "project_id", "title", "step", "status", "drafted_at", "confirmed_at",
+        "edited", "edit_seconds", "model", "input_tokens", "output_tokens",
+    ])
+    for r in rows:
+        meta, data = json.loads(r["meta_json"]), json.loads(r["data_json"])
+        usage = data.get("usage") or {}
+        w.writerow([
+            r["id"], meta.get("title"), r["step"], r["status"],
+            r["drafted_at"], r["confirmed_at"],
+            data.get("edit_delta") is not None, data.get("edit_seconds"),
+            data.get("model"), usage.get("input_tokens"), usage.get("output_tokens"),
+        ])
+    return out.getvalue()
 
 
 def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
@@ -624,6 +719,7 @@ def run_step(pid: str, step: int, db: Path | None = None) -> dict:
         raise ValueError(f"cannot run step {step}: steps {missing} not confirmed")
 
     ai_draft, model, usage = _draft(project, step)
+    map_html = ai_draft.pop("_map_html", None)
     data = {
         "ai_draft": ai_draft,
         "human_final": None,
@@ -637,6 +733,10 @@ def run_step(pid: str, step: int, db: Path | None = None) -> dict:
             "INSERT OR REPLACE INTO artifacts VALUES (?, ?, ?, 'drafted', ?, NULL)",
             (pid, step, json.dumps(data), time.time()),
         )
+        if map_html is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO maps VALUES (?, ?, ?)", (pid, map_html, time.time())
+            )
     return data["ai_draft"]
 
 

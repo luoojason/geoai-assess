@@ -160,6 +160,29 @@ def fetch_transit_stops(
         return _empty_gdf(crs)
 
 
+_LANDUSE_TAGS = {"landuse": True}
+
+
+def fetch_landuse(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch all landuse polygons within bbox and reproject to crs.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Only polygon geometries are retained; the 'landuse' tag column is kept.
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_LANDUSE_TAGS)
+        gdf = gdf[gdf.geometry.geom_type.isin(_POLYGON_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf.to_crs(crs)
+    except Exception as exc:
+        logger.warning(f"fetch_landuse failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
 _FACILITY_TAGS = {
     "amenity": [
         "hospital", "clinic", "doctors", "pharmacy",

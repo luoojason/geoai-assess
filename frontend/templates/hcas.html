@@ -39,6 +39,7 @@
   <p>
     <button id="runbtn" onclick="runStep()" hidden>Run step</button>
     <button id="confirmbtn" onclick="confirmStep()" hidden>Confirm</button>
+    <a id="maplink" target="_blank" hidden style="margin-left:8px">View map ↗</a>
   </p>
 </div>
 <script>
@@ -91,6 +92,8 @@ function select(n) {
   artifact.hidden = false; runbtn.hidden = false; confirmbtn.hidden = false;
   artifact.value = s ? JSON.stringify(s.human_final ?? s.ai_draft, null, 2) : "";
   confirmbtn.disabled = !s;
+  maplink.hidden = !(s && s.ai_draft && s.ai_draft.map_available);
+  maplink.href = `/hcas/projects/${pid}/map`;
   msg.textContent = "";
   document.querySelectorAll(".step").forEach((el, i) => el.classList.toggle("active", i === n - 1));
 }
