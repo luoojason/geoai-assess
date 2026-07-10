@@ -26,6 +26,7 @@ from backend.assess import (
     fetch_parking,
     fetch_sidewalks,
     fetch_transit_stops,
+    fetch_facilities,
     compute_building_coverage,
     compute_greenspace_coverage,
     compute_road_density,
@@ -33,6 +34,7 @@ from backend.assess import (
     compute_parking_coverage,
     compute_pedestrian_density,
     compute_transit_access,
+    compute_facility_access,
     render_assessment_map,
     generate_interventions,
 )
@@ -147,16 +149,18 @@ async def _run_assessment(body: AssessRequest) -> tuple[dict, list, str, str]:
         study_area_display = county_row.iloc[0].get("NAME", target_geoid)
 
     try:
-        buildings, greenspace, roads, parking, sidewalks, transit_stops = await asyncio.gather(
+        buildings, greenspace, roads, parking, sidewalks, transit_stops, facilities = await asyncio.gather(
             asyncio.to_thread(fetch_buildings, osm_bbox),
             asyncio.to_thread(fetch_greenspace, osm_bbox),
             asyncio.to_thread(fetch_road_network, osm_bbox),
             asyncio.to_thread(fetch_parking, osm_bbox),
             asyncio.to_thread(fetch_sidewalks, osm_bbox),
             asyncio.to_thread(fetch_transit_stops, osm_bbox),
+            asyncio.to_thread(fetch_facilities, osm_bbox),
         )
         greenspace_metrics = compute_greenspace_coverage(greenspace, study_area)
         transit_metrics = compute_transit_access(transit_stops, study_area)
+        facility_metrics = compute_facility_access(facilities, study_area)
         metrics = {
             "building_coverage_ratio": compute_building_coverage(buildings, study_area),
             "greenspace_coverage_ratio": greenspace_metrics["ratio"],
@@ -167,11 +171,13 @@ async def _run_assessment(body: AssessRequest) -> tuple[dict, list, str, str]:
             "pedestrian_density_km_per_km2": compute_pedestrian_density(sidewalks, study_area),
             "transit_stop_count": transit_metrics["stop_count"],
             "transit_stop_density_per_km2": transit_metrics["stop_density_per_km2"],
+            "facility_count": facility_metrics["facility_count"],
+            "facility_density_per_km2": facility_metrics["facility_density_per_km2"],
         }
         interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
             render_assessment_map, study_area, buildings, greenspace, roads, metrics,
-            parking, sidewalks, transit_stops,
+            parking, sidewalks, transit_stops, facilities,
         )
     except Exception as exc:
         logger.warning(f"OSM fetch/render failed: {exc} — returning partial result")
@@ -186,11 +192,13 @@ async def _run_assessment(body: AssessRequest) -> tuple[dict, list, str, str]:
             "pedestrian_density_km_per_km2": 0.0,
             "transit_stop_count": 0,
             "transit_stop_density_per_km2": 0.0,
+            "facility_count": 0,
+            "facility_density_per_km2": 0.0,
         }
         interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
             render_assessment_map, study_area, _empty, _empty, _empty, metrics,
-            _empty, _empty, _empty,
+            _empty, _empty, _empty, _empty,
         )
 
     return metrics, interventions, map_html, study_area_display

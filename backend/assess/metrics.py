@@ -140,3 +140,21 @@ def compute_transit_access(
     count = len(transit_stops)
     density = float(count / area_km2) if area_km2 > 0 else 0.0
     return {"stop_count": count, "stop_density_per_km2": density}
+
+
+def compute_facility_access(
+    facilities: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> dict[str, float | int]:
+    """Return {'facility_count': int, 'facility_density_per_km2': float}.
+
+    Returns zeros when facilities is empty. Handles CRS mismatch.
+    """
+    if facilities.empty:
+        return {"facility_count": 0, "facility_density_per_km2": 0.0}
+    if facilities.crs != study_area.crs:
+        facilities = facilities.to_crs(study_area.crs)
+    area_km2 = study_area.geometry.area.sum() / 1_000_000
+    count = len(facilities)
+    density = float(count / area_km2) if area_km2 > 0 else 0.0
+    return {"facility_count": count, "facility_density_per_km2": density}

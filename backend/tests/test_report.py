@@ -31,7 +31,8 @@ class TestReportEndpoint:
              patch("backend.app.fetch_road_network", return_value=fake_line), \
              patch("backend.app.fetch_parking", return_value=fake_empty), \
              patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
-             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty), \
+             patch("backend.app.fetch_facilities", return_value=fake_empty):
             resp = client.post("/report", json={
                 "state_fips": "39",
                 "county_fips": "049",
@@ -60,7 +61,8 @@ class TestReportEndpoint:
              patch("backend.app.fetch_road_network", return_value=fake_empty), \
              patch("backend.app.fetch_parking", return_value=fake_empty), \
              patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
-             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty), \
+             patch("backend.app.fetch_facilities", return_value=fake_empty):
             resp = client.post("/report", json={
                 "state_fips": "39",
                 "county_fips": "049",

@@ -5,6 +5,7 @@ from .osm_layers import (
     fetch_parking,
     fetch_sidewalks,
     fetch_transit_stops,
+    fetch_facilities,
 )
 from .metrics import (
     compute_building_coverage,
@@ -14,6 +15,7 @@ from .metrics import (
     compute_parking_coverage,
     compute_pedestrian_density,
     compute_transit_access,
+    compute_facility_access,
 )
 from .renderer import render_assessment_map
 from .interventions import generate_interventions
@@ -26,6 +28,7 @@ __all__ = [
     "fetch_parking",
     "fetch_sidewalks",
     "fetch_transit_stops",
+    "fetch_facilities",
     "compute_building_coverage",
     "compute_greenspace_coverage",
     "compute_road_density",
@@ -33,6 +36,7 @@ __all__ = [
     "compute_parking_coverage",
     "compute_pedestrian_density",
     "compute_transit_access",
+    "compute_facility_access",
     "render_assessment_map",
     "generate_interventions",
     "REFERENCES",

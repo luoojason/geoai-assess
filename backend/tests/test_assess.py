@@ -271,7 +271,8 @@ class TestAssessEndpoint:
              patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")), \
              patch("backend.app.fetch_parking", return_value=fake_empty), \
              patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
-             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty), \
+             patch("backend.app.fetch_facilities", return_value=fake_empty):
             resp = client.post("/assess", json={"state_fips": "39", "county_fips": "049"})
 
         assert resp.status_code == 200
@@ -301,7 +302,8 @@ class TestAssessEndpoint:
              patch("backend.app.fetch_road_network", return_value=fake_line_gdf.to_crs("EPSG:5070")), \
              patch("backend.app.fetch_parking", return_value=fake_empty), \
              patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
-             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty), \
+             patch("backend.app.fetch_facilities", return_value=fake_empty):
             resp = client.post("/assess", json={
                 "state_fips": "39",
                 "county_fips": "049",
@@ -390,3 +392,59 @@ class TestNewMetrics:
 
         result = compute_transit_access(_empty_gdf(), STUDY)
         assert result == {"stop_count": 0, "stop_density_per_km2": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# TestFacilities
+# ---------------------------------------------------------------------------
+
+class TestFacilities:
+    def test_fetch_facilities_mixes_points_and_polygon_centroids(self):
+        from backend.assess.osm_layers import fetch_facilities
+        from shapely.geometry import Point
+
+        fake_gdf = gpd.GeoDataFrame(
+            geometry=[Point(-83.05, 39.95), box(-83.06, 39.94, -83.055, 39.945)],
+            crs="EPSG:4326",
+        )
+        with patch("backend.assess.osm_layers.ox.features_from_bbox", return_value=fake_gdf):
+            result = fetch_facilities((-83.1, 39.9, -83.0, 40.0))
+        assert isinstance(result, gpd.GeoDataFrame)
+        assert result.crs.to_epsg() == 5070
+        assert len(result) == 2  # polygon reduced to its centroid, not dropped
+        assert set(result.geometry.geom_type) == {"Point"}
+
+    def test_fetch_facilities_returns_empty_on_exception(self):
+        from backend.assess.osm_layers import fetch_facilities
+
+        with patch("backend.assess.osm_layers.ox.features_from_bbox", side_effect=Exception("timeout")):
+            result = fetch_facilities((-83.1, 39.9, -83.0, 40.0))
+        assert result.empty
+
+    def test_facility_access_counts_and_density(self):
+        from backend.assess.metrics import compute_facility_access
+        from shapely.geometry import Point
+
+        facilities = gpd.GeoDataFrame(
+            geometry=[Point(100, 100), Point(200, 200)], crs="EPSG:5070"
+        )
+        result = compute_facility_access(facilities, STUDY)  # STUDY is 1 km²
+        assert result["facility_count"] == 2
+        assert result["facility_density_per_km2"] == pytest.approx(2.0)
+
+    def test_facility_access_empty_returns_zeros(self):
+        from backend.assess.metrics import compute_facility_access
+
+        result = compute_facility_access(_empty_gdf(), STUDY)
+        assert result == {"facility_count": 0, "facility_density_per_km2": 0.0}
+
+    def test_renderer_includes_facilities_layer(self):
+        from backend.assess.renderer import render_assessment_map
+        from shapely.geometry import Point
+
+        facilities = gpd.GeoDataFrame(geometry=[Point(500, 500)], crs="EPSG:5070")
+        html = render_assessment_map(
+            STUDY, _empty_gdf(), _empty_gdf(), _empty_gdf(),
+            {"facility_count": 1}, facilities=facilities,
+        )
+        assert "Facilities" in html

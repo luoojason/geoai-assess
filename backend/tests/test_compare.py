@@ -30,7 +30,8 @@ class TestCompareEndpoint:
              patch("backend.app.fetch_road_network", return_value=fake_line), \
              patch("backend.app.fetch_parking", return_value=fake_empty), \
              patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
-             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty), \
+             patch("backend.app.fetch_facilities", return_value=fake_empty):
             resp = client.post("/compare", json={
                 "area_a": _bbox_payload(-83.1, 39.9, -83.0, 40.0),
                 "area_b": _bbox_payload(-83.2, 39.8, -83.1, 39.9),
@@ -62,7 +63,8 @@ class TestCompareEndpoint:
              patch("backend.app.fetch_road_network", return_value=fake_line), \
              patch("backend.app.fetch_parking", return_value=fake_empty), \
              patch("backend.app.fetch_sidewalks", return_value=fake_empty), \
-             patch("backend.app.fetch_transit_stops", return_value=fake_empty):
+             patch("backend.app.fetch_transit_stops", return_value=fake_empty), \
+             patch("backend.app.fetch_facilities", return_value=fake_empty):
             resp = client.post("/compare", json={
                 "area_a": _bbox_payload(-83.1, 39.9, -83.0, 40.0),
                 "area_b": _bbox_payload(-83.2, 39.8, -83.1, 39.9),

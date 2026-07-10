@@ -160,5 +160,40 @@ def fetch_transit_stops(
         return _empty_gdf(crs)
 
 
+_FACILITY_TAGS = {
+    "amenity": [
+        "hospital", "clinic", "doctors", "pharmacy",
+        "school", "kindergarten", "library", "community_centre",
+    ],
+    "shop": ["supermarket", "greengrocer", "convenience"],
+}
+
+
+def fetch_facilities(
+    bbox: tuple[float, float, float, float],
+    crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """Fetch community facilities (health, education, food, civic) within bbox.
+
+    bbox: (west, south, east, north) in EPSG:4326.
+    Polygon footprints are reduced to centroids so the layer is uniformly
+    point-typed. (ponytail: centroid ~ entrance at neighborhood scale)
+    """
+    try:
+        gdf = ox.features_from_bbox(bbox=bbox, tags=_FACILITY_TAGS)
+        if gdf.empty:
+            return _empty_gdf(crs)
+        gdf = gdf.to_crs(crs)
+        poly = gdf.geometry.geom_type.isin(_POLYGON_GEOM_TYPES)
+        gdf.loc[poly, "geometry"] = gdf.loc[poly].geometry.centroid
+        gdf = gdf[gdf.geometry.geom_type.isin(_POINT_GEOM_TYPES)].copy()
+        if gdf.empty:
+            return _empty_gdf(crs)
+        return gdf
+    except Exception as exc:
+        logger.warning(f"fetch_facilities failed: {exc} — returning empty GeoDataFrame")
+        return _empty_gdf(crs)
+
+
 def _empty_gdf(crs: str) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=[], crs=crs)
