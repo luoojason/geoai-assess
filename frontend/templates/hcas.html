@@ -18,6 +18,11 @@
   button:disabled { opacity: .4; cursor: default; }
   select, input[type=text] { padding: 6px; margin-right: 8px; }
   #msg { color: #b3452f; min-height: 1.3em; margin: 8px 0; }
+  #statusline { color: #555; min-height: 1.3em; margin: 8px 0; }
+  .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #d8d2c6;
+             border-top-color: #2f2a25; border-radius: 50%; margin-right: 7px;
+             vertical-align: -2px; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   h1 { font-size: 20px; } h2 { font-size: 16px; }
 </style>
 </head>
@@ -35,6 +40,7 @@
 <div id="main">
   <h2 id="steptitle">Create a project to begin</h2>
   <div id="msg"></div>
+  <div id="statusline"></div>
   <textarea id="artifact" placeholder="Run the step to draft its artifact; edit it here, then Confirm." hidden></textarea>
   <p>
     <button id="runbtn" onclick="runStep()" hidden>Run step</button>
@@ -98,13 +104,32 @@ function select(n) {
   document.querySelectorAll(".step").forEach((el, i) => el.classList.toggle("active", i === n - 1));
 }
 
+const RUN_HINTS = {
+  2: "Claude is drafting the factor & metric selection — this takes about a minute…",
+  3: "Fetching OpenStreetMap layers for the study area…",
+  4: "Claude is drafting the solution framework — this takes about a minute…",
+  7: "Fetching layers, computing metrics, rendering the map…",
+};
+
 async function runStep() {
+  runbtn.disabled = true;
+  confirmbtn.disabled = true;
+  runbtn.textContent = "Running…";
+  statusline.innerHTML = `<span class="spinner"></span>${RUN_HINTS[current] || "Working…"}`;
+  msg.textContent = "";
   try {
     const { ai_draft } = await api(`/hcas/projects/${pid}/steps/${current}/run`, { method: "POST" });
     draftShownAt = Date.now();
     await refresh();
     artifact.value = JSON.stringify(ai_draft, null, 2);
-  } catch (e) { msg.textContent = e.message; }
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    runbtn.disabled = false;
+    runbtn.textContent = "Run step";
+    statusline.textContent = "";
+    confirmbtn.disabled = !(project && project.steps.some(x => x.step === current));
+  }
 }
 
 async function confirmStep() {
