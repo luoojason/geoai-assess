@@ -161,9 +161,17 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
     Max plan) when no API key is configured. The schema is not server-enforced on
     this path, so validate client-side and retry once with the validation error;
     the API-key path is the production one."""
+    import shutil
     import subprocess
 
     import jsonschema
+
+    if not shutil.which("claude"):
+        raise RuntimeError(
+            "No ANTHROPIC_API_KEY is configured. Add ANTHROPIC_API_KEY=sk-ant-... "
+            "to a .env file next to START-HCAS (or re-run the start script and "
+            "paste the key when asked), then restart."
+        )
 
     def call(extra: str) -> tuple[dict, dict]:
         full = (
