@@ -1,8 +1,19 @@
 # Running HCAS locally
 
-The tool runs entirely on your machine and talks to the LLM through the Anthropic API — no GPU, no server to rent.
+The tool runs entirely on your machine (macOS or Windows) and talks to the LLM through the Anthropic API — no GPU, no server to rent.
 
-## Prerequisites
+## Easiest: one-click setup
+
+- **macOS**: double-click `START-HCAS.command`. The first time, **right-click it → Open** (macOS blocks double-clicking files downloaded from the internet).
+- **Windows**: install Python 3.11+ from python.org (check "Add python.exe to PATH"), then double-click `START-HCAS.bat`.
+
+Either script installs everything, asks for the Anthropic API key once, starts the server, and opens the tool in your browser. Run it again any time to relaunch. First install takes a few minutes; the first data fetch for a new study area takes a minute or two (live OpenStreetMap queries).
+
+Note for testing from mainland China: the Anthropic API and OpenStreetMap servers may require a VPN.
+
+## Manual setup (developers)
+
+### Prerequisites
 
 - Python 3.11+
 - An Anthropic API key (console.anthropic.com) — used only by assessment steps 2 and 4
