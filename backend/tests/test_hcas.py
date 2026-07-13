@@ -429,3 +429,25 @@ class TestHealthOutcomes:
         assert "unavailable" in s3["health_outcomes"]["note"]
         md = next(s for s in proj["steps"] if s["step"] == 8)["ai_draft"]["markdown"]
         assert "unavailable this run" in md
+
+
+class TestAutoMode:
+    def test_run_auto_walks_all_8_with_zero_edits(self, tmp_path):
+        db = tmp_path / "hcas.db"
+        pid = hcas.create_project("auto arm", *FRANKLIN, gate_mode="auto", db=db)
+        proj = hcas.run_auto(pid, db=db)
+        assert [s["status"] for s in proj["steps"]] == ["confirmed"] * 8
+        assert all(s["edit_seconds"] == 0.0 for s in proj["steps"])
+        assert all(s["edit_delta"] is None for s in proj["steps"])
+
+    def test_run_auto_refuses_gated_projects(self, tmp_path):
+        pid, db = _project(tmp_path)  # default gate_mode='gated'
+        with pytest.raises(ValueError, match="gate_mode='auto'"):
+            hcas.run_auto(pid, db=db)
+
+    def test_run_auto_resumes_after_partial_walk(self, tmp_path):
+        db = tmp_path / "hcas.db"
+        pid = hcas.create_project("auto arm", *FRANKLIN, gate_mode="auto", db=db)
+        _walk(pid, db, through=3)
+        proj = hcas.run_auto(pid, db=db)
+        assert [s["status"] for s in proj["steps"]] == ["confirmed"] * 8

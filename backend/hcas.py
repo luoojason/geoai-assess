@@ -862,6 +862,23 @@ def run_step(pid: str, step: int, db: Path | None = None) -> dict:
     return data["ai_draft"]
 
 
+def run_auto(pid: str, db: Path | None = None) -> dict:
+    """AI-only baseline arm of the ablation: draft and auto-confirm steps 1-8
+    with zero human edits (edit_seconds=0). Refuses gated projects so the
+    gated audit rows always reflect real human review."""
+    db = db or DB_PATH
+    project = get_project(pid, db)
+    if project["meta"]["gate_mode"] != "auto":
+        raise ValueError("run_auto requires a project created with gate_mode='auto'")
+    done = {s["step"] for s in project["steps"] if s["status"] == "confirmed"}
+    for n in range(1, 9):
+        if n in done:
+            continue
+        draft = run_step(pid, n, db=db)
+        confirm_step(pid, n, draft, edit_seconds=0.0, db=db)
+    return get_project(pid, db)
+
+
 def confirm_step(
     pid: str,
     step: int,

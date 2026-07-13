@@ -323,6 +323,19 @@ async def hcas_run_step(pid: str, step: int):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.post("/hcas/projects/{pid}/run_all", dependencies=_assess_deps)
+async def hcas_run_all(pid: str):
+    """AI-only baseline: walk all 8 steps with auto-confirm (gate_mode='auto' only)."""
+    try:
+        return await asyncio.to_thread(hcas.run_auto, pid)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @app.post("/hcas/projects/{pid}/steps/{step}/confirm", dependencies=_assess_deps)
 async def hcas_confirm_step(pid: str, step: int, body: HcasConfirmRequest):
     try:

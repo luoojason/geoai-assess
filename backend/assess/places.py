@@ -25,6 +25,11 @@ MEASURES = {
     "BPHIGH": "High blood pressure",
     "SLEEP": "Short sleep duration (<7 hours)",
     "LACKTRPT": "Lack of reliable transportation",
+    # health-related social needs — the demographics/equity angle without
+    # needing the (now key-gated) Census ACS API
+    "FOODINSECU": "Food insecurity",
+    "HOUSINSECU": "Housing insecurity",
+    "FOODSTAMP": "Received food stamps (SNAP)",
 }
 
 
