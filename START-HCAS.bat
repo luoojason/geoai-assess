@@ -27,7 +27,7 @@ python -m pip install --quiet -r requirements.txt
 
 if not exist .env (
   echo.
-  echo The AI steps ^(2 and 4^) need an Anthropic API key.
+  echo The AI steps ^(2 and 4^) need an API key ^(Anthropic sk-ant-... or OpenRouter sk-or-...^).
   set /p KEY="Paste the API key (or press Enter to skip for now): "
   if defined KEY (
     echo ANTHROPIC_API_KEY=%KEY%> .env

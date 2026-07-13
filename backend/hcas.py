@@ -168,9 +168,9 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
 
     if not shutil.which("claude"):
         raise RuntimeError(
-            "No ANTHROPIC_API_KEY is configured. Add ANTHROPIC_API_KEY=sk-ant-... "
-            "to a .env file next to START-HCAS (or re-run the start script and "
-            "paste the key when asked), then restart."
+            "No API key is configured. Add ANTHROPIC_API_KEY=sk-ant-... or an "
+            "OpenRouter key (sk-or-...) to a .env file next to START-HCAS (or "
+            "re-run the start script and paste the key when asked), then restart."
         )
 
     def call(extra: str) -> tuple[dict, dict]:
@@ -210,6 +210,66 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
     return parsed, usage
 
 
+def _llm_via_openrouter(
+    system: str, prompt: str, schema: dict, model: str, api_key: str
+) -> tuple[dict, dict]:
+    """OpenRouter path (OpenAI-compatible chat completions). Schema is embedded in
+    the prompt and validated client-side with one retry — same contract as the CLI
+    fallback, so it works regardless of OpenRouter's per-model json_schema support."""
+    import jsonschema
+    import requests
+
+    # ponytail: internal Anthropic model ids use dashes, OpenRouter slugs use dots
+    slug = {"claude-opus-4-8": "anthropic/claude-opus-4.8",
+            "claude-sonnet-5": "anthropic/claude-sonnet-5"}.get(model, f"anthropic/{model}")
+
+    def call(extra: str) -> tuple[dict, dict]:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": slug,
+                "max_tokens": 16000,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": (
+                        f"{prompt}\n\nRespond with ONLY a JSON object valid against "
+                        f"this JSON Schema — no markdown fences, no prose. Every schema "
+                        f"field is required and every array item must match its item "
+                        f"type exactly:\n{json.dumps(schema)}{extra}"
+                    )},
+                ],
+            },
+            timeout=600,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:800]}")
+        out = r.json()
+        if "error" in out:
+            raise RuntimeError(f"OpenRouter error: {json.dumps(out['error'])[:800]}")
+        text = out["choices"][0]["message"]["content"].strip()
+        if text.startswith("```"):
+            text = text.strip("`").removeprefix("json").strip()
+        u = out.get("usage") or {}
+        usage = {
+            "input_tokens": u.get("prompt_tokens", 0),
+            "output_tokens": u.get("completion_tokens", 0),
+            "cache_read_input_tokens": 0,
+            "via": "openrouter",
+        }
+        return json.loads(text), usage
+
+    parsed, usage = call("")
+    try:
+        jsonschema.validate(parsed, schema)
+    except jsonschema.ValidationError as exc:
+        parsed, usage = call(
+            f"\n\nYour previous attempt failed schema validation: {exc.message}. Fix it."
+        )
+        jsonschema.validate(parsed, schema)
+    return parsed, usage
+
+
 def _llm_structured(
     system: str,
     prompt: str,
@@ -224,10 +284,17 @@ def _llm_structured(
 
     from backend.config import settings
 
-    if not settings.anthropic_api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+    key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY") or ""
+    openrouter_key = (
+        os.environ.get("OPENROUTER_API_KEY")
+        or (key if key.startswith("sk-or-") else "")
+    )
+    if openrouter_key:
+        return _llm_via_openrouter(system, prompt, schema, model, openrouter_key)
+    if not key:
         return _llm_via_claude_cli(system, prompt, schema, model)
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.Anthropic(api_key=key)
     resp = client.messages.create(
         model=model,
         max_tokens=16000,

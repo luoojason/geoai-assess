@@ -7,7 +7,7 @@ The tool runs entirely on your machine (macOS or Windows) and talks to the LLM t
 - **macOS**: double-click `START-HCAS.command`. The first time, **right-click it → Open** (macOS blocks double-clicking files downloaded from the internet).
 - **Windows**: install Python 3.11+ from python.org (check "Add python.exe to PATH"), then double-click `START-HCAS.bat`.
 
-Either script installs everything, asks for the Anthropic API key once, starts the server, and opens the tool in your browser. Run it again any time to relaunch. First install takes a few minutes; the first data fetch for a new study area takes a minute or two (live OpenStreetMap queries).
+Either script installs everything, asks for the API key once (Anthropic `sk-ant-...` or OpenRouter `sk-or-...` — both work), starts the server, and opens the tool in your browser. Run it again any time to relaunch. First install takes a few minutes; the first data fetch for a new study area takes a minute or two (live OpenStreetMap queries).
 
 Note for testing from mainland China: the Anthropic API and OpenStreetMap servers may require a VPN.
 
@@ -16,7 +16,7 @@ Note for testing from mainland China: the Anthropic API and OpenStreetMap server
 ### Prerequisites
 
 - Python 3.11+
-- An Anthropic API key (console.anthropic.com) — used only by assessment steps 2 and 4
+- An API key, used only by assessment steps 2 and 4 — either Anthropic (console.anthropic.com) or OpenRouter (openrouter.ai, key starts with `sk-or-`). Paste either into the same `ANTHROPIC_API_KEY=` slot; the app detects which it is.
 
 ## Setup
 

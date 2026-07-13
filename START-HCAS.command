@@ -29,7 +29,7 @@ python3 -m pip install --quiet -r requirements.txt
 
 if [ ! -f .env ]; then
   echo ""
-  echo "The AI steps (2 and 4) need an Anthropic API key."
+  echo "The AI steps (2 and 4) need an API key (Anthropic sk-ant-... or OpenRouter sk-or-...)."
   read -r -p "Paste the API key (or press Enter to skip for now): " KEY
   if [ -n "$KEY" ]; then
     echo "ANTHROPIC_API_KEY=$KEY" > .env
