@@ -124,11 +124,12 @@ def centroid_of_county(state_fips: str, county_fips: str) -> tuple[float, float]
 
     tiger_url = (
         "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
-        "tigerWMS_Current/MapServer/84/query"
+        "tigerWMS_Current/MapServer/82/query"
         f"?where=STATE='{state_fips}'+AND+COUNTY='{county_fips}'"
         "&outFields=STATE,COUNTY"
         "&returnGeometry=true"
         "&returnExtentOnly=true"
+        "&outSR=4326"  # layer default is Web Mercator meters
         "&f=json"
     )
     try:
@@ -158,8 +159,26 @@ def centroid_of_county(state_fips: str, county_fips: str) -> tuple[float, float]
     if key in _REHEARSAL_FALLBACK:
         return _REHEARSAL_FALLBACK[key]
 
-    logger.warning(
-        f"centroid_of_county: no fallback for state={state_fips} "
-        f"county={county_fips}; returning Columbus default"
+    # Second network path: the county-boundaries GeoJSON query (the one the
+    # /assess flow uses) is more reliable than the extent-only query above.
+    try:
+        from backend.gis.collector_lite import collect_county_boundaries
+
+        counties = collect_county_boundaries(state_fips)
+        row = counties[counties["GEOID"] == f"{state_fips}{county_fips}"]
+        if not row.empty:
+            c = row.geometry.iloc[0].centroid
+            logger.debug(
+                f"centroid_of_county({state_fips}, {county_fips}): "
+                f"({c.y:.4f}, {c.x:.4f}) from county boundaries"
+            )
+            return (float(c.y), float(c.x))
+    except Exception as exc:
+        logger.warning(f"centroid_of_county: boundaries fallback failed ({exc!r})")
+
+    # No silent wrong-county default: returning Columbus for an arbitrary FIPS
+    # is exactly the silent-failure class this repo has fixed before.
+    raise ValueError(
+        f"Could not determine centroid for state={state_fips} county={county_fips} "
+        "(TIGERweb unreachable and county not in the offline fallback table)"
     )
-    return (39.9612, -82.9988)

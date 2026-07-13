@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 _TIGER_URL = (
     "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
-    "tigerWMS_Current/MapServer/84/query"
+    "tigerWMS_Current/MapServer/82/query"
 )
 
 
