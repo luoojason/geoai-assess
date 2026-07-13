@@ -391,11 +391,23 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
         {"layer": n, "feature_count": int(len(g)), "crs": str(g.crs)}
         for n, g in zip(names, gdfs)
     ]
+
+    from backend.assess import places
+
+    meta = project["meta"]
+    try:
+        outcomes = places.fetch_health_outcomes(meta["state_fips"], meta["county_fips"])
+    except Exception as exc:  # CDC being down shouldn't block the OSM layers
+        logging.getLogger(__name__).warning(f"PLACES fetch failed: {exc!r}")
+        outcomes = {"source": "CDC PLACES", "measures": [],
+                    "note": f"unavailable this run: {exc}"}
+
     return {
         "kind": "layer_inventory",
         "bbox": bbox,
         "radius_m": 5000,
         "layers": inventory,
+        "health_outcomes": outcomes,
     }, None, None
 
 
@@ -449,7 +461,9 @@ _STEP4_SYSTEM = (
     "review and edit. Ground the framework ONLY in the theories below, and cite ONLY "
     "from the reference database below (by exact title). Be honest in assumptions and "
     "limitations: OSM completeness varies, FAR carries a levels_tagged_pct honesty flag, "
-    "and the current metric registry measures the built environment only.\n\n"
+    "the metric registry measures the built environment, and any county health outcomes "
+    "provided are model-based county-wide estimates — coarser than the 5km study area, "
+    "so treat environment-outcome links as ecological association, not causation.\n\n"
     "THEORIES (the knowledgebase):\n"
     + "\n".join(f"- {t['name']}: {t['summary']} [{t['source']}]" for t in KG_THEORIES)
     + "\n\nREFERENCE DATABASE:\n"
@@ -491,7 +505,19 @@ _STEP4_SCHEMA = {
 def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
     place = _confirmed(project, 1).get("place_name", "the study area")
     factors = _confirmed(project, 2)["factors"]
-    inventory = _confirmed(project, 3)["layers"]
+    step3 = _confirmed(project, 3)
+    inventory = step3["layers"]
+    outcome_rows = (step3.get("health_outcomes") or {}).get("measures") or []
+    outcomes_block = (
+        "\n\nCounty health outcomes (CDC PLACES, age-adjusted prevalence — "
+        "county-wide, coarser than the study area):\n"
+        + "\n".join(
+            f"- {m['label']}: {m['county_pct']}% (US: {m['us_pct']}%)"
+            for m in outcome_rows
+        )
+        if outcome_rows
+        else ""
+    )
     model = "claude-opus-4-8"
     prompt = (
         f"Study area: {place}.\n"
@@ -500,7 +526,10 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
         + "\n".join(f"- {f['factor']} -> {f['metric']}: {f['rationale']}" for f in factors)
         + "\n\nCollected data layers:\n"
         + "\n".join(f"- {l['layer']}: {l['feature_count']} features" for l in inventory)
-        + "\n\nDraft the solution framework for this assessment."
+        + outcomes_block
+        + "\n\nDraft the solution framework for this assessment. Where county health "
+        "outcomes exceed the US benchmark, connect them to the relevant built-"
+        "environment factors."
     )
     draft, usage = _llm_structured(_STEP4_SYSTEM, prompt, _STEP4_SCHEMA, model=model)
     return draft, model, usage
@@ -685,6 +714,24 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         *[f"- {f['factor']} → `{f['metric']}`: {f['rationale']}" for f in factors],
         "\n## Results",
         *[f"- `{k}`: {v}" for k, v in results["metrics"].items()],
+    ]
+    outcomes = _confirmed(project, 3).get("health_outcomes") or {}
+    if outcomes.get("measures"):
+        lines += [
+            "\n## Health outcomes (county-level)",
+            f"_{outcomes['source']}. County-wide estimates — coarser than the study area._\n",
+            "| Measure | County | US |",
+            "|---|---|---|",
+            *[
+                f"| {m['label']} | {m['county_pct']}%"
+                + (" **(above US)**" if m.get("us_pct") is not None and m["county_pct"] > m["us_pct"] else "")
+                + f" | {m['us_pct']}% |"
+                for m in outcomes["measures"]
+            ],
+        ]
+    elif outcomes.get("note"):
+        lines += ["\n## Health outcomes (county-level)", f"_{outcomes['note']}_"]
+    lines += [
         "\n## Recommended interventions",
     ]
     for iv in results["interventions"]:

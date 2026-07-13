@@ -55,6 +55,20 @@ def _mock_llm_and_fetchers(monkeypatch):
         "_layer_fetchers",
         lambda: {name: (lambda bbox: _fake_gdf()) for name in all_layers},
     )
+    from backend.assess import places
+
+    monkeypatch.setattr(
+        places,
+        "fetch_health_outcomes",
+        lambda s, c: {
+            "source": "CDC PLACES (test)",
+            "measures": [
+                {"id": "OBESITY", "label": "Obesity", "county_pct": 30.1, "us_pct": 33.3},
+                {"id": "LPA", "label": "No leisure-time physical activity",
+                 "county_pct": 25.0, "us_pct": 23.7},
+            ],
+        },
+    )
 
 
 def _project(tmp_path, **kw):
@@ -385,3 +399,33 @@ class TestLandUseMix:
     def test_registry_wiring(self):
         assert "land_use_mix" in hcas.METRICS
         assert hcas.METRIC_LAYERS["land_use_mix"] == ["landuse"]
+
+
+class TestHealthOutcomes:
+    def test_step3_carries_outcomes_and_step8_reports_them(self, tmp_path):
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        proj = hcas.get_project(pid, db=db)
+        s3 = next(s for s in proj["steps"] if s["step"] == 3)["ai_draft"]
+        assert s3["health_outcomes"]["measures"][0]["id"] == "OBESITY"
+        md = next(s for s in proj["steps"] if s["step"] == 8)["ai_draft"]["markdown"]
+        assert "## Health outcomes (county-level)" in md
+        assert "| Obesity | 30.1% | 33.3% |" in md
+        # LPA (25.0) exceeds the US benchmark (23.7) and must be flagged
+        assert "25.0% **(above US)** | 23.7%" in md
+
+    def test_cdc_outage_degrades_gracefully(self, tmp_path, monkeypatch):
+        from backend.assess import places
+
+        def boom(s, c):
+            raise RuntimeError("CDC down")
+
+        monkeypatch.setattr(places, "fetch_health_outcomes", boom)
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        proj = hcas.get_project(pid, db=db)
+        s3 = next(s for s in proj["steps"] if s["step"] == 3)["ai_draft"]
+        assert s3["health_outcomes"]["measures"] == []
+        assert "unavailable" in s3["health_outcomes"]["note"]
+        md = next(s for s in proj["steps"] if s["step"] == 8)["ai_draft"]["markdown"]
+        assert "unavailable this run" in md
