@@ -314,6 +314,95 @@ def _llm_structured(
     return json.loads(text), usage
 
 
+# --- Side-channel chatbot (NOT part of the gated pipeline) --------------------
+# The live per-step assistant. It reads project/step state and returns a text
+# reply, but never writes an artifact row — so the HITL-ablation dataset stays
+# "LLM at steps 2 & 4 only". Its token spend is deliberately outside the audit
+# tuples that steps 2 & 4 record.
+_CHAT_SYSTEM = (
+    "You are the assessment assistant embedded in the Healthy Community Assessment "
+    "System (HCAS) — a gated GIS + generative-AI pipeline that walks an analyst "
+    "through an 8-step community-health assessment. Explain the current step and its "
+    "AI-drafted artifact, and answer the analyst's questions. Be concise, specific, and "
+    "grounded: never invent GIS numbers — cite values that appear in the artifact JSON. "
+    "You are a read-only assistant; if the analyst wants the artifact changed, tell them "
+    "which field to edit and confirm — you cannot edit or advance the pipeline yourself."
+)
+
+
+def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple[str, dict]:
+    """Free-form (non-structured) LLM call for the chatbot. Mirrors _llm_structured's
+    provider selection (OpenRouter -> Anthropic -> claude CLI) but returns plain text."""
+    import os
+
+    from backend.config import settings
+
+    key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY") or ""
+    openrouter_key = (
+        os.environ.get("OPENROUTER_API_KEY")
+        or (key if key.startswith("sk-or-") else "")
+    )
+    if openrouter_key:
+        import requests
+
+        slug = {"claude-opus-4-8": "anthropic/claude-opus-4.8",
+                "claude-sonnet-5": "anthropic/claude-sonnet-5"}.get(model, f"anthropic/{model}")
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {openrouter_key}"},
+            json={"model": slug, "max_tokens": 1200, "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ]},
+            timeout=120,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:400]}")
+        out = r.json()
+        if "error" in out:
+            raise RuntimeError(f"OpenRouter error: {json.dumps(out['error'])[:400]}")
+        u = out.get("usage") or {}
+        return out["choices"][0]["message"]["content"].strip(), {
+            "input_tokens": u.get("prompt_tokens", 0),
+            "output_tokens": u.get("completion_tokens", 0),
+            "cache_read_input_tokens": 0, "via": "openrouter",
+        }
+    if not key:
+        import subprocess
+
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--output-format", "json", "--model", model,
+             "--append-system-prompt", system, "--max-turns", "1"],
+            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"claude CLI failed (rc={proc.returncode}): {proc.stderr[-400:]}")
+        out = json.loads(proc.stdout)
+        u = out.get("usage", {})
+        return out["result"].strip(), {
+            "input_tokens": u.get("input_tokens", 0),
+            "output_tokens": u.get("output_tokens", 0),
+            "cache_read_input_tokens": u.get("cache_read_input_tokens", 0),
+            "via": "claude-cli",
+        }
+
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key)
+    resp = client.messages.create(
+        model=model, max_tokens=1200, system=system,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if resp.stop_reason not in ("end_turn", "stop_sequence"):
+        raise RuntimeError(f"LLM stopped with {resp.stop_reason}")
+    text = next(b.text for b in resp.content if b.type == "text")
+    return text, {
+        "input_tokens": resp.usage.input_tokens,
+        "output_tokens": resp.usage.output_tokens,
+        "cache_read_input_tokens": resp.usage.cache_read_input_tokens,
+    }
+
+
 def _confirmed(project: dict, step: int) -> dict:
     """The human-approved artifact for a step (edited version wins)."""
     row = next(s for s in project["steps"] if s["step"] == step)
@@ -919,3 +1008,37 @@ def confirm_step(
             (pid, step),
         ).rowcount
     return {"step": step, "status": "confirmed", "stale_downstream": stale}
+
+
+def chat(
+    pid: str,
+    step: int,
+    message: str,
+    history: list[dict] | None = None,
+    db: Path | None = None,
+) -> dict:
+    """Answer an analyst's question about a step. Side-channel only: it reads
+    project state and calls the LLM for a text reply, but writes NOTHING — the
+    artifacts table (and thus every audit tuple) is untouched. Raises KeyError for
+    an unknown project (-> 404) and RuntimeError on LLM failure (-> 502)."""
+    db = db or DB_PATH
+    project = get_project(pid, db)  # KeyError -> unknown project
+    title = STEPS[step - 1][2] if 1 <= step <= len(STEPS) else f"step {step}"
+    row = next((s for s in project["steps"] if s["step"] == step), None)
+    artifact = (row.get("human_final") or row.get("ai_draft")) if row else None
+
+    ctx = [f"Project: {project['meta']['title']}", f"Current step: {step} — {title}"]
+    if artifact is not None:
+        ctx.append("Current step artifact (JSON):\n" + json.dumps(artifact, indent=1)[:6000])
+    else:
+        ctx.append("The current step has not been run yet (no artifact drafted).")
+
+    convo = []
+    for turn in (history or [])[-6:]:
+        who = "User" if turn.get("role") == "user" else "Assistant"
+        convo.append(f"{who}: {turn.get('content', '')}")
+    convo.append(f"User: {message}")
+
+    prompt = "\n\n".join(ctx) + "\n\n---\n\n" + "\n".join(convo) + "\n\nAssistant:"
+    reply, usage = _llm_text(_CHAT_SYSTEM, prompt)
+    return {"reply": reply, "usage": usage}

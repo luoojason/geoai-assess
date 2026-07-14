@@ -293,6 +293,12 @@ class HcasConfirmRequest(BaseModel):
     edit_seconds: float | None = None
 
 
+class HcasChatRequest(BaseModel):
+    message: str
+    step: int = 1
+    history: list[dict] = []
+
+
 @app.post("/hcas/projects", dependencies=_assess_deps)
 async def hcas_create_project(body: HcasProjectRequest):
     try:
@@ -342,6 +348,19 @@ async def hcas_confirm_step(pid: str, step: int, body: HcasConfirmRequest):
         return hcas.confirm_step(pid, step, body.human_final, body.edit_seconds)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/hcas/projects/{pid}/chat", dependencies=_assess_deps)
+async def hcas_chat(pid: str, body: HcasChatRequest):
+    """Live per-step assistant. A side-channel to the gated pipeline: it never
+    writes an audit tuple, so the LLM-at-steps-2&4-only ablation dataset is
+    unaffected by chat usage."""
+    try:
+        return await asyncio.to_thread(hcas.chat, pid, body.step, body.message, body.history)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 # No CSRF-header dep on the two GETs below: they are read-only and opened as

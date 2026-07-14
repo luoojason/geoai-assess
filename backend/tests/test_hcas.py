@@ -451,3 +451,70 @@ class TestAutoMode:
         _walk(pid, db, through=3)
         proj = hcas.run_auto(pid, db=db)
         assert [s["status"] for s in proj["steps"]] == ["confirmed"] * 8
+
+
+class TestChat:
+    """The live per-step assistant is a side-channel: it must never write an
+    artifact row, so the audit tuples stay 'LLM at steps 2 & 4 only'."""
+
+    def test_chat_grounds_on_step_context_and_writes_nothing(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_text(system, prompt, model="m"):
+            captured.update(system=system, prompt=prompt)
+            return "Greenspace access is your only confirmed factor.", {
+                "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 0}
+
+        monkeypatch.setattr(hcas, "_llm_text", fake_text)
+        pid, db = _project(tmp_path)
+        hcas.confirm_step(pid, 1, hcas.run_step(pid, 1, db=db), db=db)
+        hcas.run_step(pid, 2, db=db)  # step 2 drafted (canned)
+
+        before = hcas.get_project(pid, db=db)["steps"]
+        out = hcas.chat(pid, 2, "What factors did you pick?", db=db)
+        after = hcas.get_project(pid, db=db)["steps"]
+
+        assert "Greenspace" in out["reply"]
+        assert "greenspace_coverage" in captured["prompt"]      # artifact in context
+        assert "Factor & metric selection" in captured["prompt"]  # step title in context
+        assert before == after  # side-channel: audit rows untouched
+
+    def test_chat_before_run_has_no_artifact(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake_text(system, prompt, model="m"):
+            seen["prompt"] = prompt
+            return "Run the step first.", {"input_tokens": 1, "output_tokens": 1,
+                                           "cache_read_input_tokens": 0}
+
+        monkeypatch.setattr(hcas, "_llm_text", fake_text)
+        pid, db = _project(tmp_path)
+        hcas.chat(pid, 1, "what now?", db=db)
+        assert "has not been run yet" in seen["prompt"]
+
+    def test_chat_endpoint_ok_and_404(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        monkeypatch.setattr(
+            hcas, "_llm_text",
+            lambda system, prompt, model="m": ("hi", {
+                "input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 0}),
+        )
+        from backend.app import app
+
+        client = TestClient(app)
+        pid = client.post(
+            "/hcas/projects",
+            json={"title": "t", "state_fips": "39", "county_fips": "049"},
+            headers={"X-Requested-With": "geoai"},
+        ).json()["project_id"]
+        r = client.post(
+            f"/hcas/projects/{pid}/chat",
+            json={"message": "hello", "step": 1},
+            headers={"X-Requested-With": "geoai"},
+        )
+        assert r.status_code == 200 and r.json()["reply"] == "hi"
+        assert client.post(
+            "/hcas/projects/nope/chat",
+            json={"message": "hi", "step": 1},
+            headers={"X-Requested-With": "geoai"},
+        ).status_code == 404

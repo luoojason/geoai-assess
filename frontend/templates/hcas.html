@@ -2,151 +2,804 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>HCAS — Gated Assessment</title>
+<title>Healthy Community Assessment System</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  /* ponytail: one-file wizard; real frontend is the M4 serving milestone */
-  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; display: flex; height: 100vh; color: #222; }
-  #rail { width: 260px; background: #f4f1ec; padding: 16px; overflow-y: auto; border-right: 1px solid #ddd; }
-  #main { flex: 1; padding: 20px 28px; overflow-y: auto; }
-  .step { padding: 8px 10px; margin: 4px 0; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
-  .step.active { background: #e2d9c8; }
-  .badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #ccc; color: #fff; }
-  .badge.drafted { background: #c9a227; } .badge.confirmed { background: #3a7d44; } .badge.stale { background: #b3452f; }
-  textarea { width: 100%; min-height: 320px; font: 13px/1.4 ui-monospace, monospace; padding: 10px; box-sizing: border-box; }
-  button { padding: 7px 16px; border: 0; border-radius: 6px; background: #2f2a25; color: #fff; cursor: pointer; margin-right: 8px; }
-  button:disabled { opacity: .4; cursor: default; }
-  select, input[type=text] { padding: 6px; margin-right: 8px; }
-  #msg { color: #b3452f; min-height: 1.3em; margin: 8px 0; }
-  #statusline { color: #555; min-height: 1.3em; margin: 8px 0; }
-  .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #d8d2c6;
-             border-top-color: #2f2a25; border-radius: 50%; margin-right: 7px;
-             vertical-align: -2px; animation: spin .8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  h1 { font-size: 20px; } h2 { font-size: 16px; }
+  /* HCAS — Xun Shi's layout, wired to the gated 8-step backend.
+     Direction: a precise cartographic field instrument. Archivo (titles) +
+     Hanken Grotesk (text) + JetBrains Mono (data). OKLCH, teal-forward,
+     neutrals tinted toward the brand hue. See .impeccable.md. */
+  :root{
+    --sans:'Hanken Grotesk',system-ui,-apple-system,Segoe UI,sans-serif;
+    --display:'Archivo','Hanken Grotesk',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --fs-xs:.6875rem; --fs-sm:.8125rem; --fs-base:.875rem; --fs-md:1rem; --fs-lg:1.375rem; --fs-xl:1.75rem;
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px; --sp-12:48px;
+    --r-sm:7px; --r:10px; --r-lg:14px;
+    --teal:oklch(0.52 0.085 219); --teal-d:oklch(0.43 0.082 221);
+    --teal-tint:oklch(0.958 0.019 219); --teal-tint-d:oklch(0.9 0.033 219);
+    --ink:oklch(0.30 0.017 226); --muted:oklch(0.505 0.019 224);
+    --faint:oklch(0.61 0.017 223); --ghost:oklch(0.71 0.013 222);
+    --line:oklch(0.905 0.008 220); --line-d:oklch(0.845 0.012 220);
+    --grid:oklch(0.905 0.011 219);
+    --bg:oklch(0.955 0.008 221); --surface:oklch(0.996 0.003 220);
+    --panel:oklch(0.978 0.006 220); --head:oklch(0.984 0.005 220);
+    --amber:oklch(0.55 0.10 64); --amber-tint:oklch(0.95 0.036 74);
+    --ok:oklch(0.53 0.085 158); --ok-tint:oklch(0.945 0.032 158);
+    --red:oklch(0.54 0.15 26); --red-tint:oklch(0.945 0.04 30);
+    --info:oklch(0.5 0.06 244); --info-tint:oklch(0.95 0.028 244);
+    --draft:oklch(0.58 0.10 66); --stale:oklch(0.56 0.13 32);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{font-family:var(--sans);color:var(--ink);background:var(--bg);
+       font-size:var(--fs-base);line-height:1.5;overflow:hidden;
+       -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  ::selection{background:var(--teal-tint-d);}
+  .mono{font-family:var(--mono);font-feature-settings:"tnum" 1;}
+  .eyebrow{font:500 var(--fs-xs)/1.3 var(--mono);letter-spacing:.07em;color:var(--faint);text-transform:uppercase;}
+  button{font-family:var(--sans);cursor:pointer;}
+  a{color:var(--teal-d);text-underline-offset:2px;} a:hover{color:var(--teal);}
+  :focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:3px;}
+
+  #app{display:flex;flex-direction:column;height:100vh;padding:var(--sp-4) var(--sp-5);}
+  #card{flex:1;display:flex;flex-direction:column;background:var(--surface);
+        border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;min-height:0;
+        box-shadow:0 1px 2px oklch(0.4 0.03 220/.05), 0 18px 40px -26px oklch(0.4 0.05 220/.35);}
+
+  /* 1 · Header */
+  #hdr{display:flex;align-items:center;gap:var(--sp-3);padding:0 var(--sp-5);height:58px;flex:none;
+       border-bottom:1px solid var(--line);background:var(--head);}
+  #logo{width:30px;height:30px;border-radius:8px;background:var(--teal);color:var(--surface);display:flex;
+        align-items:center;justify-content:center;font:700 16px var(--display);flex:none;
+        box-shadow:inset 0 1px 0 oklch(1 0 0/.2);}
+  #hdr .title{font:600 var(--fs-md)/1.1 var(--display);letter-spacing:-.01em;}
+  #hdr .sub{font:400 var(--fs-xs)/1 var(--mono);color:var(--faint);margin-top:3px;letter-spacing:.02em;}
+  #nav{margin-left:auto;display:flex;align-items:center;gap:1px;}
+  .navbtn{border:none;background:none;font:500 var(--fs-sm) var(--sans);color:var(--muted);
+          padding:6px 10px;border-radius:7px;transition:background .15s,color .15s;}
+  .navbtn:hover{background:var(--teal-tint);color:var(--ink);}
+  .navbtn.exit{color:var(--red);} .navbtn.exit:hover{background:var(--red-tint);}
+  .navsep{color:var(--line-d);font-size:11px;}
+
+  /* 2 · Project bar */
+  #pbar{display:flex;align-items:center;min-height:46px;flex:none;padding:7px var(--sp-5);
+        border-bottom:1px solid var(--line);background:var(--surface);flex-wrap:wrap;column-gap:0;row-gap:4px;}
+  #pbar .grp{display:flex;align-items:center;gap:9px;}
+  #pbar .divider{width:1px;height:18px;background:var(--line);margin:0 var(--sp-4);}
+  #pbar .val{font:600 var(--fs-sm) var(--sans);color:var(--ink);}
+  #pbar .val.mono{font:400 var(--fs-sm) var(--mono);color:var(--muted);}
+  #sysprompt{font:400 var(--fs-sm) var(--sans);color:var(--muted);max-width:46ch;white-space:nowrap;
+             overflow:hidden;text-overflow:ellipsis;border:1px solid transparent;border-radius:6px;
+             padding:2px 6px;cursor:text;transition:border-color .15s,background .15s;}
+  #sysprompt:hover{border-color:var(--line);background:var(--panel);}
+
+  #body{flex:1;display:flex;min-height:0;}
+
+  /* 3 · Pipeline rail */
+  #rail{width:240px;flex:none;border-right:1px solid var(--line);background:var(--panel);
+        padding:var(--sp-4) 0;overflow-y:auto;}
+  #rail .hd{padding:0 var(--sp-4) var(--sp-3);}
+  .prow{display:flex;align-items:center;gap:11px;padding:9px var(--sp-4);cursor:pointer;
+        transition:background .14s;}
+  .prow:hover{background:var(--teal-tint);}
+  .prow.active{background:var(--teal-tint);}
+  .prow.locked{cursor:default;opacity:.5;}
+  .prow.locked:hover{background:none;}
+  .pdot{width:23px;height:23px;border-radius:50%;border:1.5px solid var(--line-d);color:var(--ghost);
+        display:inline-flex;align-items:center;justify-content:center;font:500 12px var(--mono);flex:none;
+        background:var(--surface);transition:border-color .14s,background .14s,color .14s;}
+  .prow.active .pdot{border-color:var(--teal);color:var(--teal-d);}
+  .pdot.confirmed{background:var(--ok);border-color:var(--ok);color:var(--surface);}
+  .pdot.drafted{border-color:var(--draft);color:var(--draft);background:var(--amber-tint);}
+  .pdot.stale{border-color:var(--stale);color:var(--stale);background:var(--red-tint);}
+  .plabel{font:400 var(--fs-sm)/1.25 var(--sans);color:var(--muted);}
+  .prow.active .plabel{color:var(--ink);font-weight:600;}
+  .prow.confirmed .plabel{color:var(--ink);}
+
+  /* 4 · Work canvas */
+  #canvas{flex:1;min-width:0;background:var(--panel);overflow-y:auto;padding:var(--sp-6) var(--sp-6);}
+  .chead{max-width:78ch;}
+  .chead .eyebrow{color:var(--teal-d);}
+  .chd{display:flex;align-items:baseline;gap:var(--sp-3);margin-top:6px;flex-wrap:wrap;}
+  #canvas h2{font:700 var(--fs-xl) var(--display);letter-spacing:-.02em;margin:0;color:var(--ink);}
+  #canvas .csub{font:400 var(--fs-base) var(--sans);color:var(--faint);max-width:60ch;}
+
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+         padding:var(--sp-4) var(--sp-5);margin-top:var(--sp-4);}
+  .panel > .ph{font:500 var(--fs-xs) var(--mono);letter-spacing:.06em;text-transform:uppercase;
+               color:var(--faint);margin-bottom:var(--sp-3);}
+  .cols{display:flex;gap:var(--sp-4);flex-wrap:wrap;}
+  .cols > *{flex:1;min-width:230px;}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;font-size:var(--fs-sm);align-items:baseline;align-content:start;}
+  .kv dt{font:500 var(--fs-xs) var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;}
+  .kv dd{margin:0;color:var(--ink);}
+  .tree .grp{margin-bottom:10px;}
+  .tree .gname{font:600 var(--fs-sm) var(--sans);color:var(--ink);display:flex;align-items:center;gap:8px;}
+  .tree .gname::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--teal);display:inline-block;}
+  .tree .leaf{font:400 var(--fs-sm) var(--sans);color:var(--muted);padding:3px 0 3px 16px;display:flex;justify-content:space-between;gap:10px;}
+  .tree .leaf .c{font:400 var(--fs-xs) var(--mono);color:var(--ghost);white-space:nowrap;}
+  .mapview{height:264px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;
+           background-color:var(--teal-tint);
+           background-image:linear-gradient(var(--grid) 1px,transparent 1px),
+                            linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+           background-size:24px 24px;background-position:-1px -1px;
+           display:flex;align-items:center;justify-content:center;text-align:center;}
+  .mapview .lab{background:oklch(1 0 0/.82);border:1px solid var(--line);border-radius:var(--r-sm);
+                padding:9px 15px;backdrop-filter:blur(1px);}
+  table.data{width:100%;border-collapse:collapse;font-size:var(--fs-sm);}
+  table.data th{font:500 var(--fs-xs) var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--faint);
+                text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);}
+  table.data td{padding:7px 8px;border-bottom:1px solid var(--line);}
+  table.data td:not(:first-child){font-family:var(--mono);}
+  table.data tr:last-child td{border-bottom:none;}
+  .above{color:var(--red);font-weight:600;} .below{color:var(--ok);font-weight:600;}
+
+  .tag{font:600 var(--fs-xs)/1 var(--mono);letter-spacing:.03em;text-transform:uppercase;padding:5px 10px;
+       border-radius:999px;background:var(--amber-tint);color:var(--amber);white-space:nowrap;}
+  .tag.rag{background:var(--info-tint);color:var(--info);}
+  .tag.done{background:var(--ok-tint);color:var(--ok);}
+  .tag.muted{background:var(--teal-tint-d);color:var(--teal-d);}
+
+  .factor{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid var(--line);
+          border-radius:var(--r-sm);background:var(--surface);margin-bottom:9px;transition:border-color .15s,background .15s,opacity .15s;}
+  .factor:hover{border-color:var(--line-d);}
+  .factor input{margin-top:2px;width:17px;height:17px;accent-color:var(--teal);flex:none;cursor:pointer;}
+  .factor.off{opacity:.52;background:var(--panel);}
+  .factor .fname{font:600 var(--fs-base) var(--sans);color:var(--ink);}
+  .factor .metric{font:500 var(--fs-xs) var(--mono);color:var(--teal-d);background:var(--teal-tint);
+                  border-radius:5px;padding:2px 7px;margin-left:9px;vertical-align:1px;}
+  .factor .rat{font:400 var(--fs-sm) var(--sans);color:var(--muted);margin-top:4px;line-height:1.45;}
+  .sec{margin-bottom:var(--sp-4);}
+  .sec:last-child{margin-bottom:0;}
+  .sec h4{font:600 var(--fs-sm) var(--sans);margin:0 0 4px;color:var(--ink);}
+  .sec p,.sec li{font:400 var(--fs-sm) var(--sans);color:var(--muted);margin:3px 0;}
+  .sec ul{margin:4px 0;padding-left:18px;}
+  ul.flow{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:2px;}
+  ul.flow li{display:flex;align-items:center;gap:12px;padding:8px 0;font:400 var(--fs-sm) var(--sans);color:var(--ink);}
+  ul.flow li .n{width:22px;height:22px;border-radius:6px;background:var(--teal-tint-d);color:var(--teal-d);
+                font:500 11px var(--mono);display:inline-flex;align-items:center;justify-content:center;flex:none;}
+  .metricgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:10px;}
+  .metric-c{border:1px solid var(--line);border-radius:var(--r-sm);padding:12px 13px;background:var(--surface);}
+  .metric-c .mn{font:500 var(--fs-xs) var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.02em;line-height:1.35;}
+  .metric-c .mv{font:600 var(--fs-lg) var(--mono);color:var(--ink);margin-top:5px;font-feature-settings:"tnum" 1;}
+  .iv{position:relative;border:1px solid var(--line);border-radius:var(--r-sm);padding:12px 14px;
+      padding-right:76px;margin-bottom:9px;background:var(--surface);}
+  .iv .sev{position:absolute;top:11px;right:11px;font:600 9.5px/1 var(--mono);letter-spacing:.05em;
+           text-transform:uppercase;padding:4px 8px;border-radius:999px;background:var(--amber-tint);color:var(--amber);}
+  .iv.high .sev{background:var(--red-tint);color:var(--red);}
+  .iv.low .sev{background:var(--ok-tint);color:var(--ok);}
+  .iv .cat{font:600 var(--fs-base) var(--sans);color:var(--ink);}
+  .iv .fin{font:400 var(--fs-sm) var(--sans);color:var(--muted);margin-top:4px;line-height:1.45;}
+  #report{width:100%;min-height:320px;font:400 var(--fs-sm)/1.6 var(--mono);padding:15px;border:1px solid var(--line);
+          border-radius:var(--r-sm);resize:vertical;background:var(--surface);color:var(--ink);}
+  #report:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint-d);}
+  .rprev{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);padding:20px 24px;overflow-x:auto;}
+  .rprev h1{font:700 var(--fs-lg) var(--display);letter-spacing:-.01em;margin:.1em 0 .3em;}
+  .rprev h2{font:600 var(--fs-md) var(--display);margin:1.1em 0 .35em;border-bottom:1px solid var(--line);padding-bottom:4px;}
+  .rprev h3{font:600 var(--fs-base) var(--sans);margin:.9em 0 .2em;}
+  .rprev p,.rprev li{font-size:var(--fs-sm);color:var(--ink);line-height:1.6;}
+  .rprev table{border-collapse:collapse;margin:10px 0;} .rprev th,.rprev td{border:1px solid var(--line);padding:5px 10px;font-size:var(--fs-sm);}
+  .rprev th{background:var(--panel);font-family:var(--mono);font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.03em;}
+  details.raw{margin-top:var(--sp-4);}
+  details.raw summary{font:500 var(--fs-xs) var(--mono);color:var(--faint);cursor:pointer;letter-spacing:.03em;
+                      list-style:none;display:inline-flex;align-items:center;gap:6px;}
+  details.raw summary::before{content:"▸";transition:transform .15s;display:inline-block;}
+  details.raw[open] summary::before{transform:rotate(90deg);}
+  details.raw summary:hover{color:var(--teal-d);}
+  details.raw textarea{width:100%;min-height:220px;margin-top:10px;font:400 var(--fs-xs)/1.55 var(--mono);
+                       padding:12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);}
+  .subnote{font:400 var(--fs-xs) var(--sans);color:var(--ghost);margin-top:6px;}
+  .form{max-width:760px;}
+  .form .row{display:flex;gap:var(--sp-4);flex-wrap:wrap;margin-bottom:var(--sp-4);}
+  .form .fld{flex:1;min-width:220px;}
+  .form label{font:500 var(--fs-xs) var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--faint);display:block;margin-bottom:6px;}
+  .form input,.form select,.form textarea{width:100%;font:400 var(--fs-base) var(--sans);padding:10px 12px;
+       border:1px solid var(--line-d);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);box-sizing:border-box;transition:border-color .15s,box-shadow .15s;}
+  .form input:focus,.form select:focus,.form textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint-d);}
+  .form input:disabled{background:var(--panel);color:var(--faint);}
+  .form textarea{resize:vertical;min-height:74px;}
+  .form .hint{font:400 var(--fs-xs) var(--sans);color:var(--ghost);margin-top:6px;line-height:1.5;}
+  .empty{text-align:center;color:var(--faint);padding:44px 0;font-size:var(--fs-base);}
+  .empty .big{font:600 var(--fs-md) var(--display);color:var(--muted);margin-bottom:4px;}
+  .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+           min-height:340px;text-align:center;}
+  .loading .lmsg{font:500 var(--fs-base) var(--sans);color:var(--muted);max-width:42ch;}
+  .spin-lg{width:32px;height:32px;border:3px solid var(--line);border-top-color:var(--teal);
+           border-radius:50%;animation:spin .85s linear infinite;}
+
+  /* 5 · Assistant */
+  #chat{width:316px;flex:none;border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0;}
+  #chat .chd{padding:14px var(--sp-4);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;margin:0;}
+  #chat .chd .t{font:600 var(--fs-base) var(--display);color:var(--ink);}
+  #chat .chd .s{font:400 var(--fs-xs) var(--mono);color:var(--faint);margin-top:3px;}
+  #chat .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 0 3px var(--ok-tint);}
+  #msgs{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:10px;}
+  .bub{max-width:90%;padding:10px 13px;font:400 var(--fs-sm)/1.5 var(--sans);border-radius:14px;white-space:pre-wrap;word-wrap:break-word;}
+  .bub.a{align-self:flex-start;background:var(--teal-tint);color:var(--teal-d);border-bottom-left-radius:4px;}
+  .bub.u{align-self:flex-end;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-bottom-right-radius:4px;}
+  .bub.err{background:var(--red-tint);color:var(--red);}
+  .typing{align-self:flex-start;display:flex;gap:4px;padding:12px 14px;}
+  .typing span{width:6px;height:6px;border-radius:50%;background:var(--teal);opacity:.4;animation:blink 1.2s infinite both;}
+  .typing span:nth-child(2){animation-delay:.2s;} .typing span:nth-child(3){animation-delay:.4s;}
+  @keyframes blink{0%,80%,100%{opacity:.3;}40%{opacity:1;}}
+  #chatform{flex:none;border-top:1px solid var(--line);padding:12px var(--sp-3);display:flex;align-items:center;gap:8px;}
+  #chatbox{flex:1;display:flex;align-items:center;gap:8px;border:1px solid var(--line-d);border-radius:20px;
+           background:var(--surface);padding:0 5px 0 15px;height:40px;transition:border-color .15s,box-shadow .15s;}
+  #chatbox:focus-within{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint-d);}
+  #prompt{flex:1;border:none;outline:none;font:400 var(--fs-sm) var(--sans);background:none;color:var(--ink);}
+  #send{border:none;border-radius:50%;width:29px;height:29px;background:var(--teal);color:var(--surface);
+        font:600 14px var(--sans);flex:none;cursor:pointer;transition:background .15s;}
+  #send:hover{background:var(--teal-d);} #send:disabled{opacity:.5;}
+
+  /* 6 · Command bar */
+  #cmd{flex:none;min-height:66px;border-top:1px solid var(--line);background:var(--surface);
+       display:flex;align-items:center;gap:var(--sp-3);padding:12px var(--sp-5);flex-wrap:wrap;}
+  .cbtn{border:1px solid var(--line-d);border-radius:var(--r-sm);background:var(--surface);color:var(--muted);
+        font:500 var(--fs-base) var(--sans);padding:10px 17px;transition:background .15s,border-color .15s,color .15s;}
+  .cbtn:hover{background:var(--panel);color:var(--ink);border-color:var(--line-d);}
+  .cbtn.run{border-color:color-mix(in oklch,var(--amber) 45%,var(--line-d));color:var(--amber);background:var(--surface);}
+  .cbtn.run:hover{background:var(--amber-tint);}
+  .cbtn.next{border-color:var(--teal);background:var(--teal);color:var(--surface);font-weight:600;padding:10px 20px;}
+  .cbtn.next:hover{background:var(--teal-d);border-color:var(--teal-d);color:var(--surface);}
+  .cbtn:disabled{opacity:.42;cursor:default;background:var(--surface);color:var(--muted);}
+  .cbtn.next:disabled{background:var(--teal);color:var(--surface);}
+  #msgline{font:400 var(--fs-sm) var(--sans);color:var(--red);flex:1;min-width:0;}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line-d);border-top-color:var(--teal);
+        border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:8px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* dialog */
+  #veil{position:fixed;inset:0;background:oklch(0.3 0.03 224/.4);display:none;align-items:center;
+        justify-content:center;z-index:50;backdrop-filter:blur(2px);}
+  #veil.show{display:flex;}
+  .modal{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:24px 26px;
+         max-width:460px;width:90%;box-shadow:0 24px 60px -20px oklch(0.3 0.05 224/.45);}
+  .modal h3{margin:0 0 8px;font:600 var(--fs-lg) var(--display);letter-spacing:-.01em;color:var(--ink);}
+  .modal p{font:400 var(--fs-sm) var(--sans);color:var(--muted);margin:8px 0;line-height:1.55;}
+  .modal input,.modal textarea{width:100%;font:400 var(--fs-base) var(--sans);padding:10px 12px;
+       border:1px solid var(--line-d);border-radius:var(--r-sm);box-sizing:border-box;margin-top:8px;color:var(--ink);background:var(--surface);}
+  .modal input:focus,.modal textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint-d);}
+  .modal .acts{display:flex;justify-content:flex-end;gap:9px;margin-top:18px;}
+
+  @media (prefers-reduced-motion: reduce){ *{animation-duration:.001ms!important;transition-duration:.001ms!important;} }
 </style>
 </head>
 <body>
-<div id="rail">
-  <h1>HCAS</h1>
-  <div id="setup">
-    <input type="text" id="title" placeholder="Project title" style="width:95%;margin-bottom:8px">
-    <select id="state"></select>
-    <select id="county" style="max-width:230px;margin-top:8px"></select>
-    <p><button onclick="createProject()">Create project</button></p>
+<div id="app"><div id="card">
+
+  <!-- 1 · Header -->
+  <div id="hdr">
+    <div id="logo">H</div>
+    <div><div class="title">Healthy Community Assessment System</div><div class="sub">Community health · spatial analysis</div></div>
+    <div id="nav">
+      <button class="navbtn" onclick="newProject()">New</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="openProject()">Open</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="saveProject()">Save</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="openSettings()">Settings</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="showAbout()">About</button>
+      <button class="navbtn exit" onclick="exitApp()">Exit</button>
+    </div>
   </div>
-  <div id="steps"></div>
-</div>
-<div id="main">
-  <h2 id="steptitle">Create a project to begin</h2>
-  <div id="msg"></div>
-  <div id="statusline"></div>
-  <textarea id="artifact" placeholder="Run the step to draft its artifact; edit it here, then Confirm." hidden></textarea>
-  <p>
-    <button id="runbtn" onclick="runStep()" hidden>Run step</button>
-    <button id="confirmbtn" onclick="confirmStep()" hidden>Confirm</button>
-    <a id="maplink" target="_blank" hidden style="margin-left:8px">View map ↗</a>
-  </p>
-</div>
+
+  <!-- 2 · Project bar -->
+  <div id="pbar">
+    <div class="grp"><span class="eyebrow">Project</span><span class="val" id="pb_title">No project</span></div>
+    <span class="divider"></span>
+    <div class="grp"><span class="eyebrow">Modified</span><span class="val mono" id="pb_mod">—</span></div>
+    <span class="divider"></span>
+    <div class="grp" style="flex:1;min-width:0;"><span class="eyebrow">Guidance</span>
+      <span id="sysprompt" title="Click to edit — shapes how the assistant responds" onclick="openSettings()"></span></div>
+  </div>
+
+  <!-- body -->
+  <div id="body">
+    <!-- 3 · Pipeline rail -->
+    <div id="rail">
+      <div class="hd"><span class="eyebrow">Assessment steps</span></div>
+      <div id="steps"></div>
+    </div>
+
+    <!-- 4 · Work canvas -->
+    <div id="canvas"></div>
+
+    <!-- 5 · Assistant -->
+    <div id="chat">
+      <div class="chd"><span class="dot"></span><div><div class="t">Assistant</div><div class="s">Ask about any step</div></div></div>
+      <div id="msgs"></div>
+      <div id="chatform"><div id="chatbox">
+        <input id="prompt" placeholder="Ask a question…" onkeydown="if(event.key==='Enter')sendChat()">
+        <button id="send" onclick="sendChat()" title="Send">↑</button>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- 6 · Command bar -->
+  <div id="cmd">
+    <div id="msgline"></div>
+    <button class="cbtn" id="prevbtn" onclick="prevStep()">← Back</button>
+    <button class="cbtn run" id="runbtn" onclick="runStep()">Run step</button>
+    <button class="cbtn next" id="nextbtn" onclick="confirmStep()">Confirm →</button>
+  </div>
+
+</div></div>
+
+<div id="veil"><div class="modal" id="modal"></div></div>
+
 <script>
 const HDRS = { "X-Requested-With": "geoai", "Content-Type": "application/json" };
-let pid = null, current = 1, project = null, draftShownAt = null;
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const STEP_TITLES = ["Define project","Choose factors","Gather data","Set methodology",
+  "Build database","Plan workflow","Run analysis","Write report"];
+const PHASE = ["Preparation","Preparation","Preparation",
+  "Methodology","Methodology","Analysis","Analysis","Report"];
+const SUBTITLE = [
+  "Set the scope and study area for the assessment.",
+  "Suggested factors and metrics — keep the ones that apply, then confirm.",
+  "Data for each factor, gathered and previewed for inspection.",
+  "A methodology from the knowledge base, with the models and metrics to apply.",
+  "The project's spatial database — extent, projection, and layers.",
+  "A step-by-step workflow that carries out the chosen methodology.",
+  "Runs the workflow to compute metrics and produce results.",
+  "An editable report built from the inputs, data, and results."];
+const RUN_HINTS = {
+  1:"Locating the study-area county…",
+  2:"Selecting factors and metrics — about a minute…",
+  3:"Gathering map layers and county health outcomes…",
+  4:"Preparing the methodology — about a minute…",
+  5:"Assembling the spatial database…",
+  6:"Building the workflow from the confirmed metrics…",
+  7:"Gathering layers, computing metrics, building the map…",
+  8:"Preparing the report…"};
+const DEFAULT_SYS = "Focus on spatial analysis for community-health assessment. Be concise and specific.";
 
-async function api(path, opts = {}) {
-  const r = await fetch(path, { headers: HDRS, ...opts });
-  const body = await r.json();
-  if (!r.ok) throw new Error(body.detail || r.status);
+const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
+            chats:{}, sys:DEFAULT_SYS, busy:false };
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const byStep = () => Object.fromEntries((S.project?.steps||[]).map(s=>[s.step,s]));
+const stepRow = n => (S.project?.steps||[]).find(s=>s.step===n) || null;
+
+async function api(path, opts={}){
+  const r = await fetch(path,{headers:HDRS,...opts});
+  const body = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(body.detail || (r.status+" "+r.statusText));
   return body;
 }
 
-async function loadStates() {
-  const { states } = await api("/states");
-  state.innerHTML = states.map(s => `<option value="${s.state_fips}">${s.state_name}</option>`).join("");
-  state.value = "39";
-  await loadCounties();
-  state.onchange = loadCounties;
-}
-async function loadCounties() {
-  const { counties } = await api(`/counties/${state.value}`);
-  county.innerHTML = counties.map(c => `<option value="${c.county_fips}">${c.county_name}</option>`).join("");
-}
-
-async function createProject() {
-  try {
-    const body = { title: title.value || "Untitled", state_fips: state.value, county_fips: county.value };
-    pid = (await api("/hcas/projects", { method: "POST", body: JSON.stringify(body) })).project_id;
-    document.getElementById("setup").hidden = true;
-    await refresh();
-  } catch (e) { msg.textContent = e.message; }
-}
-
-async function refresh() {
-  project = await api(`/hcas/projects/${pid}`);
-  const byStep = Object.fromEntries(project.steps.map(s => [s.step, s]));
-  steps.innerHTML = [1,2,3,4,5,6,7,8].map(n => {
-    const s = byStep[n], status = s ? s.status : "pending";
-    return `<div class="step ${n === current ? "active" : ""}" onclick="select(${n})">
-      <b>${n}</b> ${STEP_TITLES[n-1]} <span class="badge ${status}">${status}</span></div>`;
+/* ---- pipeline rail ---- */
+function renderRail(){
+  const bs = byStep();
+  const confirmed = new Set(Object.values(bs).filter(s=>s.status==="confirmed").map(s=>s.step));
+  $("steps").innerHTML = [1,2,3,4,5,6,7,8].map(n=>{
+    const st = bs[n]?.status || "pending";
+    const locked = !S.pid || (!bs[n] && [...Array(n-1).keys()].some(i=>!confirmed.has(i+1)));
+    const mark = st==="confirmed" ? "✓" : n;
+    return `<div class="prow ${st} ${n===S.current?"active":""} ${locked&&n!==S.current?"locked":""}" onclick="selectStep(${n})">
+      <span class="pdot ${st}">${mark}</span><span class="plabel">${STEP_TITLES[n-1]}</span></div>`;
   }).join("");
-  select(current);
 }
 
-function select(n) {
-  current = n;
-  const s = project && project.steps.find(x => x.step === n);
-  steptitle.textContent = `Step ${n}: ${STEP_TITLES[n-1]}`;
-  artifact.hidden = false; runbtn.hidden = false; confirmbtn.hidden = false;
-  artifact.value = s ? JSON.stringify(s.human_final ?? s.ai_draft, null, 2) : "";
-  confirmbtn.disabled = !s;
-  maplink.hidden = !(s && s.ai_draft && s.ai_draft.map_available);
-  maplink.href = `/hcas/projects/${pid}/map`;
-  msg.textContent = "";
-  document.querySelectorAll(".step").forEach((el, i) => el.classList.toggle("active", i === n - 1));
+/* ---- project bar ---- */
+function renderBar(){
+  $("pb_title").textContent = S.project ? S.project.meta.title : "No project";
+  const t = S.project ? new Date((S.project.meta.created_at||0)*1000) : null;
+  $("pb_mod").textContent = t ? t.toLocaleString(undefined,{month:"short",day:"numeric",year:"numeric",hour:"2-digit",minute:"2-digit"}) : "—";
+  $("sysprompt").textContent = S.sys;
 }
 
-const RUN_HINTS = {
-  2: "Claude is drafting the factor & metric selection — this takes about a minute…",
-  3: "Fetching OpenStreetMap layers for the study area…",
-  4: "Claude is drafting the solution framework — this takes about a minute…",
-  7: "Fetching layers, computing metrics, rendering the map…",
-};
+/* ---- selection / working copy ---- */
+function selectStep(n){
+  if(n<1||n>8) return;
+  S.current = n;
+  const row = stepRow(n);
+  S.edited = row ? JSON.parse(JSON.stringify(row.human_final ?? row.ai_draft)) : null;
+  S.draftShownAt = row && row.status==="drafted" ? Date.now() : null;
+  renderRail(); renderCanvas(); renderChat(); renderCmd();
+}
 
-async function runStep() {
-  runbtn.disabled = true;
-  confirmbtn.disabled = true;
-  runbtn.textContent = "Running…";
-  statusline.innerHTML = `<span class="spinner"></span>${RUN_HINTS[current] || "Working…"}`;
-  msg.textContent = "";
-  try {
-    const { ai_draft } = await api(`/hcas/projects/${pid}/steps/${current}/run`, { method: "POST" });
-    draftShownAt = Date.now();
+/* ---- command bar state ---- */
+function renderCmd(){
+  const row = stepRow(S.current);
+  const confirmed = new Set((S.project?.steps||[]).filter(s=>s.status==="confirmed").map(s=>s.step));
+  const prevOk = S.current===1 || confirmed.has(S.current-1);
+  $("runbtn").disabled = S.busy || (!prevOk && !row);
+  $("nextbtn").disabled = S.busy || !row;
+  $("prevbtn").disabled = S.busy || S.current===1;
+  $("nextbtn").textContent = S.current===8 ? "Save report" : "Confirm →";
+  $("runbtn").textContent = row ? "Re-run" : "Run step";
+}
+
+/* ================= CANVAS ================= */
+function canvasHead(n){
+  return `<div class="chead"><span class="eyebrow">Step ${n} of 8 · ${esc(PHASE[n-1])}</span>
+    <div class="chd"><h2>${esc(STEP_TITLES[n-1])}</h2>${stepTag(n)}</div>
+    <div class="csub">${esc(SUBTITLE[n-1])}</div></div>`;
+}
+function renderCanvasLoading(){
+  const n = S.current;
+  $("canvas").innerHTML = canvasHead(n) +
+    `<div class="loading"><div class="spin-lg"></div>
+       <div class="lmsg">${esc(RUN_HINTS[n]||"Working…")}</div></div>`;
+}
+function renderCanvas(){
+  const n = S.current, row = stepRow(n), a = S.edited;
+  const head = canvasHead(n);
+  let body;
+  if(n===1 && !S.pid) body = defineForm();
+  else if(!row) body = `<div class="empty"><div class="big">Nothing here yet</div>
+      <div>Run this step to generate it.</div></div>`;
+  else body = ({1:viewIntake,2:viewFactors,3:viewData,4:viewSolution,5:viewDatabase,
+                6:viewWorkflow,7:viewExecution,8:viewReport}[n] || viewRaw)(a);
+  $("canvas").innerHTML = head + body + (row && n!==8 ? rawEditor() : "");
+  if(n===1 && !S.pid) loadStates();
+  if(n===2 && row) wireFactors();
+  if(n===8 && row) wireReport();
+  wireRaw();
+  if(!REDUCED && $("canvas").animate)
+    $("canvas").animate([{opacity:0,transform:"translateY(8px)"},{opacity:1,transform:"none"}],
+      {duration:240,easing:"cubic-bezier(.22,.68,.24,1)"});
+}
+function stepTag(n){
+  const row = stepRow(n);
+  if(n===2) return `<span class="tag">Suggested · review to continue</span>`;
+  if(n===4) return `<span class="tag rag">Knowledge base</span>`;
+  if(n===6) return `<span class="tag muted">Derived from metrics</span>`;
+  if(n===7 && row) return `<span class="tag done">Complete</span>`;
+  if(n===8) return `<span class="tag muted">Editable draft</span>`;
+  return "";
+}
+
+/* step 1 — create form */
+function defineForm(){
+  return `<div class="panel form"><div class="ph">Project setup</div>
+    <div class="row">
+      <div class="fld"><label>Project title</label><input id="f_title" placeholder="e.g. Riverside County · Health Equity 2026"></div>
+      <div class="fld"><label>Mode</label><select id="f_mode">
+        <option value="gated">Gated · you confirm each step</option>
+        <option value="auto">Automatic · run all steps without review</option></select></div>
+    </div>
+    <div class="row">
+      <div class="fld"><label>State</label><select id="f_state"></select></div>
+      <div class="fld"><label>County (study area)</label><select id="f_county"></select></div>
+    </div>
+    <div class="row">
+      <div class="fld"><label>Area unit</label><input value="Census tract" disabled></div>
+      <div class="fld"><label>Coordinate system</label><input value="EPSG:4269 (NAD83) — auto-detected" disabled></div>
+    </div>
+    <div class="fld"><label>Notes</label>
+      <textarea id="f_tasks" placeholder="e.g. calculate a neighborhood health index; identify priority areas…"></textarea>
+      <div class="hint">The study area is a 5&nbsp;km radius around the county centroid. Run this step to create the project and locate it.</div>
+    </div></div>`;
+}
+async function loadStates(){
+  try{
+    const {states} = await api("/states");
+    $("f_state").innerHTML = states.map(s=>`<option value="${s.state_fips}">${esc(s.state_name)}</option>`).join("");
+    $("f_state").value = "39";
+    await loadCounties();
+    $("f_state").onchange = loadCounties;
+  }catch(e){ setMsg(e.message); }
+}
+async function loadCounties(){
+  const {counties} = await api(`/counties/${$("f_state").value}`);
+  $("f_county").innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
+}
+
+/* step 1 — study area */
+function viewIntake(a){
+  return `<div class="panel"><div class="ph">Study area</div>
+    <div class="cols" style="align-items:flex-start;">
+      <dl class="kv">
+        <dt>Place</dt><dd>${esc(a.place_name||"—")}</dd>
+        <dt>State FIPS</dt><dd class="mono">${esc(a.state_fips||"")}</dd>
+        <dt>County FIPS</dt><dd class="mono">${esc(a.county_fips||"")}</dd>
+        <dt>Centroid</dt><dd class="mono">${(a.centroid||[]).map(x=>(+x).toFixed(4)).join(", ")}</dd>
+      </dl>
+      <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
+        <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">5&nbsp;km radius · ${esc(a.place_name||"")}</div></div></div>
+    </div></div>`;
+}
+
+/* step 2 — factors (editable toggles) */
+function viewFactors(a){
+  const base = (stepRow(2).ai_draft.factors)||[];
+  const kept = new Set((a.factors||[]).map(f=>f.factor+"|"+f.metric));
+  const items = base.map((f,i)=>{
+    const on = kept.has(f.factor+"|"+f.metric);
+    return `<label class="factor ${on?'':'off'}" data-i="${i}">
+      <input type="checkbox" ${on?'checked':''} data-i="${i}">
+      <div><span class="fname">${esc(f.factor)}</span><span class="metric">${esc(f.metric)}</span>
+        <div class="rat">${esc(f.rationale||"")}</div></div>
+    </label>`;
+  }).join("");
+  return `<div class="panel"><div class="ph">Suggested factors — keep the ones that apply</div>
+    ${items||'<div class="empty">No factors suggested.</div>'}
+    <div class="sec" style="margin-top:14px;"><h4>Notes</h4>
+      <input id="f_notes" style="width:100%;font:400 var(--fs-sm) var(--sans);padding:9px 11px;border:1px solid var(--line-d);border-radius:var(--r-sm);color:var(--ink);"
+             value="${esc(a.notes||"")}"></div></div>`;
+}
+function wireFactors(){
+  const base = stepRow(2).ai_draft.factors||[];
+  const sync = ()=>{
+    const keep=[...document.querySelectorAll('.factor input:checked')].map(c=>+c.dataset.i);
+    S.edited.factors = keep.map(i=>base[i]);
+    document.querySelectorAll('.factor').forEach(l=>l.classList.toggle('off',!l.querySelector('input').checked));
+    syncRaw();
+  };
+  document.querySelectorAll('.factor input').forEach(c=>c.onchange=sync);
+  const nt=$("f_notes"); if(nt) nt.oninput=()=>{ S.edited.notes=nt.value; syncRaw(); };
+}
+
+/* step 3 — data */
+function viewData(a){
+  const layers = groupLayers(a.layers||[]);
+  const ho = a.health_outcomes||{};
+  const rows = (ho.measures||[]).map(m=>{
+    const flag = m.county_pct>m.us_pct ? '<span class="above">above US</span>' : '<span class="below">below US</span>';
+    return `<tr><td>${esc(m.label)}</td><td>${m.county_pct}% ${flag}</td><td>${m.us_pct}%</td></tr>`;
+  }).join("");
+  return `<div class="cols" style="align-items:flex-start;">
+    <div class="panel tree" style="max-width:280px;"><div class="ph">Data layers</div>${layers}</div>
+    <div class="panel" style="flex:2;"><div class="ph">Spatial features</div>
+      <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
+        <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">bbox ${(a.bbox||[]).map(x=>(+x).toFixed(2)).join(", ")} · r=${a.radius_m||"?"}m</div></div></div></div>
+    <div class="panel" style="max-width:330px;"><div class="ph">${esc(ho.source||"Health outcomes")}</div>
+      ${rows?`<table class="data"><thead><tr><th>Measure</th><th>County</th><th>US</th></tr></thead><tbody>${rows}</tbody></table>`
+            :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div></div>`;
+}
+function groupLayers(layers){
+  if(!layers.length) return '<div class="empty" style="padding:10px;">No layers.</div>';
+  return `<div class="grp"><div class="gname">Layers</div>${
+    layers.map(l=>`<div class="leaf"><span>${esc(l.layer)}</span><span class="c">${l.feature_count} · ${esc(l.crs||"")}</span></div>`).join("")}</div>`;
+}
+
+/* step 4 — methodology */
+function viewSolution(a){
+  const list = (arr)=>(arr||[]).map(x=>`<li>${esc(x)}</li>`).join("");
+  const theory = (a.theoretical_basis||[]).map(t=>`<li><b>${esc(t.theory)}</b> — ${esc(t.application)}</li>`).join("");
+  const refs = (a.references||[]).map(r=>`<li>${esc(r)}</li>`).join("");
+  return `<div class="cols" style="align-items:flex-start;">
+    <div class="panel" style="flex:2;"><div class="ph">Methodology</div>
+      <div class="sec"><h4>Framework</h4><p>${esc(a.framework||"—")}</p></div>
+      <div class="sec"><h4>Theoretical basis</h4><ul>${theory||"<li>—</li>"}</ul></div>
+      <div class="sec"><h4>Assumptions</h4><ul>${list(a.assumptions)||"<li>—</li>"}</ul></div>
+      <div class="sec"><h4>Limitations</h4><ul>${list(a.limitations)||"<li>—</li>"}</ul></div>
+      <div class="sec"><h4>References</h4><ul>${refs||"<li>—</li>"}</ul></div>
+    </div></div>`;
+}
+
+/* step 5 — database */
+function viewDatabase(a){
+  return `<div class="cols" style="align-items:flex-start;">
+    <div class="panel tree" style="max-width:280px;"><div class="ph">Database layers</div>${groupLayers(a.layers||[])}</div>
+    <div class="panel" style="flex:2;"><div class="ph">Spatial features</div>
+      <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
+        <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">Assembled database</div></div></div></div>
+    <div class="panel" style="max-width:300px;"><div class="ph">Details</div>
+      <dl class="kv"><dt>CRS</dt><dd class="mono">${esc(a.crs||"")}</dd>
+      <dt>Study area</dt><dd>${esc(a.study_area||"")}</dd>
+      <dt>Extent</dt><dd class="mono" style="font-size:11px;">${(a.extent_bbox_4326||[]).map(x=>(+x).toFixed(2)).join(", ")}</dd>
+      <dt>Storage</dt><dd>${esc(a.storage||"")}</dd></dl></div></div>`;
+}
+
+/* step 6 — workflow */
+function viewWorkflow(a){
+  const steps = (a.steps||[]).map((s,i)=>{
+    const lbl = s.action==="compute" ? `compute <b>${esc(s.metric)}</b>`
+      : s.action==="generate_interventions" ? "generate interventions"
+      : s.action==="assemble_report" ? "assemble report" : esc(s.action);
+    return `<li><span class="n">${i+1}</span><span>${lbl}${s.layers?` · ${esc((s.layers||[]).join(", "))}`:""}</span></li>`;
+  }).join("");
+  return `<div class="panel"><div class="ph">Workflow</div>
+    <ul class="flow">${steps||"<li>—</li>"}</ul></div>`;
+}
+
+/* step 7 — analysis results */
+function viewExecution(a){
+  const metrics = Object.entries(a.metrics||{}).map(([k,v])=>`
+    <div class="metric-c"><div class="mn">${esc(k)}</div>
+      <div class="mv">${typeof v==="number"?(+v).toLocaleString(undefined,{maximumFractionDigits:3}):esc(v)}</div></div>`).join("");
+  const ivs = (a.interventions||[]).map(iv=>`
+    <div class="iv ${esc(iv.severity||"")}"><span class="sev">${esc(iv.severity||"")}</span>
+      <div class="cat">${esc(iv.category)}</div>
+      <div class="fin">${esc(iv.finding)}</div>
+      <div class="fin"><b>→</b> ${esc(iv.recommendation)} <span style="color:var(--ghost)">(${esc(iv.standard||"")})</span></div></div>`).join("");
+  const map = a.map_available ? `<a href="/hcas/projects/${S.pid}/map" target="_blank">Open full map ↗</a>` : "";
+  return `<div class="cols" style="align-items:flex-start;">
+    <div class="panel" style="flex:2;"><div class="ph">Metrics</div>
+      <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div>
+      <div class="mapview" style="margin-top:14px;"><div class="lab"><div class="eyebrow">Map view</div>
+        <div style="margin-top:6px;">${map||'<span class="mono" style="color:var(--faint);font-size:12px;">no map</span>'}</div></div></div></div>
+    <div class="panel" style="max-width:370px;"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div></div>`;
+}
+
+/* step 8 — report */
+function viewReport(a){
+  return `<div class="cols" style="align-items:flex-start;">
+    <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Editable draft (Markdown)</div>
+      <textarea id="report">${esc(a.markdown||"")}</textarea>
+      <div style="margin-top:9px;"><button class="cbtn" onclick="downloadReport()">Download .md ↧</button></div></div>
+    <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Preview</div>
+      <div class="rprev" id="rprev">${mdToHtml(a.markdown||"")}</div></div></div>`;
+}
+function wireReport(){
+  const ta=$("report");
+  ta.oninput=()=>{ S.edited.markdown=ta.value; $("rprev").innerHTML=mdToHtml(ta.value); syncRaw(); };
+}
+function downloadReport(){
+  const md = (S.edited&&S.edited.markdown)||"";
+  dl(md, (S.project?.meta.title||"report")+".md", "text/markdown");
+}
+
+function viewRaw(){ return `<div class="empty">Generated — see the data below.</div>`; }
+
+/* universal data editor (keeps the confirm/edit record working for every step) */
+function rawEditor(){
+  return `<details class="raw"><summary>Edit underlying data (advanced)</summary>
+    <textarea id="rawjson">${esc(JSON.stringify(S.edited,null,2))}</textarea></details>`;
+}
+function wireRaw(){
+  const ta=$("rawjson"); if(!ta) return;
+  ta.oninput=()=>{ try{ S.edited=JSON.parse(ta.value); $("msgline").textContent=""; }
+                   catch(e){ $("msgline").textContent="Invalid data — fix before confirming."; } };
+}
+function syncRaw(){ const ta=$("rawjson"); if(ta) ta.value=JSON.stringify(S.edited,null,2); }
+
+/* ================= actions ================= */
+async function ensureProject(){
+  if(S.pid) return;
+  const body={ title:($("f_title").value||"Untitled assessment"), state_fips:$("f_state").value,
+               county_fips:$("f_county").value, gate_mode:$("f_mode").value };
+  S.pid=(await api("/hcas/projects",{method:"POST",body:JSON.stringify(body)})).project_id;
+}
+async function refresh(keep){
+  S.project=await api(`/hcas/projects/${S.pid}`);
+  if(!keep){ const row=stepRow(S.current); S.edited=row?JSON.parse(JSON.stringify(row.human_final??row.ai_draft)):null; }
+  renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd();
+}
+async function runStep(){
+  if(S.busy) return;
+  setBusy(true); setMsg(""); statusRun("Running…");
+  try{
+    if(S.current===1) await ensureProject();  // reads the create form — must run before it's replaced
+    renderCanvasLoading();                     // now safe to swap the canvas for the loading state
+    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${S.current}/run`,{method:"POST"});
+    S.edited=JSON.parse(JSON.stringify(ai_draft));
+    S.draftShownAt=Date.now();
+    await refresh(true);
+  }catch(e){ setMsg(e.message); renderCanvas(); }
+  finally{ setBusy(false); statusRun(""); }
+}
+async function confirmStep(){
+  const row=stepRow(S.current);
+  if(!row||S.busy) return;
+  setBusy(true); setMsg("");
+  try{
+    const edit_seconds=S.draftShownAt?(Date.now()-S.draftShownAt)/1000:null;
+    await api(`/hcas/projects/${S.pid}/steps/${S.current}/confirm`,
+      {method:"POST",body:JSON.stringify({human_final:S.edited,edit_seconds})});
+    if(S.current<8) S.current+=1;
+    S.draftShownAt=null;
     await refresh();
-    artifact.value = JSON.stringify(ai_draft, null, 2);
-  } catch (e) {
-    msg.textContent = e.message;
-  } finally {
-    runbtn.disabled = false;
-    runbtn.textContent = "Run step";
-    statusline.textContent = "";
-    confirmbtn.disabled = !(project && project.steps.some(x => x.step === current));
+  }catch(e){ setMsg("Confirm failed: "+e.message); }
+  finally{ setBusy(false); }
+}
+function prevStep(){ if(S.current>1) selectStep(S.current-1); }
+
+/* ================= assistant ================= */
+function renderChat(){
+  const h=S.chats[S.current] || (S.chats[S.current]=[{role:"assistant",
+     content:`Ask about ${STEP_TITLES[S.current-1].toLowerCase()}, or anything you see on this step.`}]);
+  $("msgs").innerHTML=h.map(m=>`<div class="bub ${m.role==='user'?'u':(m.err?'err':'a')}">${esc(m.content)}</div>`).join("");
+  $("msgs").scrollTop=$("msgs").scrollHeight;
+}
+async function sendChat(){
+  const inp=$("prompt"), text=inp.value.trim();
+  if(!text) return;
+  if(!S.pid){ setMsg("Create a project first (Run step on step 1)."); return; }
+  inp.value="";
+  const h=S.chats[S.current]||(S.chats[S.current]=[]);
+  h.push({role:"user",content:text}); renderChat();
+  $("msgs").insertAdjacentHTML("beforeend",`<div class="typing" id="typing"><span></span><span></span><span></span></div>`);
+  $("msgs").scrollTop=$("msgs").scrollHeight;
+  try{
+    const hist=[{role:"user",content:"[Guidance] "+S.sys},...h.slice(-8)];
+    const {reply}=await api(`/hcas/projects/${S.pid}/chat`,
+      {method:"POST",body:JSON.stringify({message:text,step:S.current,history:hist})});
+    h.push({role:"assistant",content:reply});
+  }catch(e){ h.push({role:"assistant",content:"⚠ "+e.message,err:true}); }
+  renderChat();
+}
+
+/* ================= header actions ================= */
+function newProject(){
+  S.pid=null; S.current=1; S.project=null; S.edited=null; S.chats={}; S.draftShownAt=null;
+  renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd(); setMsg("");
+}
+function openProject(){
+  modal(`<h3>Open project</h3><p>Enter a project id (12 characters).</p>
+    <input id="m_pid" placeholder="e.g. a1b2c3d4e5f6" autofocus>
+    <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
+      <button class="cbtn next" onclick="doOpen()">Open</button></div>`);
+}
+async function doOpen(){
+  const id=$("m_pid").value.trim(); if(!id) return;
+  try{ S.pid=id; await refresh(); S.current=1; selectStep(1); closeModal(); }
+  catch(e){ S.pid=null; $("m_pid").insertAdjacentHTML("afterend",`<p style="color:var(--red)">${esc(e.message)}</p>`); }
+}
+async function saveProject(){
+  if(!S.pid){ setMsg("Nothing to save yet."); return; }
+  try{ const p=await api(`/hcas/projects/${S.pid}`);
+    dl(JSON.stringify(p,null,2),(p.meta.title||"project")+".json","application/json"); }
+  catch(e){ setMsg(e.message); }
+}
+function openSettings(){
+  modal(`<h3>Settings</h3>
+    <p>Guidance — shapes how the assistant responds.</p>
+    <textarea id="m_sys" style="min-height:92px;">${esc(S.sys)}</textarea>
+    <p style="margin-top:14px;">Research data</p>
+    <div class="acts" style="justify-content:flex-start;"><a class="cbtn" href="/hcas/audit.csv" target="_blank" style="text-decoration:none;">Audit CSV ↧</a></div>
+    <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
+      <button class="cbtn next" onclick="saveSettings()">Save</button></div>`);
+}
+function saveSettings(){ S.sys=$("m_sys").value||DEFAULT_SYS; renderBar(); closeModal(); }
+function showAbout(){
+  modal(`<h3>Healthy Community Assessment System</h3>
+    <p>A step-by-step assessment of community health for a US county, combining public data,
+    spatial analysis, and modeling. Each step is prepared for you and confirmed before the next
+    begins — you can edit anything along the way. The panel on the right answers questions as you work.</p>
+    <p class="mono" style="font-size:12px;color:var(--faint);">Xun Shi (Dartmouth) · Wang's team (Tongji)</p>
+    <div class="acts"><button class="cbtn next" onclick="closeModal()">Close</button></div>`);
+}
+function exitApp(){
+  modal(`<h3>Exit assessment?</h3><p>This returns to a new project. Your work is saved under the project id — use <b>Save</b> first if you want a local copy.</p>
+    <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
+      <button class="cbtn next" onclick="closeModal();newProject();">Exit</button></div>`);
+}
+
+/* ================= helpers ================= */
+function setBusy(b){ S.busy=b; renderCmd(); }
+function statusRun(t){ $("msgline").innerHTML = t?`<span class="spin"></span>${esc(t)}`:""; $("msgline").style.color=t?"var(--muted)":"var(--red)"; }
+function setMsg(t){ $("msgline").textContent=t; $("msgline").style.color="var(--red)"; }
+function modal(html){ $("modal").innerHTML=html; $("veil").classList.add("show");
+  const f=$("modal").querySelector("input,textarea"); if(f) setTimeout(()=>f.focus(),30); }
+function closeModal(){ $("veil").classList.remove("show"); }
+$("veil").onclick=e=>{ if(e.target===$("veil")) closeModal(); };
+document.addEventListener("keydown",e=>{ if(e.key==="Escape"&&$("veil").classList.contains("show")) closeModal(); });
+function dl(text,name,type){ const b=new Blob([text],{type}); const u=URL.createObjectURL(b);
+  const a=document.createElement("a"); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u); }
+
+function mdToHtml(md){
+  const lines=String(md||"").split(/\r?\n/); let out=[],i=0;
+  const inl=s=>esc(s).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/\*(.+?)\*/g,"<em>$1</em>");
+  while(i<lines.length){
+    let l=lines[i];
+    if(/^###\s/.test(l)){ out.push("<h3>"+inl(l.replace(/^###\s/,""))+"</h3>"); i++; continue; }
+    if(/^##\s/.test(l)){ out.push("<h2>"+inl(l.replace(/^##\s/,""))+"</h2>"); i++; continue; }
+    if(/^#\s/.test(l)){ out.push("<h1>"+inl(l.replace(/^#\s/,""))+"</h1>"); i++; continue; }
+    if(/^---+\s*$/.test(l)){ out.push("<hr>"); i++; continue; }
+    if(/^\|/.test(l)){
+      const tbl=[]; while(i<lines.length && /^\|/.test(lines[i])){ tbl.push(lines[i]); i++; }
+      const rows=tbl.filter(r=>!/^\|[\s:|-]+\|?\s*$/.test(r));
+      out.push("<table>"+rows.map((r,ri)=>{ const cells=r.split("|").slice(1,-1);
+        const tag=ri===0?"th":"td"; return "<tr>"+cells.map(c=>`<${tag}>${inl(c.trim())}</${tag}>`).join("")+"</tr>";
+      }).join("")+"</table>"); continue;
+    }
+    if(/^[-*]\s/.test(l)){ const items=[]; while(i<lines.length && /^[-*]\s/.test(lines[i])){ items.push("<li>"+inl(lines[i].replace(/^[-*]\s/,""))+"</li>"); i++; }
+      out.push("<ul>"+items.join("")+"</ul>"); continue; }
+    if(l.trim()===""){ i++; continue; }
+    out.push("<p>"+inl(l)+"</p>"); i++;
   }
+  return out.join("");
 }
 
-async function confirmStep() {
-  try {
-    const human_final = JSON.parse(artifact.value);
-    const edit_seconds = draftShownAt ? (Date.now() - draftShownAt) / 1000 : null;
-    await api(`/hcas/projects/${pid}/steps/${current}/confirm`,
-      { method: "POST", body: JSON.stringify({ human_final, edit_seconds }) });
-    if (current < 8) current += 1;
-    await refresh();
-  } catch (e) { msg.textContent = "Confirm failed: " + e.message; }
-}
-
-const STEP_TITLES = ["Study area intake","Factor & metric selection","Data retrieval",
-  "Solution framework","GIS database construction","Workflow design",
-  "GIS procedure execution","Report assembly"];
-loadStates();
+/* ================= boot ================= */
+newProject();
 </script>
 </body>
 </html>
