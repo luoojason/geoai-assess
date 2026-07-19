@@ -518,3 +518,160 @@ class TestChat:
             json={"message": "hi", "step": 1},
             headers={"X-Requested-With": "geoai"},
         ).status_code == 404
+
+
+class TestUpstreamErrorMapping:
+    """Prof. Shi's field test (2026-07-18): every LLM failure must surface as a
+    plain-language 502 detail — never a blanket 502 or an unhandled 500 — and
+    the step-runner and chat paths must use the same words."""
+
+    def _fake_response(self, status, text="denied"):
+        class R:
+            status_code = status
+
+            def __init__(self):
+                self.text = text
+
+            def json(self):
+                return {"error": {"code": status, "message": text}}
+
+        return R()
+
+    def test_401_names_the_key(self, monkeypatch):
+        import requests
+
+        monkeypatch.setattr(requests, "post", lambda *a, **k: self._fake_response(401))
+        with pytest.raises(RuntimeError, match="rejected the API key"):
+            hcas._post_openrouter({}, "sk-or-bad", timeout=5)
+
+    def test_402_names_credit(self, monkeypatch):
+        import requests
+
+        monkeypatch.setattr(requests, "post", lambda *a, **k: self._fake_response(402))
+        with pytest.raises(RuntimeError, match="out of credit"):
+            hcas._post_openrouter({}, "sk-or-bad", timeout=5)
+
+    def test_unreachable_names_proxy(self, monkeypatch):
+        import requests
+
+        def boom(*a, **k):
+            raise requests.exceptions.ProxyError("dead proxy 127.0.0.1:7890")
+
+        monkeypatch.setattr(requests, "post", boom)
+        with pytest.raises(RuntimeError, match="Cannot reach the AI provider.*proxy"):
+            hcas._post_openrouter({}, "sk-or-x", timeout=5)
+
+    def test_timeout_names_timeout(self, monkeypatch):
+        import requests
+
+        def boom(*a, **k):
+            raise requests.exceptions.ConnectTimeout("slow")
+
+        monkeypatch.setattr(requests, "post", boom)
+        with pytest.raises(RuntimeError, match="did not respond in time"):
+            hcas._post_openrouter({}, "sk-or-x", timeout=5)
+
+    def test_error_envelope_in_200_body_maps_too(self, monkeypatch):
+        import requests
+
+        class R:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"error": {"code": 401, "message": "bad key"}}
+
+        monkeypatch.setattr(requests, "post", lambda *a, **k: R())
+        with pytest.raises(RuntimeError, match="rejected the API key"):
+            hcas._post_openrouter({}, "sk-or-x", timeout=5)
+
+    def _no_key_env(self, monkeypatch):
+        from backend.config import settings
+
+        monkeypatch.setattr(settings, "anthropic_api_key", None)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    def test_chat_without_key_or_cli_is_502_not_crash(self, tmp_path, monkeypatch):
+        """The exact Windows failure: empty key + no claude CLI used to raise
+        FileNotFoundError -> 'Exception in ASGI application'."""
+        import shutil
+
+        self._no_key_env(monkeypatch)
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        from backend.app import app
+
+        client = TestClient(app)
+        pid = client.post(
+            "/hcas/projects",
+            json={"title": "t", "state_fips": "39", "county_fips": "049"},
+            headers={"X-Requested-With": "geoai"},
+        ).json()["project_id"]
+        r = client.post(
+            f"/hcas/projects/{pid}/chat",
+            json={"message": "hello", "step": 1},
+            headers={"X-Requested-With": "geoai"},
+        )
+        assert r.status_code == 502
+        assert "No API key is configured" in r.json()["detail"]
+
+    def test_step_run_upstream_failure_shares_the_same_words(self, tmp_path, monkeypatch):
+        """End-to-end: OpenRouter unreachable during step 2 -> 502 whose detail
+        is the same friendly copy the chat path uses."""
+        import requests
+
+        self._no_key_env(monkeypatch)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        def boom(*a, **k):
+            raise requests.exceptions.ConnectionError("refused")
+
+        monkeypatch.setattr(requests, "post", boom)
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        # the autouse fixture cans _llm_structured; restore the real one
+        monkeypatch.setattr(hcas, "_llm_structured", _REAL_LLM_STRUCTURED)
+        from backend.app import app
+
+        client = TestClient(app)
+        h = {"X-Requested-With": "geoai"}
+        pid = client.post(
+            "/hcas/projects",
+            json={"title": "t", "state_fips": "39", "county_fips": "049"},
+            headers=h,
+        ).json()["project_id"]
+        draft = client.post(f"/hcas/projects/{pid}/steps/1/run", headers=h).json()["ai_draft"]
+        client.post(f"/hcas/projects/{pid}/steps/1/confirm",
+                    json={"human_final": draft}, headers=h)
+        r = client.post(f"/hcas/projects/{pid}/steps/2/run", headers=h)
+        assert r.status_code == 502
+        assert "Cannot reach the AI provider" in r.json()["detail"]
+
+    def test_chat_unexpected_exception_is_502_with_name(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+
+        def boom(pid, step, message, history=None):
+            raise TypeError("surprise")
+
+        monkeypatch.setattr(hcas, "chat", boom)
+        from backend.app import app
+
+        client = TestClient(app)
+        h = {"X-Requested-With": "geoai"}
+        pid = client.post(
+            "/hcas/projects",
+            json={"title": "t", "state_fips": "39", "county_fips": "049"},
+            headers=h,
+        ).json()["project_id"]
+        r = client.post(f"/hcas/projects/{pid}/chat",
+                        json={"message": "hi", "step": 1}, headers=h)
+        assert r.status_code == 502 and "TypeError" in r.json()["detail"]
+
+    def test_favicon_served(self):
+        from backend.app import app
+
+        r = TestClient(app).get("/favicon.ico")
+        assert r.status_code == 200 and "image" in r.headers["content-type"]
+
+
+_REAL_LLM_STRUCTURED = hcas._llm_structured

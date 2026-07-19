@@ -156,6 +156,98 @@ def _run_step_1(meta: dict) -> dict:
     }
 
 
+# One plain-language message per upstream failure mode, shared by the step
+# runner and the chat path so the wizard shows the same words everywhere.
+_NO_KEY_MSG = (
+    "No API key is configured. Open the .env file next to START-HCAS and set "
+    "ANTHROPIC_API_KEY=sk-ant-... or an OpenRouter key (sk-or-...) — if the line "
+    "is there but empty after the '=', paste the key after it. Then restart HCAS."
+)
+
+
+def _upstream_error(
+    provider: str,
+    status: int | None = None,
+    body: str = "",
+    exc: Exception | None = None,
+) -> RuntimeError:
+    """Log the raw upstream failure server-side (key never included) and return a
+    RuntimeError whose message is plain language — the /run and /chat routes
+    surface it verbatim as the 502 `detail`."""
+    if status is not None:
+        logger.error("%s upstream error HTTP %s: %s", provider, status, body[:800])
+        if status in (401, 403):
+            msg = (
+                f"The AI provider ({provider}) rejected the API key — it may have "
+                "been revoked or replaced. Update the key in the .env file next to "
+                "START-HCAS and restart."
+            )
+        elif status == 402:
+            msg = (
+                f"The AI provider ({provider}) key is out of credit. Replace the "
+                "key in .env (or add credit), then restart."
+            )
+        elif status == 429:
+            msg = (
+                f"The AI provider ({provider}) is rate-limiting requests. Wait a "
+                "minute and try again."
+            )
+        else:
+            msg = (
+                f"The AI provider ({provider}) returned an unexpected error "
+                f"(HTTP {status}). Try again; if it persists, the terminal window "
+                "has the full error."
+            )
+        return RuntimeError(msg)
+
+    logger.error("%s request failed before a response: %r", provider, exc)
+    import requests as _requests
+
+    # "Timeout" in the class name also catches anthropic.APITimeoutError
+    if isinstance(exc, _requests.exceptions.Timeout) or "Timeout" in type(exc).__name__:
+        msg = (
+            f"The AI provider ({provider}) did not respond in time — check your "
+            "internet connection and try again."
+        )
+    else:
+        msg = (
+            f"Cannot reach the AI provider ({provider}) — check your internet "
+            "connection, VPN, or proxy settings. A leftover system proxy (for "
+            "example from a VPN/Clash setup that is no longer running) can block "
+            "HCAS while the browser still works."
+        )
+    return RuntimeError(msg)
+
+
+def _post_openrouter(payload: dict, api_key: str, timeout: int) -> dict:
+    """POST to OpenRouter chat completions and return the parsed body. Every
+    failure mode — unreachable, timeout, non-200, in-body error envelope — comes
+    back as the friendly RuntimeError from _upstream_error."""
+    import requests
+
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+            timeout=timeout,
+        )
+    except requests.exceptions.RequestException as exc:
+        raise _upstream_error("OpenRouter", exc=exc) from exc
+    if r.status_code != 200:
+        raise _upstream_error("OpenRouter", status=r.status_code, body=r.text)
+    out = r.json()
+    if "error" in out:
+        err = out["error"] or {}
+        code = err.get("code")
+        raise _upstream_error(
+            "OpenRouter",
+            status=code if isinstance(code, int) else 500,
+            body=json.dumps(err),
+        )
+    return out
+
+
 def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> tuple[dict, dict]:
     """ponytail: subscription fallback — shells out to `claude -p` (Claude Code CLI,
     Max plan) when no API key is configured. The schema is not server-enforced on
@@ -167,11 +259,7 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
     import jsonschema
 
     if not shutil.which("claude"):
-        raise RuntimeError(
-            "No API key is configured. Add ANTHROPIC_API_KEY=sk-ant-... or an "
-            "OpenRouter key (sk-or-...) to a .env file next to START-HCAS (or "
-            "re-run the start script and paste the key when asked), then restart."
-        )
+        raise RuntimeError(_NO_KEY_MSG)
 
     def call(extra: str) -> tuple[dict, dict]:
         full = (
@@ -217,17 +305,14 @@ def _llm_via_openrouter(
     the prompt and validated client-side with one retry — same contract as the CLI
     fallback, so it works regardless of OpenRouter's per-model json_schema support."""
     import jsonschema
-    import requests
 
     # ponytail: internal Anthropic model ids use dashes, OpenRouter slugs use dots
     slug = {"claude-opus-4-8": "anthropic/claude-opus-4.8",
             "claude-sonnet-5": "anthropic/claude-sonnet-5"}.get(model, f"anthropic/{model}")
 
     def call(extra: str) -> tuple[dict, dict]:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
+        out = _post_openrouter(
+            {
                 "model": slug,
                 "max_tokens": 16000,
                 "messages": [
@@ -240,13 +325,9 @@ def _llm_via_openrouter(
                     )},
                 ],
             },
+            api_key,
             timeout=600,
         )
-        if r.status_code != 200:
-            raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:800]}")
-        out = r.json()
-        if "error" in out:
-            raise RuntimeError(f"OpenRouter error: {json.dumps(out['error'])[:800]}")
         text = out["choices"][0]["message"]["content"].strip()
         if text.startswith("```"):
             text = text.strip("`").removeprefix("json").strip()
@@ -295,14 +376,19 @@ def _llm_structured(
         return _llm_via_claude_cli(system, prompt, schema, model)
 
     client = anthropic.Anthropic(api_key=key)
-    resp = client.messages.create(
-        model=model,
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
-        system=system,
-        output_config={"format": {"type": "json_schema", "schema": schema}},
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=16000,
+            thinking={"type": "adaptive"},
+            system=system,
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.APIStatusError as exc:
+        raise _upstream_error("Anthropic", status=exc.status_code, body=str(exc)) from exc
+    except anthropic.APIConnectionError as exc:
+        raise _upstream_error("Anthropic", exc=exc) from exc
     if resp.stop_reason not in ("end_turn", "stop_sequence"):
         raise RuntimeError(f"LLM stopped with {resp.stop_reason}")
     text = next(b.text for b in resp.content if b.type == "text")
@@ -343,24 +429,16 @@ def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple
         or (key if key.startswith("sk-or-") else "")
     )
     if openrouter_key:
-        import requests
-
         slug = {"claude-opus-4-8": "anthropic/claude-opus-4.8",
                 "claude-sonnet-5": "anthropic/claude-sonnet-5"}.get(model, f"anthropic/{model}")
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {openrouter_key}"},
-            json={"model": slug, "max_tokens": 1200, "messages": [
+        out = _post_openrouter(
+            {"model": slug, "max_tokens": 1200, "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ]},
+            openrouter_key,
             timeout=120,
         )
-        if r.status_code != 200:
-            raise RuntimeError(f"OpenRouter error {r.status_code}: {r.text[:400]}")
-        out = r.json()
-        if "error" in out:
-            raise RuntimeError(f"OpenRouter error: {json.dumps(out['error'])[:400]}")
         u = out.get("usage") or {}
         return out["choices"][0]["message"]["content"].strip(), {
             "input_tokens": u.get("prompt_tokens", 0),
@@ -368,8 +446,13 @@ def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple
             "cache_read_input_tokens": 0, "via": "openrouter",
         }
     if not key:
+        import shutil
         import subprocess
 
+        # Same guard as the step runner: without it a keyless machine crashed
+        # with FileNotFoundError -> the unhandled 500 Prof. Shi hit in chat.
+        if not shutil.which("claude"):
+            raise RuntimeError(_NO_KEY_MSG)
         proc = subprocess.run(
             ["claude", "-p", prompt, "--output-format", "json", "--model", model,
              "--append-system-prompt", system, "--max-turns", "1"],
@@ -389,10 +472,15 @@ def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple
     import anthropic
 
     client = anthropic.Anthropic(api_key=key)
-    resp = client.messages.create(
-        model=model, max_tokens=1200, system=system,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        resp = client.messages.create(
+            model=model, max_tokens=1200, system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.APIStatusError as exc:
+        raise _upstream_error("Anthropic", status=exc.status_code, body=str(exc)) from exc
+    except anthropic.APIConnectionError as exc:
+        raise _upstream_error("Anthropic", exc=exc) from exc
     if resp.stop_reason not in ("end_turn", "stop_sequence"):
         raise RuntimeError(f"LLM stopped with {resp.stop_reason}")
     text = next(b.text for b in resp.content if b.type == "text")

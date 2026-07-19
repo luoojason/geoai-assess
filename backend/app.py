@@ -66,6 +66,13 @@ async def index(request: Request):
     return templates.TemplateResponse(request, "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    from fastapi.responses import FileResponse
+
+    return FileResponse("frontend/static/favicon.ico", media_type="image/x-icon")
+
+
 @app.get("/states")
 async def get_states():
     return {"states": list_states()}
@@ -361,6 +368,16 @@ async def hcas_chat(pid: str, body: HcasChatRequest):
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        # Assistant is a side-channel — never let it crash as a raw ASGI 500.
+        logger.exception("chat failed with an unexpected error")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The assistant hit an unexpected error "
+                f"({type(exc).__name__}). The terminal window has the full traceback."
+            ),
+        )
 
 
 # No CSRF-header dep on the two GETs below: they are read-only and opened as

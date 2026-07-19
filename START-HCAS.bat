@@ -25,15 +25,24 @@ echo Installing dependencies - first run takes a few minutes...
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet -r requirements.txt
 
-if not exist .env (
-  echo.
-  echo The AI steps ^(2 and 4^) need an API key ^(Anthropic sk-ant-... or OpenRouter sk-or-...^).
-  set /p KEY="Paste the API key (or press Enter to skip for now): "
-  if defined KEY (
-    echo ANTHROPIC_API_KEY=%KEY%> .env
-    echo Saved.
-  )
-)
+REM Key prompt lives OUTSIDE any ( ) block: cmd expands %KEY% when a block is
+REM parsed, not when it runs, so the old block-form wrote an EMPTY key to .env.
+REM Also re-prompts when .env exists but its key line is empty (that bug's leftover).
+if not exist .env goto :promptkey
+findstr /r /c:"ANTHROPIC_API_KEY=." /c:"OPENROUTER_API_KEY=." .env >nul 2>nul
+if errorlevel 1 goto :promptkey
+goto :launch
+
+:promptkey
+echo.
+echo The AI steps ^(2 and 4^) need an API key ^(Anthropic sk-ant-... or OpenRouter sk-or-...^).
+set "KEY="
+set /p KEY="Paste the API key (or press Enter to skip for now): "
+if not defined KEY goto :launch
+>.env echo ANTHROPIC_API_KEY=%KEY%
+echo Saved.
+
+:launch
 
 echo.
 echo Starting HCAS. Your browser will open at http://127.0.0.1:8000/hcas

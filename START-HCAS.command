@@ -27,7 +27,9 @@ echo "Installing dependencies (first run takes a few minutes)..."
 python3 -m pip install --quiet --upgrade pip
 python3 -m pip install --quiet -r requirements.txt
 
-if [ ! -f .env ]; then
+# Prompt when .env is missing OR exists without a real key (an empty
+# ANTHROPIC_API_KEY= line from an earlier install must not silence the prompt).
+if ! grep -qE "(ANTHROPIC|OPENROUTER)_API_KEY=." .env 2>/dev/null; then
   echo ""
   echo "The AI steps (2 and 4) need an API key (Anthropic sk-ant-... or OpenRouter sk-or-...)."
   read -r -p "Paste the API key (or press Enter to skip for now): " KEY

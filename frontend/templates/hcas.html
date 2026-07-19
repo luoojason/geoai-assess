@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Healthy Community Assessment System</title>
+<link rel="icon" href="/favicon.ico">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -501,7 +502,8 @@ function viewIntake(a){
         <dt>Centroid</dt><dd class="mono">${(a.centroid||[]).map(x=>(+x).toFixed(4)).join(", ")}</dd>
       </dl>
       <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
-        <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">5&nbsp;km radius · ${esc(a.place_name||"")}</div></div></div>
+        <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">5&nbsp;km radius · ${esc(a.place_name||"")}</div>
+        <div style="color:var(--faint);font-size:12px;margin-top:7px;">Map preview appears at Step 7 — Run analysis.</div></div></div>
     </div></div>`;
 }
 
