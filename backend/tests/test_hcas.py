@@ -675,3 +675,89 @@ class TestUpstreamErrorMapping:
 
 
 _REAL_LLM_STRUCTURED = hcas._llm_structured
+
+
+class TestFetchErrorSurfacing:
+    """Prof. Shi's 2026-07-20 report: a blocked network produced silent empty
+    layers and a featureless map. Fetch failures must surface in the artifacts
+    with plain-language reasons, and Overpass must fail over to its mirror."""
+
+    def _failing_greenspace(self):
+        from backend.assess.netdiag import record_fetch_error
+
+        def fetch_greenspace(bbox):
+            record_fetch_error(
+                "fetch_greenspace", OSError("[Errno 11001] getaddrinfo failed"))
+            return _fake_gdf()
+
+        return fetch_greenspace
+
+    def test_step3_carries_per_layer_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers", lambda: {"greenspace": self._failing_greenspace()})
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        draft = hcas.run_step(pid, 3, db=db)
+        (layer,) = draft["layers"]
+        assert layer["layer"] == "greenspace"
+        assert "DNS lookup failed" in layer["error"]
+
+    def test_step7_reports_fetch_errors_and_empty_map_note(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers", lambda: {"greenspace": self._failing_greenspace()})
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)
+        draft = hcas.run_step(pid, 7, db=db)
+        assert "DNS lookup failed" in draft["fetch_errors"]["greenspace"]
+        assert "empty" in draft["map_note"]
+
+    def test_healthy_step3_has_no_error_keys(self, tmp_path):
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        draft = hcas.run_step(pid, 3, db=db)
+        assert all("error" not in l for l in draft["layers"])
+
+    def test_netdiag_classifies_dns_and_unreachable(self):
+        from backend.assess.netdiag import friendly_net_reason
+
+        assert "DNS lookup failed" in friendly_net_reason(
+            OSError("HTTPSConnectionPool(host='data.cdc.gov'): getaddrinfo failed"))
+        assert "unreachable" in friendly_net_reason(
+            OSError("[WinError 10065] A socket operation was attempted to an unreachable host"))
+
+    def test_overpass_failover_switches_to_mirror_once(self, monkeypatch):
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_failed_over", False)
+        old_url = ox.settings.overpass_url
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("[WinError 10065] unreachable host")
+            return "ok"
+
+        try:
+            assert ol._with_overpass_failover(flaky) == "ok"
+            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._failed_over = False
+        assert calls["n"] == 2
+
+    def test_overpass_empty_result_is_not_failover(self, monkeypatch):
+        from osmnx._errors import InsufficientResponseError
+
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_failed_over", False)
+
+        def empty():
+            raise InsufficientResponseError("No matching features")
+
+        with pytest.raises(InsufficientResponseError):
+            ol._with_overpass_failover(empty)
+        assert ol._failed_over is False

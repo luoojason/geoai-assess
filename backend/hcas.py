@@ -557,6 +557,8 @@ def _bbox_from_centroid(lat: float, lon: float, radius_m: float = 5000) -> list[
 def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     from concurrent.futures import ThreadPoolExecutor
 
+    from backend.assess.netdiag import friendly_net_reason, take_fetch_errors
+
     factors = _confirmed(project, 2)["factors"]
     names = sorted({layer for f in factors for layer in METRIC_LAYERS[f["metric"]]})
     lat, lon = _confirmed(project, 1)["centroid"]
@@ -564,8 +566,16 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     fetchers = _layer_fetchers()
     with ThreadPoolExecutor(max_workers=4) as ex:
         gdfs = list(ex.map(lambda n: fetchers[n](tuple(bbox)), names))
+    # Failed fetches surface in the artifact (Prof. Shi's blocked-network test:
+    # silent empty layers looked like a working run with no data).
+    errs = take_fetch_errors()
     inventory = [
-        {"layer": n, "feature_count": int(len(g)), "crs": str(g.crs)}
+        {
+            "layer": n,
+            "feature_count": int(len(g)),
+            "crs": str(g.crs),
+            **({"error": e} if (e := errs.get(getattr(fetchers[n], "__name__", ""))) else {}),
+        }
         for n, g in zip(names, gdfs)
     ]
 
@@ -577,7 +587,7 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     except Exception as exc:  # CDC being down shouldn't block the OSM layers
         logging.getLogger(__name__).warning(f"PLACES fetch failed: {exc!r}")
         outcomes = {"source": "CDC PLACES", "measures": [],
-                    "note": f"unavailable this run: {exc}"}
+                    "note": f"unavailable this run: {friendly_net_reason(exc)}"}
 
     return {
         "kind": "layer_inventory",
@@ -768,6 +778,7 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     from concurrent.futures import ThreadPoolExecutor
 
     from backend.assess import generate_interventions
+    from backend.assess.netdiag import take_fetch_errors
 
     # Execute the human-confirmed workflow: a deleted compute step stays deleted.
     plan = [s for s in _confirmed(project, 6)["steps"] if s["action"] == "compute"]
@@ -778,6 +789,11 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     fetchers = _layer_fetchers()
     with ThreadPoolExecutor(max_workers=4) as ex:
         layers = dict(zip(names, ex.map(lambda n: fetchers[n](bbox), names)))
+    errs = take_fetch_errors()
+    fetch_errors = {
+        n: e for n in names
+        if (e := errs.get(getattr(fetchers[n], "__name__", "")))
+    }
     study_area = _study_area(lat, lon)
     computers = _metric_computers()
     metrics: dict = {}
@@ -790,6 +806,13 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         "metrics": metrics,
         "interventions": generate_interventions(metrics),
     }
+    if fetch_errors:
+        artifact["fetch_errors"] = fetch_errors
+    if layers and all(g.empty for g in layers.values()):
+        artifact["map_note"] = (
+            "Every data layer came back empty, so the map has no features to "
+            "show — check the data-source errors above and your network."
+        )
     try:
         from backend.assess import render_assessment_map
 

@@ -213,6 +213,15 @@
            border-radius:50%;animation:spin .85s linear infinite;}
 
   /* 5 · Assistant */
+  /* drag handle between canvas and assistant (Prof. Shi: panels resizable) */
+  #dragbar{width:6px;flex:none;cursor:col-resize;background:transparent;}
+  #dragbar:hover,#dragbar.on{background:var(--teal-tint);}
+  .warnbar{display:flex;gap:9px;align-items:flex-start;background:var(--red-tint);color:var(--red);
+           border-radius:var(--r-sm);padding:10px 13px;font-size:var(--fs-sm);margin-top:var(--sp-4);}
+  .stack{display:flex;flex-direction:column;min-width:0;}
+  .stack .panel+.panel{margin-top:0;border-top:0;border-top-left-radius:0;border-top-right-radius:0;}
+  .stack .panel:first-child{border-bottom-left-radius:0;border-bottom-right-radius:0;}
+  .mapframe{width:100%;height:100%;border:0;display:block;background:#fff;}
   #chat{width:316px;flex:none;border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0;}
   #chat .chd{padding:14px var(--sp-4);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;margin:0;}
   #chat .chd .t{font:600 var(--fs-base) var(--display);color:var(--ink);}
@@ -306,6 +315,8 @@
 
     <!-- 4 · Work canvas -->
     <div id="canvas"></div>
+
+    <div id="dragbar" title="Drag to resize the assistant panel"></div>
 
     <!-- 5 · Assistant -->
     <div id="chat">
@@ -541,23 +552,29 @@ function wireFactors(){
 function viewData(a){
   const layers = groupLayers(a.layers||[]);
   const ho = a.health_outcomes||{};
+  const errs = (a.layers||[]).filter(l=>l.error);
+  const warn = errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> — the flagged layers are empty, so their metrics will read zero. ${esc(errs[0].error)}</div></div>`:"";
   const rows = (ho.measures||[]).map(m=>{
     const flag = m.county_pct>m.us_pct ? '<span class="above">above US</span>' : '<span class="below">below US</span>';
     return `<tr><td>${esc(m.label)}</td><td>${m.county_pct}% ${flag}</td><td>${m.us_pct}%</td></tr>`;
   }).join("");
-  return `<div class="cols" style="align-items:flex-start;">
-    <div class="panel tree" style="max-width:280px;"><div class="ph">Data layers</div>${layers}</div>
-    <div class="panel" style="flex:2;"><div class="ph">Spatial features</div>
-      <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
-        <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">bbox ${(a.bbox||[]).map(x=>(+x).toFixed(2)).join(", ")} · r=${a.radius_m||"?"}m</div></div></div></div>
-    <div class="panel" style="max-width:330px;"><div class="ph">${esc(ho.source||"Health outcomes")}</div>
-      ${rows?`<table class="data"><thead><tr><th>Measure</th><th>County</th><th>US</th></tr></thead><tbody>${rows}</tbody></table>`
-            :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div></div>`;
+  // Prof. Shi's layout: layers left · map upper-right · table beneath the map, no gap
+  return `${warn}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Data layers</div>${layers}</div>
+    <div class="stack" style="flex:1;">
+      <div class="panel"><div class="ph">Spatial features</div>
+        <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
+          <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">bbox ${(a.bbox||[]).map(x=>(+x).toFixed(2)).join(", ")} · r=${a.radius_m||"?"}m</div>
+          <div style="color:var(--faint);font-size:12px;margin-top:7px;">Map preview appears at Step 7 — Run analysis.</div></div></div></div>
+      <div class="panel"><div class="ph">${esc(ho.source||"Health outcomes")}</div>
+        ${rows?`<table class="data"><thead><tr><th>Measure</th><th>County</th><th>US</th></tr></thead><tbody>${rows}</tbody></table>`
+              :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div>
+    </div></div>`;
 }
 function groupLayers(layers){
   if(!layers.length) return '<div class="empty" style="padding:10px;">No layers.</div>';
   return `<div class="grp"><div class="gname">Layers</div>${
-    layers.map(l=>`<div class="leaf"><span>${esc(l.layer)}</span><span class="c">${l.feature_count} · ${esc(l.crs||"")}</span></div>`).join("")}</div>`;
+    layers.map(l=>`<div class="leaf"><span>${esc(l.layer)}${l.error?` <span title="${esc(l.error)}" style="color:var(--red);cursor:help;">⚠</span>`:""}</span><span class="c">${l.feature_count}${l.error?"":" · "+esc(l.crs||"")}</span></div>`).join("")}</div>`;
 }
 
 /* step 4 — methodology */
@@ -611,13 +628,23 @@ function viewExecution(a){
       <div class="cat">${esc(iv.category)}</div>
       <div class="fin">${esc(iv.finding)}</div>
       <div class="fin"><b>→</b> ${esc(iv.recommendation)} <span style="color:var(--ghost)">(${esc(iv.standard||"")})</span></div></div>`).join("");
-  const map = a.map_available ? `<a href="/hcas/projects/${S.pid}/map" target="_blank">Open full map ↗</a>` : "";
-  return `<div class="cols" style="align-items:flex-start;">
-    <div class="panel" style="flex:2;"><div class="ph">Metrics</div>
-      <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div>
-      <div class="mapview" style="margin-top:14px;"><div class="lab"><div class="eyebrow">Map view</div>
-        <div style="margin-top:6px;">${map||'<span class="mono" style="color:var(--faint);font-size:12px;">no map</span>'}</div></div></div></div>
-    <div class="panel" style="max-width:370px;"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div></div>`;
+  const errs = a.fetch_errors||{};
+  const errKeys = Object.keys(errs);
+  const warn = errKeys.length?`<div class="warnbar">⚠<div><b>Data sources failed during this run:</b> ${errKeys.map(esc).join(", ")} — ${esc(errs[errKeys[0]])}</div></div>`:"";
+  const note = a.map_note?`<div class="warnbar">⚠<div>${esc(a.map_note)}</div></div>`:"";
+  const map = a.map_available
+    ? `<iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe>`
+    : `<div class="lab"><div class="eyebrow">Map view</div>
+        <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">The map could not be rendered this run.</div></div>`;
+  // Prof. Shi's layout: map upper-right with the metrics table directly beneath
+  return `${warn}${note}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+    <div class="panel" style="width:340px;flex:none;"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div>
+    <div class="stack" style="flex:1;">
+      <div class="panel"><div class="ph">Map view${a.map_available?` · <a href="/hcas/projects/${S.pid}/map" target="_blank" style="text-transform:none;letter-spacing:0;">open full map ↗</a>`:""}</div>
+        <div class="mapview" style="height:330px;">${map}</div></div>
+      <div class="panel"><div class="ph">Metrics</div>
+        <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div></div>
+    </div></div>`;
 }
 
 /* step 8 — report */
@@ -681,6 +708,7 @@ async function confirmStep(){
   const row=stepRow(S.current);
   if(!row||S.busy) return;
   setBusy(true); setMsg("");
+  let autorun=false;
   try{
     const edit_seconds=S.draftShownAt?(Date.now()-S.draftShownAt)/1000:null;
     await api(`/hcas/projects/${S.pid}/steps/${S.current}/confirm`,
@@ -688,8 +716,13 @@ async function confirmStep(){
     if(S.current<8) S.current+=1;
     S.draftShownAt=null;
     await refresh();
+    // Prof. Shi: confirming should flow straight into drafting the next step,
+    // not land on an empty canvas waiting for a Run click. The human still
+    // confirms every step, so the gate is intact.
+    autorun = !stepRow(S.current);
   }catch(e){ setMsg("Confirm failed: "+e.message); }
   finally{ setBusy(false); }
+  if(autorun) await runStep();
 }
 function prevStep(){ if(S.current>1) selectStep(S.current-1); }
 
@@ -799,6 +832,31 @@ function mdToHtml(md){
   }
   return out.join("");
 }
+
+/* ============ resizable assistant panel (Prof. Shi request) ============ */
+(function(){
+  const bar=$("dragbar"), chat=$("chat");
+  const saved=+localStorage.getItem("hcas_chatw");
+  if(saved>=240&&saved<=560) chat.style.width=saved+"px";
+  let drag=null;
+  bar.addEventListener("mousedown",e=>{
+    drag={x:e.clientX,w:chat.offsetWidth}; bar.classList.add("on");
+    document.body.style.userSelect="none";
+    document.querySelectorAll("iframe").forEach(f=>f.style.pointerEvents="none");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove",e=>{
+    if(!drag) return;
+    chat.style.width=Math.min(560,Math.max(240,drag.w+(drag.x-e.clientX)))+"px";
+  });
+  window.addEventListener("mouseup",()=>{
+    if(!drag) return;
+    localStorage.setItem("hcas_chatw",chat.offsetWidth); drag=null;
+    bar.classList.remove("on");
+    document.body.style.userSelect="";
+    document.querySelectorAll("iframe").forEach(f=>f.style.pointerEvents="");
+  });
+})();
 
 /* ================= boot ================= */
 newProject();
