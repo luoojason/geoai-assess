@@ -624,16 +624,19 @@ function viewSolution(a){
 
 /* step 5 — database */
 function viewDatabase(a){
-  return `<div class="cols" style="align-items:flex-start;">
-    <div class="panel tree" style="max-width:280px;"><div class="ph">Database layers</div>${groupLayers(a.layers||[])}</div>
-    <div class="panel" style="flex:2;"><div class="ph">Spatial features</div>
-      <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
-        <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">Assembled database</div></div></div></div>
-    <div class="panel" style="max-width:300px;"><div class="ph">Details</div>
-      <dl class="kv"><dt>CRS</dt><dd class="mono">${esc(a.crs||"")}</dd>
-      <dt>Study area</dt><dd>${esc(a.study_area||"")}</dd>
-      <dt>Extent</dt><dd class="mono" style="font-size:11px;">${(a.extent_bbox_4326||[]).map(x=>(+x).toFixed(2)).join(", ")}</dd>
-      <dt>Storage</dt><dd>${esc(a.storage||"")}</dd></dl></div></div>`;
+  // Prof. Shi's map-step layout: layers left · map upper-right · details beneath
+  return `<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Database layers</div>${groupLayers(a.layers||[])}</div>
+    <div class="stack" style="flex:1;">
+      <div class="panel"><div class="ph">Spatial features</div>
+        <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
+          <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">Assembled database</div></div></div></div>
+      <div class="panel"><div class="ph">Details</div>
+        <dl class="kv"><dt>CRS</dt><dd class="mono">${esc(a.crs||"")}</dd>
+        <dt>Study area</dt><dd>${esc(a.study_area||"")}</dd>
+        <dt>Extent</dt><dd class="mono" style="font-size:11px;">${(a.extent_bbox_4326||[]).map(x=>(+x).toFixed(2)).join(", ")}</dd>
+        <dt>Storage</dt><dd>${esc(a.storage||"")}</dd></dl></div>
+    </div></div>`;
 }
 
 /* step 6 — workflow */
