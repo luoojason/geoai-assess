@@ -480,6 +480,7 @@ function renderCanvas(){
   $("canvas").innerHTML = head + body + (row && n!==8 ? rawEditor() : "");
   if(n===1 && !S.pid) loadStates();
   if(n===2 && row) wireFactors();
+  if(n===7 && row) wireMapCheck();
   if(n===8 && row) wireReport();
   wireRaw();
   if(!REDUCED && $("canvas").animate)
@@ -678,6 +679,31 @@ function viewExecution(a){
       <div class="panel"><div class="ph">Metrics</div>
         <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div></div>
     </div></div>`;
+}
+
+/* The embedded map is same-origin, so we can see inside it: if its document
+   finished loading but Leaflet (global L) never appeared, the drawing library's
+   CDN is blocked — data is fine, the browser just can't draw. Say so. */
+function wireMapCheck(){
+  const f = document.querySelector(".mapframe");
+  if(!f) return;
+  const check = ()=>{
+    try{
+      // folium wraps the map in a nested srcdoc iframe — Leaflet lives there
+      const outer = f.contentWindow;
+      if(!outer || !outer.document || outer.document.readyState === "loading") return;
+      const inner = outer.document.querySelector("iframe");
+      const w = (inner && inner.contentWindow) || outer;
+      if(!w.document || w.document.readyState === "loading") return;
+      if(typeof w.L !== "undefined" || $("mapcdnwarn")) return;
+      f.closest(".stack").insertAdjacentHTML("afterbegin",
+        `<div class="warnbar" id="mapcdnwarn">⚠<div><b>The map data loaded but the map cannot draw</b> —
+         the browser could not download the map-drawing library from its content network
+         (cdn.jsdelivr.net appears blocked). The metrics and report are unaffected.</div></div>`);
+    }catch(_){}
+  };
+  f.addEventListener("load", ()=>setTimeout(check, 4000));
+  setTimeout(check, 15000);
 }
 
 /* step 8 — report */
