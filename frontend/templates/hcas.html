@@ -213,6 +213,12 @@
            border-radius:50%;animation:spin .85s linear infinite;}
 
   /* 5 · Assistant */
+  /* live progress bar in the loading state */
+  .pbar{width:min(420px,72%);height:8px;border-radius:99px;background:var(--teal-tint-d);
+        overflow:hidden;margin:16px auto 0;}
+  .pbar .fill{height:100%;width:0%;background:var(--teal);border-radius:99px;
+              transition:width .6s cubic-bezier(.4,0,.2,1);}
+  .ppct{font:500 var(--fs-sm) var(--mono);color:var(--teal-d);margin-top:8px;}
   /* drag handle between canvas and assistant (Prof. Shi: panels resizable) */
   #dragbar{width:6px;flex:none;cursor:col-resize;background:transparent;}
   #dragbar:hover,#dragbar.on{background:var(--teal-tint);}
@@ -436,8 +442,32 @@ function renderCanvasLoading(){
   const n = S.current;
   $("canvas").innerHTML = canvasHead(n) +
     `<div class="loading"><div class="spin-lg"></div>
-       <div class="lmsg">${esc(RUN_HINTS[n]||"Working…")}</div></div>`;
+       <div class="pbar"><div class="fill" id="pfill"></div></div>
+       <div class="ppct" id="ppct">0%</div>
+       <div class="lmsg" id="plabel">${esc(RUN_HINTS[n]||"Working…")}</div></div>`;
 }
+
+/* Live progress while a step runs. Steps 3 & 7 report real per-layer numbers
+   from the backend; the LLM steps (2 & 4) can't, so a time-based estimate
+   keeps the bar honest-ish and moving. Capped at 97% until the run returns. */
+let PROG = null;
+const STEP_ETA = {1:4, 2:60, 3:90, 4:60, 5:3, 6:3, 7:150, 8:4};  // seconds, typical
+function startProgress(){
+  stopProgress();
+  const step = S.current, t0 = Date.now();
+  PROG = setInterval(async ()=>{
+    let b = {pct:0, label:""};
+    try{ b = await api(`/hcas/projects/${S.pid}/steps/${step}/progress`); }catch(_){}
+    const est = Math.min(90, ((Date.now()-t0)/1000) / (STEP_ETA[step]||10) * 90);
+    const pct = Math.min(97, Math.max(b.pct||0, est));
+    const f = $("pfill");
+    if(!f) return;
+    f.style.width = pct+"%";
+    $("ppct").textContent = Math.round(pct)+"%";
+    if(b.label) $("plabel").textContent = b.label;
+  }, 700);
+}
+function stopProgress(){ if(PROG){ clearInterval(PROG); PROG = null; } }
 function renderCanvas(){
   const n = S.current, row = stepRow(n), a = S.edited;
   const head = canvasHead(n);
@@ -697,12 +727,13 @@ async function runStep(){
   try{
     if(S.current===1) await ensureProject();  // reads the create form — must run before it's replaced
     renderCanvasLoading();                     // now safe to swap the canvas for the loading state
+    startProgress();
     const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${S.current}/run`,{method:"POST"});
     S.edited=JSON.parse(JSON.stringify(ai_draft));
     S.draftShownAt=Date.now();
     await refresh(true);
   }catch(e){ setMsg(e.message); renderCanvas(); }
-  finally{ setBusy(false); statusRun(""); }
+  finally{ stopProgress(); setBusy(false); statusRun(""); }
 }
 async function confirmStep(){
   const row=stepRow(S.current);

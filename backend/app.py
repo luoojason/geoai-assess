@@ -336,6 +336,12 @@ async def hcas_run_step(pid: str, step: int):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.get("/hcas/projects/{pid}/steps/{step}/progress", dependencies=_assess_deps)
+async def hcas_step_progress(pid: str, step: int):
+    """Live progress of an in-flight step run (pct 0-100 + label); zeros when idle."""
+    return hcas.get_progress(pid, step)
+
+
 @app.post("/hcas/projects/{pid}/run_all", dependencies=_assess_deps)
 async def hcas_run_all(pid: str):
     """AI-only baseline: walk all 8 steps with auto-confirm (gate_mode='auto' only)."""

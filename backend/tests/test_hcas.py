@@ -761,3 +761,57 @@ class TestFetchErrorSurfacing:
         with pytest.raises(InsufficientResponseError):
             ol._with_overpass_failover(empty)
         assert ol._failed_over is False
+
+
+class TestStepProgress:
+    """The wizard's percentage bar: steps 3/7 report real per-layer progress
+    while a run is in flight, and the registry is cleared when the run ends."""
+
+    def test_registry_set_get_clear(self):
+        hcas.set_progress("p1", 3, 50, "half")
+        assert hcas.get_progress("p1", 3) == {"pct": 50, "label": "half"}
+        hcas.clear_progress("p1", 3)
+        assert hcas.get_progress("p1", 3) == {"pct": 0, "label": ""}
+
+    def test_step3_reports_per_layer_progress_then_clears(self, tmp_path, monkeypatch):
+        seen = []
+        real = hcas.set_progress
+
+        def spy(pid, step, pct, label):
+            seen.append((step, int(pct), label))
+            real(pid, step, pct, label)
+
+        monkeypatch.setattr(hcas, "set_progress", spy)
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        hcas.run_step(pid, 3, db=db)
+        assert any(s == 3 and "map layers" in l for s, p, l in seen)
+        assert any(s == 3 and "health outcomes" in l for s, p, l in seen)
+        assert hcas.get_progress(pid, 3) == {"pct": 0, "label": ""}  # cleared
+
+    def test_step7_reports_phases(self, tmp_path, monkeypatch):
+        seen = []
+        real = hcas.set_progress
+        monkeypatch.setattr(
+            hcas, "set_progress",
+            lambda pid, step, pct, label: (seen.append((step, label)), real(pid, step, pct, label)))
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)
+        hcas.run_step(pid, 7, db=db)
+        labels = [l for s, l in seen if s == 7]
+        assert any("computing metrics" in l for l in labels)
+        assert any("drawing the map" in l for l in labels)
+
+    def test_progress_endpoint_idle_zeros(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        from backend.app import app
+
+        client = TestClient(app)
+        h = {"X-Requested-With": "geoai"}
+        pid = client.post(
+            "/hcas/projects",
+            json={"title": "t", "state_fips": "39", "county_fips": "049"},
+            headers=h,
+        ).json()["project_id"]
+        r = client.get(f"/hcas/projects/{pid}/steps/3/progress", headers=h)
+        assert r.status_code == 200 and r.json() == {"pct": 0, "label": ""}

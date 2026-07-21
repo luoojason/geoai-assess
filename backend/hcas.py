@@ -13,6 +13,7 @@ import difflib
 import json
 import logging
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -20,6 +21,28 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# --- live step progress ------------------------------------------------------
+# Written by the step runners while a draft is in flight, read by
+# GET /hcas/projects/{pid}/steps/{step}/progress so the wizard can show a real
+# percentage (per-layer for the fetch-heavy steps). Cleared when the run ends.
+_progress: dict[tuple[str, int], dict] = {}
+_progress_lock = threading.Lock()
+
+
+def set_progress(pid: str, step: int, pct: float, label: str) -> None:
+    with _progress_lock:
+        _progress[(pid, step)] = {"pct": int(pct), "label": label}
+
+
+def get_progress(pid: str, step: int) -> dict:
+    with _progress_lock:
+        return dict(_progress.get((pid, step), {"pct": 0, "label": ""}))
+
+
+def clear_progress(pid: str, step: int) -> None:
+    with _progress_lock:
+        _progress.pop((pid, step), None)
 
 from backend.assess.references import REFERENCES
 from backend.gis.counties import build_place_name, centroid_of_county, lookup_county
@@ -499,6 +522,9 @@ def _confirmed(project: dict, step: int) -> dict:
 
 def _run_step_2(project: dict) -> tuple[dict, str | None, dict | None]:
     place = _confirmed(project, 1).get("place_name", "the study area")
+    # single blocking model call — no true percentage exists; the wizard fills
+    # the gap with a time-based estimate
+    set_progress(project["id"], 2, 10, "waiting for the AI model…")
     model = "claude-opus-4-8"
     prompt = (
         f"Study area: {place}.\n"
@@ -564,8 +590,16 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     lat, lon = _confirmed(project, 1)["centroid"]
     bbox = _bbox_from_centroid(lat, lon)
     fetchers = _layer_fetchers()
+    pid = project["id"]
+    total = len(names) + 1  # +1: the CDC PLACES fetch at the end
+    set_progress(pid, 3, 2, f"fetching {len(names)} map layers…")
+    gdfs = []
     with ThreadPoolExecutor(max_workers=4) as ex:
-        gdfs = list(ex.map(lambda n: fetchers[n](tuple(bbox)), names))
+        # consume lazily so progress advances as each layer's fetch completes
+        for g in ex.map(lambda n: fetchers[n](tuple(bbox)), names):
+            gdfs.append(g)
+            set_progress(pid, 3, len(gdfs) / total * 100,
+                         f"map layers {len(gdfs)}/{len(names)}")
     # Failed fetches surface in the artifact (Prof. Shi's blocked-network test:
     # silent empty layers looked like a working run with no data).
     errs = take_fetch_errors()
@@ -582,6 +616,7 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     from backend.assess import places
 
     meta = project["meta"]
+    set_progress(pid, 3, (total - 1) / total * 100, "county health outcomes…")
     try:
         outcomes = places.fetch_health_outcomes(meta["state_fips"], meta["county_fips"])
     except Exception as exc:  # CDC being down shouldn't block the OSM layers
@@ -705,6 +740,7 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
         if outcome_rows
         else ""
     )
+    set_progress(project["id"], 4, 10, "waiting for the AI model…")
     model = "claude-opus-4-8"
     prompt = (
         f"Study area: {place}.\n"
@@ -787,8 +823,15 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     lat, lon = _confirmed(project, 1)["centroid"]
     bbox = tuple(_bbox_from_centroid(lat, lon))
     fetchers = _layer_fetchers()
+    pid = project["id"]
+    set_progress(pid, 7, 2, f"fetching {len(names)} map layers…")
+    fetched = []
     with ThreadPoolExecutor(max_workers=4) as ex:
-        layers = dict(zip(names, ex.map(lambda n: fetchers[n](bbox), names)))
+        for g in ex.map(lambda n: fetchers[n](bbox), names):
+            fetched.append(g)
+            set_progress(pid, 7, len(fetched) / max(len(names), 1) * 65,
+                         f"map layers {len(fetched)}/{len(names)}")
+    layers = dict(zip(names, fetched))
     errs = take_fetch_errors()
     fetch_errors = {
         n: e for n in names
@@ -796,10 +839,12 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     }
     study_area = _study_area(lat, lon)
     computers = _metric_computers()
+    set_progress(pid, 7, 70, "computing metrics…")
     metrics: dict = {}
     for m in metrics_wanted:
         metrics.update(computers[m](layers, study_area))
     metrics = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in metrics.items()}
+    set_progress(pid, 7, 82, "drawing the map…")
 
     artifact = {
         "kind": "execution_results",
@@ -1040,7 +1085,10 @@ def run_step(pid: str, step: int, db: Path | None = None) -> dict:
     if missing:
         raise ValueError(f"cannot run step {step}: steps {missing} not confirmed")
 
-    ai_draft, model, usage = _draft(project, step)
+    try:
+        ai_draft, model, usage = _draft(project, step)
+    finally:
+        clear_progress(pid, step)
     map_html = ai_draft.pop("_map_html", None)
     data = {
         "ai_draft": ai_draft,
