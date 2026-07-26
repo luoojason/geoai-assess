@@ -31,6 +31,15 @@ REM Also re-prompts when .env exists but its key line is empty (that bug's lefto
 if not exist .env goto :promptkey
 findstr /r /c:"ANTHROPIC_API_KEY=." /c:"OPENROUTER_API_KEY=." .env >nul 2>nul
 if errorlevel 1 goto :promptkey
+REM A key is already saved. Offer to keep or replace it, so a wrong/revoked key
+REM is not stuck (re-running used to silently reuse it). Write stays OUTSIDE any
+REM ( ) block so cmd expands %NEWKEY% at run time, not parse time.
+echo.
+set "NEWKEY="
+set /p NEWKEY="An API key is already saved. Press Enter to keep it, or paste a different key to replace it: "
+if not defined NEWKEY goto :launch
+>.env echo ANTHROPIC_API_KEY=%NEWKEY%
+echo Updated.
 goto :launch
 
 :promptkey

@@ -202,8 +202,9 @@ def _upstream_error(
         if status in (401, 403):
             msg = (
                 f"The AI provider ({provider}) rejected the API key — it may have "
-                "been revoked or replaced. Update the key in the .env file next to "
-                "START-HCAS and restart."
+                "been revoked or replaced. To use a different key, delete the .env "
+                "file next to START-HCAS and run START-HCAS again (it will ask for a "
+                "new key), or edit that .env file directly. Then restart."
             )
         elif status == 402:
             msg = (

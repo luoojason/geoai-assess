@@ -39,6 +39,15 @@ if ! grep -qE "(ANTHROPIC|OPENROUTER)_API_KEY=." .env 2>/dev/null; then
   else
     echo "Skipped — steps 2 and 4 will error until a key is added to a .env file."
   fi
+else
+  # A key is already saved. Offer to keep or replace it, so a wrong/revoked key
+  # is not stuck (re-running used to silently reuse it).
+  echo ""
+  read -r -p "An API key is already saved. Press Enter to keep it, or paste a different key to replace it: " NEWKEY
+  if [ -n "$NEWKEY" ]; then
+    echo "ANTHROPIC_API_KEY=$NEWKEY" > .env
+    echo "Updated."
+  fi
 fi
 
 echo ""
