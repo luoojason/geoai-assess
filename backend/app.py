@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -89,7 +90,7 @@ async def get_counties(state_fips: str):
 class AssessRequest(BaseModel):
     state_fips: str
     county_fips: str
-    bbox: list[float] | None = None  # [west, south, east, north] in EPSG:4326
+    bbox: Optional[list[float]] = None  # [west, south, east, north] in EPSG:4326
 
 
 class AssessResponse(BaseModel):
@@ -297,7 +298,7 @@ class HcasProjectRequest(BaseModel):
 
 class HcasConfirmRequest(BaseModel):
     human_final: dict
-    edit_seconds: float | None = None
+    edit_seconds: Optional[float] = None
 
 
 class HcasChatRequest(BaseModel):

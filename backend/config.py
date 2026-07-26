@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,14 +10,14 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # LLM (HCAS reasoning steps) — None falls through to the SDK's env/profile chain
-    anthropic_api_key: str | None = None
+    anthropic_api_key: Optional[str] = None
 
     # Default projected CRS for CONUS counties (EPSG:5070 = CONUS Albers Equal Area)
     default_crs: str = "EPSG:5070"
 
     # Security settings
     cors_allowed_origins: list[str] = []
-    demo_password: str | None = None
+    demo_password: Optional[str] = None
     rate_limit_per_minute: int = 30
     trust_proxy_headers: bool = True
     rate_limit_lru_max: int = 1024

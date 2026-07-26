@@ -18,7 +18,7 @@ import logging
 import requests
 from functools import lru_cache
 from pathlib import Path
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _states() -> list[dict]:
     ]
 
 
-def lookup_county(state_fips: str, county_fips: str) -> CountyRecord | None:
+def lookup_county(state_fips: str, county_fips: str) -> Optional[CountyRecord]:
     """Return the CountyRecord for given FIPS codes, or None if not found."""
     return _index_by_fips().get((state_fips, county_fips))
 
