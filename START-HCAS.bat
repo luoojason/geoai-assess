@@ -1,6 +1,6 @@
 @echo off
 REM HCAS - one-click setup ^& launch for Windows.
-REM Requires Python 3.11+ from python.org (check "Add python.exe to PATH" during install).
+REM Requires Python 3.9+ from python.org (check "Add python.exe to PATH" during install).
 REM Safe to run again any time - it reuses the install.
 cd /d "%~dp0"
 
@@ -10,7 +10,7 @@ echo ===============================
 
 where python >nul 2>nul
 if errorlevel 1 (
-  echo Python was not found. Install Python 3.11+ from https://www.python.org/downloads/
+  echo Python was not found. Install Python 3.9+ from https://www.python.org/downloads/
   echo and check "Add python.exe to PATH" during installation, then run this again.
   pause
   exit /b 1
