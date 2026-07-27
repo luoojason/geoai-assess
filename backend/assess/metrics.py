@@ -10,6 +10,19 @@ import geopandas as gpd
 import pandas as pd
 
 
+def _clipped_area(geoms: gpd.GeoSeries, study_area: gpd.GeoDataFrame) -> gpd.GeoSeries:
+    """Per-feature area (m²) clipped to the study-area polygon, index preserved.
+
+    OSM layers are fetched by bounding box, so a single large feature (e.g. a
+    rural park or forest) can extend far beyond the study disc. Summing raw
+    areas then inflated the coverage ratio above 1.0 and clamped it to "100%"
+    — worst for sparse rural counties. Clipping to the study area first makes
+    the ratio a true fraction.
+    """
+    sa = study_area.geometry.union_all()
+    return geoms.intersection(sa).area
+
+
 def compute_building_coverage(
     buildings: gpd.GeoDataFrame,
     study_area: gpd.GeoDataFrame,
@@ -26,7 +39,7 @@ def compute_building_coverage(
     area_total = study_area.geometry.area.sum()
     if area_total == 0:
         return 0.0
-    building_area = buildings.geometry.area.sum()
+    building_area = _clipped_area(buildings.geometry, study_area).sum()
     return min(float(building_area / area_total), 1.0)
 
 
@@ -43,7 +56,7 @@ def compute_greenspace_coverage(
     if greenspace.crs != study_area.crs:
         greenspace = greenspace.to_crs(study_area.crs)
     area_total = study_area.geometry.area.sum()
-    green_area = float(greenspace.geometry.area.sum())
+    green_area = float(_clipped_area(greenspace.geometry, study_area).sum())
     ratio = min(green_area / area_total, 1.0) if area_total > 0 else 0.0
     return {"area_m2": green_area, "ratio": float(ratio)}
 
@@ -84,7 +97,7 @@ def compute_far(
         levels = pd.to_numeric(buildings["building:levels"], errors="coerce").fillna(1.0).clip(lower=1.0)
     else:
         levels = pd.Series(1.0, index=buildings.index)
-    floor_area = (buildings.geometry.area * levels).sum()
+    floor_area = (_clipped_area(buildings.geometry, study_area) * levels).sum()
     return float(floor_area / area_total)
 
 
@@ -103,7 +116,7 @@ def compute_parking_coverage(
     area_total = study_area.geometry.area.sum()
     if area_total == 0:
         return 0.0
-    return min(float(parking.geometry.area.sum() / area_total), 1.0)
+    return min(float(_clipped_area(parking.geometry, study_area).sum() / area_total), 1.0)
 
 
 def compute_pedestrian_density(

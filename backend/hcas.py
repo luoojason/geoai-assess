@@ -887,14 +887,28 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     return artifact, None, None
 
 
+# Map is a visual aid, not the data of record (metrics are computed on the full
+# layers), so it is safe to thin it hard for the browser. Dense urban counties
+# return ~60k buildings; rendering all of them made the map HTML ~45 MB and could
+# freeze a low-spec laptop. Cap the feature count (evenly sampled so coverage
+# stays spatially representative) and simplify more aggressively.
+_MAP_MAX_FEATURES = 3500
+_MAP_SIMPLIFY_M = 12.0
+
+
 def _slim_for_map(gdf):
-    """Geometry-only + 2m simplification: OSM tag columns (hundreds of mostly-NaN
-    keys serialized per feature) and full-precision vertices are what made raw
-    Franklin County maps ~500 MB."""
+    """Geometry-only, evenly capped, and simplified for a light browser payload.
+    OSM tag columns (hundreds of mostly-NaN keys per feature) and full-precision
+    vertices are what made raw Franklin County maps ~500 MB."""
     if gdf is None or gdf.empty:
         return gdf
     g = gdf[["geometry"]].copy()
-    g["geometry"] = g.geometry.simplify(2.0)
+    g = g[~g.geometry.is_empty & g.geometry.notna()]
+    n = len(g)
+    if n > _MAP_MAX_FEATURES:
+        # even stride keeps the sample spread across the area, not clustered
+        g = g.iloc[:: (n // _MAP_MAX_FEATURES) + 1]
+    g["geometry"] = g.geometry.simplify(_MAP_SIMPLIFY_M)
     return g[~g.geometry.is_empty]
 
 
