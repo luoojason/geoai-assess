@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # Security settings
     cors_allowed_origins: list[str] = []
     demo_password: Optional[str] = None
-    rate_limit_per_minute: int = 30
+    rate_limit_per_minute: int = 600
     trust_proxy_headers: bool = True
     rate_limit_lru_max: int = 1024
 

@@ -61,6 +61,15 @@ _assess_deps = [
     Depends(require_basic_auth),
 ]
 
+# The step-progress endpoint is polled once or twice a second while a step runs,
+# so it must NOT count against the abuse rate limit — otherwise a single normal
+# 30–60s step exhausts the per-minute budget and the app 429s its own polling and
+# the next run/confirm. Same header/auth checks, no rate limit.
+_hcas_poll_deps = [
+    Depends(require_geoai_header),
+    Depends(require_basic_auth),
+]
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -337,7 +346,7 @@ async def hcas_run_step(pid: str, step: int):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
-@app.get("/hcas/projects/{pid}/steps/{step}/progress", dependencies=_assess_deps)
+@app.get("/hcas/projects/{pid}/steps/{step}/progress", dependencies=_hcas_poll_deps)
 async def hcas_step_progress(pid: str, step: int):
     """Live progress of an in-flight step run (pct 0-100 + label); zeros when idle."""
     return hcas.get_progress(pid, step)
