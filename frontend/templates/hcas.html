@@ -750,6 +750,16 @@ async function refresh(keep){
   if(!keep){ const row=stepRow(S.current); S.edited=row?JSON.parse(JSON.stringify(row.human_final??row.ai_draft)):null; }
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd();
 }
+// Keep a freshly-drafted step in local project state so navigating away and
+// back restores it even if the server refresh below fails (e.g. a transient
+// error or rate-limit). Without this, a failed GET /projects left S.project
+// stale and the step re-rendered as "Nothing here yet".
+function upsertLocalDraft(n, draft){
+  if(!S.project || !Array.isArray(S.project.steps)) S.project = {...(S.project||{}), steps: []};
+  let row = S.project.steps.find(s=>s.step===n);
+  if(!row){ row={step:n}; S.project.steps.push(row); S.project.steps.sort((a,b)=>a.step-b.step); }
+  if(row.status!=="confirmed"){ row.status="drafted"; row.ai_draft=draft; }
+}
 async function runStep(){
   if(S.busy) return;
   setBusy(true); setMsg(""); statusRun("Running…");
@@ -760,7 +770,9 @@ async function runStep(){
     const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${S.current}/run`,{method:"POST"});
     S.edited=JSON.parse(JSON.stringify(ai_draft));
     S.draftShownAt=Date.now();
-    await refresh(true);
+    upsertLocalDraft(S.current, ai_draft);   // survive a failed refresh so nav restores it
+    try{ await refresh(true); }
+    catch(_){ renderRail(); renderBar(); renderCanvas(); renderCmd(); }
   }catch(e){ setMsg(e.message); renderCanvas(); }
   finally{ stopProgress(); setBusy(false); statusRun(""); }
 }
