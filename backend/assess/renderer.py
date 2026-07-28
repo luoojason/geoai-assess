@@ -5,6 +5,50 @@ import geopandas as gpd
 import folium
 
 
+def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
+    """A lightweight locator map: the study-area (county) boundary drawn over
+    CartoDB base tiles, fit to the boundary's extent. Shown from step 1 so the
+    Map View carries real context before the analysis runs (Prof. Shi 2026-07-27).
+
+    Raises ValueError if study_area is empty or None.
+    """
+    if study_area is None or study_area.empty:
+        raise ValueError("study_area must be a non-empty GeoDataFrame")
+
+    study_4326 = study_area.to_crs("EPSG:4326")
+    west, south, east, north = study_4326.geometry.total_bounds
+    centroid = study_4326.geometry.union_all().centroid
+    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=10, tiles="CartoDB positron")
+
+    fg = folium.FeatureGroup(name=place_name or "Study area", show=True)
+    folium.GeoJson(
+        study_4326.__geo_interface__,
+        style_function=lambda _: {
+            "fillColor": "#0d9488",
+            "fillOpacity": 0.10,
+            "color": "#0f766e",
+            "weight": 2,
+        },
+    ).add_to(fg)
+    fg.add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
+
+    if place_name:
+        label_html = f"""
+        <div style="
+            position: fixed; top: 10px; left: 10px; z-index: 1000;
+            background: white; padding: 7px 12px; border-radius: 6px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 13px;
+            font-family: sans-serif;
+        "><b>{place_name}</b><br>
+        <span style="color:#555">Study area · full county boundary</span></div>
+        """
+        m.get_root().html.add_child(folium.Element(label_html))
+
+    m.fit_bounds([[south, west], [north, east]])
+    return m._repr_html_()
+
+
 def render_assessment_map(
     study_area: gpd.GeoDataFrame,
     buildings: gpd.GeoDataFrame,

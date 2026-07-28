@@ -219,6 +219,31 @@
   .pbar .fill{height:100%;width:0%;background:var(--teal);border-radius:99px;
               transition:width .6s cubic-bezier(.4,0,.2,1);}
   .ppct{font:500 var(--fs-sm) var(--mono);color:var(--teal-d);margin-top:8px;}
+  /* live per-layer checklist under the progress bar */
+  .pchecklist{margin-top:16px;width:min(440px,80%);display:flex;flex-direction:column;gap:5px;text-align:left;}
+  .ck-row{display:flex;align-items:center;gap:9px;font:400 var(--fs-sm) var(--sans);color:var(--muted);
+          padding:5px 9px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);}
+  .ck-row.done{color:var(--ink);} .ck-row.error{color:var(--red);background:var(--red-tint);}
+  .ck-name{flex:1;font-weight:500;} .ck-meta{font:400 var(--fs-xs) var(--mono);color:var(--faint);white-space:nowrap;}
+  .ck-row.error .ck-meta{color:var(--red);white-space:normal;}
+  .ck-ok{color:var(--ok);font-weight:700;width:14px;text-align:center;flex:none;}
+  .ck-err{color:var(--red);font-weight:700;width:14px;text-align:center;flex:none;}
+  .ck-run{width:12px;height:12px;flex:none;border:2px solid var(--line-d);border-top-color:var(--teal);
+          border-radius:50%;animation:spin .8s linear infinite;}
+  /* layer list rows + right-click menu (Prof. Shi 2026-07-27) */
+  .lrow{align-items:center;gap:8px;padding:5px 4px 5px 2px;border-radius:6px;cursor:default;}
+  .lrow:hover{background:var(--teal-tint);}
+  .lvis{width:15px;height:15px;accent-color:var(--teal);flex:none;cursor:pointer;margin:0;}
+  .lvis-sp{width:15px;flex:none;display:inline-block;}
+  .lname{flex:1;color:var(--ink);font:400 var(--fs-sm) var(--sans);}
+  .lkebab{border:none;background:none;color:var(--ghost);font-size:15px;line-height:1;padding:2px 5px;border-radius:5px;
+          opacity:0;transition:opacity .12s,background .12s;}
+  .lrow:hover .lkebab{opacity:1;} .lkebab:hover{background:var(--line);color:var(--ink);}
+  .lmenu{position:fixed;z-index:60;background:var(--surface);border:1px solid var(--line-d);border-radius:var(--r-sm);
+         box-shadow:0 10px 30px -12px oklch(0.3 0.05 224/.5);padding:5px;min-width:186px;display:flex;flex-direction:column;}
+  .lmenu button{border:none;background:none;text-align:left;font:400 var(--fs-sm) var(--sans);color:var(--ink);
+                padding:8px 11px;border-radius:6px;}
+  .lmenu button:hover{background:var(--teal-tint);color:var(--teal-d);}
   /* drag handle between canvas and assistant (Prof. Shi: panels resizable) */
   #dragbar{width:6px;flex:none;cursor:col-resize;background:transparent;}
   #dragbar:hover,#dragbar.on{background:var(--teal-tint);}
@@ -379,6 +404,25 @@ const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* Map View helpers (Prof. Shi 2026-07-27: a base map from step 1). The locator
+   map is FIPS-scoped so it works from step 1 onward; meta carries the FIPS. */
+function basemapUrl(){
+  const m = S.project?.meta;
+  return m && m.state_fips && m.county_fips ? `/hcas/basemap/${m.state_fips}/${m.county_fips}` : "";
+}
+function baseMapFrame(){
+  const u = basemapUrl();
+  return u
+    ? `<iframe class="mapframe" src="${u}" title="Study area base map"></iframe>`
+    : `<div class="lab"><div class="eyebrow">Map view</div>
+        <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">Run step 1 to locate the study area.</div></div>`;
+}
+/* Folium FeatureGroup names in render_assessment_map / render_base_map — the
+   left-list visibility toggle drives these by clicking the matching overlay in
+   the map's own layer control (same-origin iframe). */
+const FOLIUM_LABEL = { buildings:"Buildings", greenspace:"Greenspace", roads:"Roads",
+  parking:"Parking", sidewalks:"Sidewalks", transit_stops:"Transit Stops", facilities:"Facilities" };
 const byStep = () => Object.fromEntries((S.project?.steps||[]).map(s=>[s.step,s]));
 const stepRow = n => (S.project?.steps||[]).find(s=>s.step===n) || null;
 
@@ -444,7 +488,24 @@ function renderCanvasLoading(){
     `<div class="loading"><div class="spin-lg"></div>
        <div class="pbar"><div class="fill" id="pfill"></div></div>
        <div class="ppct" id="ppct">0%</div>
-       <div class="lmsg" id="plabel">${esc(RUN_HINTS[n]||"Working…")}</div></div>`;
+       <div class="lmsg" id="plabel">${esc(RUN_HINTS[n]||"Working…")}</div>
+       <div class="pchecklist" id="pdetail"></div></div>`;
+}
+/* Live per-layer checklist (Prof. Shi 2026-07-27: show what is being fetched
+   from where, rather than a bar that sits still then jumps). */
+function renderChecklist(detail){
+  const box = $("pdetail"); if(!box || !Array.isArray(detail)) return;
+  box.innerHTML = detail.map(d=>{
+    const mark = d.status==="done" ? '<span class="ck-ok">✓</span>'
+      : d.status==="error" ? '<span class="ck-err">⚠</span>'
+      : '<span class="ck-run"></span>';
+    const meta = d.status==="done" && d.count!=null ? `${(+d.count).toLocaleString()} features`
+      : d.status==="error" ? esc(d.note||"unavailable")
+      : esc(d.source||"fetching…");
+    return `<div class="ck-row ${esc(d.status||"")}">${mark}
+      <span class="ck-name">${esc(d.name||d.layer||"")}</span>
+      <span class="ck-meta">${meta}</span></div>`;
+  }).join("");
 }
 
 /* Live progress while a step runs. Steps 3 & 7 report real per-layer numbers
@@ -465,6 +526,7 @@ function startProgress(){
     f.style.width = pct+"%";
     $("ppct").textContent = Math.round(pct)+"%";
     if(b.label) $("plabel").textContent = b.label;
+    if(b.detail) renderChecklist(b.detail);
   }, 700);
 }
 function stopProgress(){ if(PROG){ clearInterval(PROG); PROG = null; } }
@@ -516,8 +578,19 @@ function defineForm(){
     </div>
     <div class="fld"><label>Notes</label>
       <textarea id="f_tasks" placeholder="e.g. calculate a neighborhood health index; identify priority areas…"></textarea>
-      <div class="hint">The study area is a 5&nbsp;km radius around the county centroid. Run this step to create the project and locate it.</div>
-    </div></div>`;
+      <div class="hint">The study area is the entire county boundary. Run this step to create the project and locate it.</div>
+    </div>
+    <div class="fld"><label>Study area preview</label>
+      <div class="mapview" id="f_mappreview" style="height:240px;">
+        <div class="lab"><div class="eyebrow">Map view</div>
+          <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">Select a county to preview its boundary.</div></div>
+      </div></div>
+    </div>`;
+}
+function updateFormPreview(){
+  const s=$("f_state"), c=$("f_county"), box=$("f_mappreview");
+  if(!box || !s || !c || !s.value || !c.value) return;
+  box.innerHTML = `<iframe class="mapframe" src="/hcas/basemap/${s.value}/${c.value}" title="County boundary preview"></iframe>`;
 }
 async function loadStates(){
   try{
@@ -525,7 +598,9 @@ async function loadStates(){
     $("f_state").innerHTML = states.map(s=>`<option value="${s.state_fips}">${esc(s.state_name)}</option>`).join("");
     $("f_state").value = "39";
     await loadCounties();
-    $("f_state").onchange = loadCounties;
+    $("f_state").onchange = async ()=>{ await loadCounties(); updateFormPreview(); };
+    $("f_county").onchange = updateFormPreview;
+    updateFormPreview();
   }catch(e){ setMsg(e.message); }
 }
 async function loadCounties(){
@@ -533,19 +608,18 @@ async function loadCounties(){
   $("f_county").innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
 }
 
-/* step 1 — study area */
+/* step 1 — study area (now with a live base map, Prof. Shi 2026-07-27) */
 function viewIntake(a){
   return `<div class="panel"><div class="ph">Study area</div>
-    <div class="cols" style="align-items:flex-start;">
-      <dl class="kv">
+    <div class="cols" style="align-items:stretch;">
+      <dl class="kv" style="flex:none;width:280px;">
         <dt>Place</dt><dd>${esc(a.place_name||"—")}</dd>
         <dt>State FIPS</dt><dd class="mono">${esc(a.state_fips||"")}</dd>
         <dt>County FIPS</dt><dd class="mono">${esc(a.county_fips||"")}</dd>
         <dt>Centroid</dt><dd class="mono">${(a.centroid||[]).map(x=>(+x).toFixed(4)).join(", ")}</dd>
+        <dt>Extent</dt><dd>Entire county boundary</dd>
       </dl>
-      <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
-        <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">5&nbsp;km radius · ${esc(a.place_name||"")}</div>
-        <div style="color:var(--faint);font-size:12px;margin-top:7px;">Map preview appears at Step 7 — Run analysis.</div></div></div>
+      <div class="mapview" style="flex:1;">${baseMapFrame()}</div>
     </div></div>`;
 }
 
@@ -579,9 +653,114 @@ function wireFactors(){
   const nt=$("f_notes"); if(nt) nt.oninput=()=>{ S.edited.notes=nt.value; syncRaw(); };
 }
 
+/* ---- layer list (Prof. Shi 2026-07-27): names only, per-layer visibility
+   toggle, and a right-click menu → Attribute Table / Properties beneath the
+   map. Layer data is stashed so the menu can render without re-threading. ---- */
+let LAYER_DATA = {};    // key -> inventory entry (or study-area block)
+let STUDY_DATA = null;  // study-area block for shared extent/crs
+
+function layerRow(key, name, o){
+  o = o||{};
+  const cb = (o.toggle && o.foliumLabel)
+    ? `<input type="checkbox" class="lvis" checked title="Show / hide on map"
+         onclick="event.stopPropagation()" onchange="toggleMapLayer('${esc(o.foliumLabel)}',this.checked)">`
+    : `<span class="lvis-sp"></span>`;
+  return `<div class="leaf lrow" oncontextmenu="return layerMenu(event,'${esc(key)}')"
+       title="Right-click for Attribute Table &amp; Properties">
+    ${cb}<span class="lname">${esc(name)}${o.hasError?' <span style="color:var(--red)" title="fetch error">⚠</span>':''}</span>
+    <button class="lkebab" onclick="layerMenu(event,'${esc(key)}')" title="Layer options">⋯</button></div>`;
+}
+function layerListPanel(layers, studyArea, o){
+  o = o||{};
+  LAYER_DATA = {}; STUDY_DATA = studyArea || null;
+  let rows = "";
+  if(studyArea){
+    LAYER_DATA["__study__"] = studyArea;
+    rows += layerRow("__study__", studyArea.name||"Study area", {toggle:o.toggles, foliumLabel:"Study Area"});
+  }
+  (layers||[]).forEach(l=>{
+    LAYER_DATA[l.layer] = l;
+    rows += layerRow(l.layer, l.name||l.layer, {toggle:o.toggles, foliumLabel:FOLIUM_LABEL[l.layer], hasError:!!l.error});
+  });
+  return `<div class="grp"><div class="gname">Layers</div>${rows||'<div class="empty" style="padding:10px;">No layers.</div>'}</div>`;
+}
+function layerMenu(ev, key){
+  ev.preventDefault(); ev.stopPropagation(); closeLayerMenu();
+  const m = document.createElement("div"); m.id = "lmenu"; m.className = "lmenu";
+  m.innerHTML = `<button onclick="layerInfo('attr','${esc(key)}')">Open Attribute Table</button>
+    <button onclick="layerInfo('props','${esc(key)}')">Properties</button>`;
+  document.body.appendChild(m);
+  m.style.left = Math.min(ev.clientX, innerWidth-200)+"px";
+  m.style.top  = Math.min(ev.clientY, innerHeight-90)+"px";
+  // Close on the NEXT click. Deferred so this event doesn't self-close it, and
+  // on `click` (not `mousedown`) so a menu item's own click still lands first.
+  setTimeout(()=>document.addEventListener("click", closeLayerMenu, {once:true}), 0);
+  return false;
+}
+function closeLayerMenu(){ const m=$("lmenu"); if(m) m.remove(); }
+function kvTable(rows){
+  return `<table class="data"><tbody>${rows.map(([k,v])=>
+    `<tr><td style="font-family:var(--mono);color:var(--faint);white-space:nowrap;">${esc(k)}</td><td>${esc(v)}</td></tr>`
+  ).join("")}</tbody></table>`;
+}
+function layerInfo(kind, key){
+  closeLayerMenu();
+  const box = $("layerinfo"); if(!box) return;
+  const d = LAYER_DATA[key]; if(!d){ box.innerHTML=""; return; }
+  box.innerHTML = `<div class="panel">${kind==="attr" ? attrTableHtml(key,d) : propsHtml(key,d)}
+    <div style="margin-top:8px;"><button class="cbtn" style="padding:5px 11px;font-size:var(--fs-xs)" onclick="$('layerinfo').innerHTML=''">Close ✕</button></div></div>`;
+  box.scrollIntoView({behavior:REDUCED?"auto":"smooth", block:"nearest"});
+}
+function attrTableHtml(key,d){
+  let rows, note="";
+  if(key==="__study__"){
+    rows = [["FIPS", d.fips||"—"], ["Name", d.name||"Study area"]];
+    if(d.area_km2!=null)   rows.push(["Area (km²)", (+d.area_km2).toLocaleString()]);
+    if(d.population!=null)  rows.push(["Population", (+d.population).toLocaleString()]);
+    if(d.radius_m!=null)    rows.push(["Radius (m)", d.radius_m]);
+  } else {
+    rows = [["Layer", d.name||d.layer],
+            ["Feature count", d.feature_count!=null?(+d.feature_count).toLocaleString():"—"],
+            ["Geometry type", d.geom_type||"vector"]];
+    if(d.error) rows.push(["Fetch status", d.error]);
+    note = `<div class="subnote">Per-feature attributes (individual polygons) aren't stored in the audit record; the analysis map (step 7) draws every feature.</div>`;
+  }
+  return `<div class="ph">Attribute table · ${esc(d.name||d.layer||"layer")}</div>${kvTable(rows)}${note}`;
+}
+function propsHtml(key,d){
+  const ext = key==="__study__" ? d.extent_4326 : (STUDY_DATA && STUDY_DATA.extent_4326);
+  const rows = [
+    ["Source / origin", d.source||"—"],
+    ["Coordinate system", d.crs||"EPSG:5070"],
+    ["Geometry type", d.geom_type||"vector"],
+    ["Spatial extent (WGS84)", (ext&&ext.length===4) ? ext.map(x=>(+x).toFixed(3)).join(", ") : "—"],
+  ];
+  if(key!=="__study__") rows.push(["Feature count", d.feature_count!=null?(+d.feature_count).toLocaleString():"—"]);
+  if(d.area_km2!=null)  rows.push(["Area (km²)", (+d.area_km2).toLocaleString()]);
+  rows.push(["Cell size / resolution", "— (vector layer)"]);
+  return `<div class="ph">Properties · ${esc(d.name||d.layer||"layer")}</div>${kvTable(rows)}`;
+}
+/* Drive the map's own layer control from the left list. The folium map is a
+   nested srcdoc iframe (same origin), so we click the matching overlay input. */
+function toggleMapLayer(label, visible){
+  const f = document.querySelector(".mapframe"); if(!f) return;
+  try{
+    const outer = f.contentWindow;
+    const inner = outer.document.querySelector("iframe");
+    const doc = (inner && inner.contentWindow.document) || outer.document;
+    for(const lb of doc.querySelectorAll(".leaflet-control-layers-overlays label")){
+      if(lb.textContent.trim() === label){
+        const cb = lb.querySelector('input[type=checkbox]');
+        if(cb && cb.checked !== visible) cb.click();
+        return;
+      }
+    }
+  }catch(_){}
+}
+
 /* step 3 — data */
 function viewData(a){
-  const layers = groupLayers(a.layers||[]);
+  const list = layerListPanel(a.layers||[], a.study_area, {toggles:false});
   const ho = a.health_outcomes||{};
   const errs = (a.layers||[]).filter(l=>l.error);
   const warn = errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> — the flagged layers are empty, so their metrics will read zero. ${esc(errs[0].error)}</div></div>`:"";
@@ -589,23 +768,18 @@ function viewData(a){
     const flag = m.county_pct>m.us_pct ? '<span class="above">above US</span>' : '<span class="below">below US</span>';
     return `<tr><td>${esc(m.label)}</td><td>${m.county_pct}% ${flag}</td><td>${m.us_pct}%</td></tr>`;
   }).join("");
-  // Prof. Shi's layout: layers left · map upper-right · table beneath the map, no gap
+  // Prof. Shi's layout: layers left · map upper-right · tables beneath the map
   return `${warn}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
-    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Data layers</div>${layers}</div>
+    <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Data layers</div>${list}
+      <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
-      <div class="panel"><div class="ph">Spatial features</div>
-        <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
-          <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">bbox ${(a.bbox||[]).map(x=>(+x).toFixed(2)).join(", ")} · r=${a.radius_m||"?"}m</div>
-          <div style="color:var(--faint);font-size:12px;margin-top:7px;">Map preview appears at Step 7 — Run analysis.</div></div></div></div>
+      <div class="panel"><div class="ph">Study area map</div>
+        <div class="mapview">${baseMapFrame()}</div></div>
+      <div id="layerinfo"></div>
       <div class="panel"><div class="ph">${esc(ho.source||"Health outcomes")}</div>
         ${rows?`<table class="data"><thead><tr><th>Measure</th><th>County</th><th>US</th></tr></thead><tbody>${rows}</tbody></table>`
               :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div>
     </div></div>`;
-}
-function groupLayers(layers){
-  if(!layers.length) return '<div class="empty" style="padding:10px;">No layers.</div>';
-  return `<div class="grp"><div class="gname">Layers</div>${
-    layers.map(l=>`<div class="leaf"><span>${esc(l.layer)}${l.error?` <span title="${esc(l.error)}" style="color:var(--red);cursor:help;">⚠</span>`:""}</span><span class="c">${l.feature_count}${l.error?"":" · "+esc(l.crs||"")}</span></div>`).join("")}</div>`;
 }
 
 /* step 4 — methodology */
@@ -625,13 +799,15 @@ function viewSolution(a){
 
 /* step 5 — database */
 function viewDatabase(a){
+  const list = layerListPanel(a.layers||[], a.study_area_detail, {toggles:false});
   // Prof. Shi's map-step layout: layers left · map upper-right · details beneath
   return `<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
-    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Database layers</div>${groupLayers(a.layers||[])}</div>
+    <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Database layers</div>${list}
+      <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
-      <div class="panel"><div class="ph">Spatial features</div>
-        <div class="mapview"><div class="lab"><div class="eyebrow">Map view</div>
-          <div class="mono" style="font-size:12px;color:var(--faint);margin-top:5px;">Assembled database</div></div></div></div>
+      <div class="panel"><div class="ph">Study area map</div>
+        <div class="mapview">${baseMapFrame()}</div></div>
+      <div id="layerinfo"></div>
       <div class="panel"><div class="ph">Details</div>
         <dl class="kv"><dt>CRS</dt><dd class="mono">${esc(a.crs||"")}</dd>
         <dt>Study area</dt><dd>${esc(a.study_area||"")}</dd>
@@ -670,14 +846,23 @@ function viewExecution(a){
     ? `<iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe>`
     : `<div class="lab"><div class="eyebrow">Map view</div>
         <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">The map could not be rendered this run.</div></div>`;
-  // Prof. Shi's layout: map upper-right with the metrics table directly beneath
+  // Layer list built from the confirmed step-3 inventory (the analysis map draws
+  // these). Visibility checkboxes drive the map's own layer control. landuse has
+  // no map layer, so it shows without a toggle.
+  const s3 = stepRow(3);
+  const inv = s3 ? (s3.human_final||s3.ai_draft||{}) : {};
+  const list = layerListPanel(inv.layers||[], inv.study_area, {toggles:!!a.map_available});
+  // Prof. Shi's layout: layer list left · map upper-right · metrics + recs beneath
   return `${warn}${note}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
-    <div class="panel" style="width:340px;flex:none;"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div>
+    <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Layers</div>${list}
+      <div class="subnote">Toggle a layer's checkbox to show/hide it; right-click for attributes &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       <div class="panel"><div class="ph">Map view${a.map_available?` · <a href="/hcas/projects/${S.pid}/map" target="_blank" style="text-transform:none;letter-spacing:0;">open full map ↗</a>`:""}</div>
         <div class="mapview" style="height:330px;">${map}</div></div>
+      <div id="layerinfo"></div>
       <div class="panel"><div class="ph">Metrics</div>
         <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div></div>
+      <div class="panel"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div>
     </div></div>`;
 }
 
@@ -706,14 +891,26 @@ function wireMapCheck(){
   setTimeout(check, 15000);
 }
 
-/* step 8 — report */
+/* step 8 — report. Prof. Shi 2026-07-27: the report must include maps. The
+   preview shows the rendered report AND the study-area map, and "Download HTML"
+   produces a self-contained report file with the map embedded. */
 function viewReport(a){
+  const s7 = stepRow(7);
+  const mapOk = s7 && (s7.human_final||s7.ai_draft||{}).map_available;
+  const mapPanel = mapOk
+    ? `<div class="panel" style="margin-top:14px;"><div class="ph">Study area map (included in the report)</div>
+        <div class="mapview" style="height:300px;">
+          <iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe></div></div>`
+    : `<div class="subnote" style="margin-top:14px;">No map available — re-run step 7 to include one in the report.</div>`;
   return `<div class="cols" style="align-items:flex-start;">
     <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Editable draft (Markdown)</div>
       <textarea id="report">${esc(a.markdown||"")}</textarea>
-      <div style="margin-top:9px;"><button class="cbtn" onclick="downloadReport()">Download .md ↧</button></div></div>
+      <div style="margin-top:9px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="cbtn" onclick="downloadReport()">Download .md ↧</button>
+        <button class="cbtn" onclick="downloadHtmlReport(this)">Download HTML (with map) ↧</button></div></div>
     <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Preview</div>
-      <div class="rprev" id="rprev">${mdToHtml(a.markdown||"")}</div></div></div>`;
+      <div class="rprev" id="rprev">${mdToHtml(a.markdown||"")}</div>
+      ${mapPanel}</div></div>`;
 }
 function wireReport(){
   const ta=$("report");
@@ -722,6 +919,28 @@ function wireReport(){
 function downloadReport(){
   const md = (S.edited&&S.edited.markdown)||"";
   dl(md, (S.project?.meta.title||"report")+".md", "text/markdown");
+}
+async function downloadHtmlReport(btn){
+  const md = (S.edited&&S.edited.markdown)||"";
+  const s7 = stepRow(7);
+  const mapOk = s7 && (s7.human_final||s7.ai_draft||{}).map_available;
+  let mapHtml = "";
+  if(btn){ btn.disabled=true; btn.textContent="Building…"; }
+  if(mapOk){
+    try{ const r=await fetch(`/hcas/projects/${S.pid}/map`,{headers:HDRS}); if(r.ok) mapHtml=await r.text(); }
+    catch(_){}
+  }
+  const mapBlock = mapHtml
+    ? `<h2>Study area map</h2><iframe style="width:100%;height:520px;border:1px solid #ccc;border-radius:8px" srcdoc="${mapHtml.replace(/"/g,"&quot;")}"></iframe>`
+    : "";
+  const title = esc(S.project?.meta.title||"HCAS report");
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222}
+h1,h2,h3{font-family:Georgia,'Times New Roman',serif;line-height:1.25}
+table{border-collapse:collapse;margin:10px 0} th,td{border:1px solid #ccc;padding:5px 10px;font-size:14px} th{background:#f4f4f4}</style></head>
+<body>${mdToHtml(md)}${mapBlock}</body></html>`;
+  dl(doc, (S.project?.meta.title||"report")+".html", "text/html");
+  if(btn){ btn.disabled=false; btn.textContent="Download HTML (with map) ↧"; }
 }
 
 function viewRaw(){ return `<div class="empty">Generated — see the data below.</div>`; }

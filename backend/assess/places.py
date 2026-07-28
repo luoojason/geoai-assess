@@ -33,7 +33,12 @@ MEASURES = {
 }
 
 
-def _query(**filters) -> dict[str, float]:
+def _query(**filters) -> tuple[dict[str, float], int | None]:
+    """Return ({measureid: age-adjusted prevalence}, total_population | None).
+
+    PLACES carries the county's `totalpopulation` on every measure row; we pull
+    it once so the study-area attribute table can show a real population figure.
+    """
     params = {
         "$limit": 50,
         "datavaluetypeid": "AgeAdjPrv",
@@ -42,11 +47,21 @@ def _query(**filters) -> dict[str, float]:
     }
     r = requests.get(_URL, params=params, timeout=30)
     r.raise_for_status()
-    return {
+    rows = r.json()
+    values = {
         row["measureid"]: float(row["data_value"])
-        for row in r.json()
+        for row in rows
         if row.get("data_value")
     }
+    population = None
+    for row in rows:
+        if row.get("totalpopulation"):
+            try:
+                population = int(float(row["totalpopulation"]))
+            except (TypeError, ValueError):
+                population = None
+            break
+    return values, population
 
 
 def fetch_health_outcomes(state_fips: str, county_fips: str) -> dict:
@@ -56,10 +71,11 @@ def fetch_health_outcomes(state_fips: str, county_fips: str) -> dict:
     Measures suppressed or missing for the county are omitted. Raises on
     network/HTTP failure — the caller decides whether that is fatal.
     """
-    county = _query(locationid=f"{state_fips}{county_fips}")
-    us = _query(stateabbr="US")
+    county, population = _query(locationid=f"{state_fips}{county_fips}")
+    us, _ = _query(stateabbr="US")
     return {
         "source": "CDC PLACES (BRFSS model-based estimates, age-adjusted %)",
+        "total_population": population,
         "measures": [
             {
                 "id": mid,

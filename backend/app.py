@@ -348,8 +348,14 @@ async def hcas_run_step(pid: str, step: int):
 
 @app.get("/hcas/projects/{pid}/steps/{step}/progress", dependencies=_hcas_poll_deps)
 async def hcas_step_progress(pid: str, step: int):
-    """Live progress of an in-flight step run (pct 0-100 + label); zeros when idle."""
-    return hcas.get_progress(pid, step)
+    """Live progress of an in-flight step run (pct 0-100 + label + optional
+    per-layer detail); exactly {"pct": 0, "label": ""} when idle. The `detail`
+    key is omitted while empty so idle polls stay minimal."""
+    out = hcas.get_progress(pid, step)
+    detail = hcas.get_progress_detail(pid, step)
+    if detail:
+        out["detail"] = detail
+    return out
 
 
 @app.post("/hcas/projects/{pid}/run_all", dependencies=_assess_deps)
@@ -407,6 +413,23 @@ async def hcas_map(pid: str):
         return HTMLResponse(hcas.get_map(pid))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get(
+    "/hcas/basemap/{state_fips}/{county_fips}",
+    response_class=HTMLResponse,
+    dependencies=_hcas_link_deps,
+)
+async def hcas_basemap(state_fips: str, county_fips: str):
+    """Study-area locator map (county boundary over base tiles), shown from step
+    1. FIPS-scoped so the step-1 create form can preview it before a project
+    exists. Opened in an <iframe>, so it carries no CSRF header (see link deps)."""
+    try:
+        return HTMLResponse(await asyncio.to_thread(hcas.basemap_for_county, state_fips, county_fips))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/hcas/audit.csv", dependencies=_hcas_link_deps)

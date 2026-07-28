@@ -55,6 +55,10 @@ def _mock_llm_and_fetchers(monkeypatch):
         "_layer_fetchers",
         lambda: {name: (lambda bbox: _fake_gdf()) for name in all_layers},
     )
+    # Force the 5 km-disc study-area fallback so these tests stay network-free
+    # and deterministic (the county-boundary path is covered separately, with a
+    # mocked geometry, in TestCountyStudyArea).
+    monkeypatch.setattr(hcas, "_county_geometry", lambda s, c: None)
     from backend.assess import places
 
     monkeypatch.setattr(
@@ -234,7 +238,16 @@ class TestStep3:
         draft = hcas.run_step(pid, 3, db=db)
         assert called == ["greenspace"]
         assert draft["kind"] == "layer_inventory"
-        assert draft["layers"] == [{"layer": "greenspace", "feature_count": 3, "crs": "EPSG:5070"}]
+        assert draft["layers"] == [{
+            "layer": "greenspace",
+            "name": "Parks & green space",
+            "feature_count": 3,
+            "crs": "EPSG:5070",
+            "source": "OpenStreetMap · Overpass API",
+            "geom_type": "polygon",
+        }]
+        # study area recorded as a first-class layer of record (disc fallback here)
+        assert draft["study_area"]["kind"] == "disc"
         assert len(draft["bbox"]) == 4
 
     def test_step3_bbox_brackets_centroid(self, tmp_path):
@@ -815,3 +828,63 @@ class TestStepProgress:
         ).json()["project_id"]
         r = client.get(f"/hcas/projects/{pid}/steps/3/progress", headers=h)
         assert r.status_code == 200 and r.json() == {"pct": 0, "label": ""}
+
+    def test_progress_detail_registry_set_get_clear(self):
+        hcas.set_progress_detail("pd", 3, [{"name": "Roads", "status": "done", "count": 5}])
+        got = hcas.get_progress_detail("pd", 3)
+        assert got == [{"name": "Roads", "status": "done", "count": 5}]
+        hcas.clear_progress("pd", 3)
+        assert hcas.get_progress_detail("pd", 3) == []
+
+    def test_step3_records_per_layer_detail(self, tmp_path, monkeypatch):
+        seen = []
+        real = hcas.set_progress_detail
+        monkeypatch.setattr(
+            hcas, "set_progress_detail",
+            lambda pid, step, detail: (seen.append([dict(d) for d in detail]), real(pid, step, detail)))
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        hcas.run_step(pid, 3, db=db)
+        # the greenspace layer flips from "fetching" to "done" with a real source
+        flat = [d for snap in seen for d in snap]
+        assert any(d["layer"] == "greenspace" and d["status"] == "done" for d in flat)
+        assert any(d["source"].startswith("OpenStreetMap") for d in flat)
+
+
+class TestCountyStudyArea:
+    """Prof. Shi 2026-07-27: a county query assesses the WHOLE county, not a
+    5 km disc around its centroid. Step 3/5/7 use the county polygon when the
+    boundary source is reachable."""
+
+    def _county_gdf(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        # a bbox roughly bracketing Franklin County, OH, as a stand-in polygon
+        return (
+            gpd.GeoDataFrame(geometry=[box(-83.2, 39.8, -82.8, 40.1)], crs="EPSG:4326")
+            .to_crs("EPSG:5070")
+            .reset_index(drop=True)
+        )
+
+    def test_step3_uses_county_boundary_when_available(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "_county_geometry", lambda s, c: self._county_gdf())
+        pid, db = _project(tmp_path)
+        hcas.confirm_step(pid, 1, hcas.run_step(pid, 1, db=db), db=db)
+        hcas.confirm_step(pid, 2, hcas.run_step(pid, 2, db=db), db=db)
+        draft = hcas.run_step(pid, 3, db=db)
+        sa = draft["study_area"]
+        assert sa["kind"] == "county"
+        assert sa["fips"] == "39049"
+        assert sa["area_km2"] > 0
+        assert "radius_m" not in draft  # county path carries no disc radius
+
+    def test_basemap_for_county_renders_html(self, monkeypatch):
+        monkeypatch.setattr(hcas, "_county_geometry", lambda s, c: self._county_gdf())
+        hcas._basemap_cache.clear()
+        html = hcas.basemap_for_county("39", "049")
+        assert "<div" in html.lower() and "leaflet" in html.lower()
+
+    def test_basemap_unknown_county_raises(self):
+        with pytest.raises(ValueError, match="Unknown county"):
+            hcas.basemap_for_county("99", "999")

@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 # GET /hcas/projects/{pid}/steps/{step}/progress so the wizard can show a real
 # percentage (per-layer for the fetch-heavy steps). Cleared when the run ends.
 _progress: dict[tuple[str, int], dict] = {}
+# Per-layer detail lines shown as a live checklist beneath the bar (Prof. Shi
+# 2026-07-27: "show what data layer is being fetched from where … rather than
+# just a simple progress bar"). Kept in a SEPARATE registry so set_progress /
+# get_progress keep their original (pct, label) contract; the HTTP endpoint
+# merges the two, and omits `detail` when empty so an idle poll still returns
+# exactly {"pct": 0, "label": ""}.
+_progress_detail: dict[tuple[str, int], list] = {}
 _progress_lock = threading.Lock()
 
 
@@ -40,9 +47,22 @@ def get_progress(pid: str, step: int) -> dict:
         return dict(_progress.get((pid, step), {"pct": 0, "label": ""}))
 
 
+def set_progress_detail(pid: str, step: int, detail: list) -> None:
+    """Replace the live per-layer checklist for a running step. Each item is
+    {name, source, status: 'fetching'|'done'|'error', count?, note?}."""
+    with _progress_lock:
+        _progress_detail[(pid, step)] = list(detail)
+
+
+def get_progress_detail(pid: str, step: int) -> list:
+    with _progress_lock:
+        return list(_progress_detail.get((pid, step), []))
+
+
 def clear_progress(pid: str, step: int) -> None:
     with _progress_lock:
         _progress.pop((pid, step), None)
+        _progress_detail.pop((pid, step), None)
 
 from backend.assess.references import REFERENCES
 from backend.gis.counties import build_place_name, centroid_of_county, lookup_county
@@ -93,6 +113,26 @@ METRIC_LAYERS = {
     "facility_access": ["facilities"],
     "land_use_mix": ["landuse"],
 }
+
+# Human name, source, and geometry kind for each layer. Surfaced in the data
+# inventory so the wizard's layer list can show a real name and a right-click
+# "Properties" panel (source, geometry type) without re-deriving from geometry
+# — the artifact JSON never carries the geometries themselves. (Prof. Shi
+# 2026-07-27: layer list shows names; Properties includes source + CRS.)
+LAYER_META = {
+    "buildings":     ("Building footprints",  "OpenStreetMap · Overpass API", "polygon"),
+    "greenspace":    ("Parks & green space",  "OpenStreetMap · Overpass API", "polygon"),
+    "roads":         ("Road network",         "OpenStreetMap · Overpass API", "line"),
+    "parking":       ("Parking areas",        "OpenStreetMap · Overpass API", "polygon"),
+    "sidewalks":     ("Sidewalks & paths",    "OpenStreetMap · Overpass API", "line"),
+    "transit_stops": ("Transit stops",        "OpenStreetMap · Overpass API", "point"),
+    "facilities":    ("Community facilities", "OpenStreetMap · Overpass API", "point"),
+    "landuse":       ("Land use",             "OpenStreetMap · Overpass API", "polygon"),
+}
+
+
+def _layer_meta(name: str) -> tuple[str, str, str]:
+    return LAYER_META.get(name, (name.replace("_", " ").title(), "OpenStreetMap", "vector"))
 
 _STEP2_SYSTEM = (
     "You are the methodology engine of HCAS, a healthy-community assessment system "
@@ -581,43 +621,160 @@ def _bbox_from_centroid(lat: float, lon: float, radius_m: float = 5000) -> list[
     return [float(west), float(south), float(east), float(north)]
 
 
+def _county_geometry(state_fips: str, county_fips: str):
+    """The actual county polygon as a one-row GeoDataFrame in EPSG:5070, or None
+    if the boundary source is unreachable. Prof. Shi (2026-07-27): a county query
+    should assess the WHOLE county, not a 5km disc around its centroid."""
+    from backend.gis.collector_lite import collect_county_boundaries
+
+    counties = collect_county_boundaries(state_fips)
+    if counties is None or counties.empty:
+        return None
+    row = counties[counties["GEOID"] == f"{state_fips}{county_fips}"]
+    if row.empty:
+        return None
+    geom = row[["geometry"]].to_crs("EPSG:5070").reset_index(drop=True)
+    name = None
+    if "NAME" in row.columns:
+        try:
+            name = str(row.iloc[0]["NAME"])
+        except Exception:
+            name = None
+    geom.attrs["county_name"] = name
+    return geom
+
+
+def _resolve_study_area(project: dict):
+    """Return (study_area_5070, bbox_4326, describe: dict). Uses the real county
+    polygon when the boundary is reachable, else falls back to the legacy 5km
+    disc around the centroid so a run never hard-fails on a boundary outage.
+
+    `describe` carries what the artifact and UI need: a human string, the kind
+    ('county' | 'disc'), FIPS, and (county path only) area in km²."""
+    meta = project["meta"]
+    state, county = meta["state_fips"], meta["county_fips"]
+    place = _confirmed(project, 1).get("place_name", "the study area")
+    geom = _county_geometry(state, county)
+    if geom is not None and not geom.empty:
+        bbox = [float(x) for x in geom.to_crs("EPSG:4326").total_bounds]
+        area_km2 = round(float(geom.geometry.area.sum()) / 1_000_000, 2)
+        return geom, bbox, {
+            "kind": "county",
+            "text": f"{place} — entire county boundary",
+            "fips": f"{state}{county}",
+            "area_km2": area_km2,
+        }
+    lat, lon = _confirmed(project, 1)["centroid"]
+    disc = _study_area(lat, lon)
+    return disc, _bbox_from_centroid(lat, lon), {
+        "kind": "disc",
+        "text": "5 km buffer around the county centroid (county boundary unavailable)",
+        "fips": f"{state}{county}",
+        "radius_m": 5000,
+    }
+
+
+# --- Base map (visible from step 1, Prof. Shi 2026-07-27) ---------------------
+# A lightweight locator map of the study area (county boundary over base tiles).
+# Cached per FIPS so the wizard's <iframe> and the create-form live preview do
+# not re-hit the boundary service on every reload.
+_basemap_cache: dict[tuple[str, str], str] = {}
+_basemap_lock = threading.Lock()
+
+
+def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None) -> str:
+    """Rendered HTML for the study-area locator map. Raises ValueError for an
+    unknown county, RuntimeError if the boundary cannot be reached."""
+    if lookup_county(state_fips, county_fips) is None:
+        raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
+    key = (state_fips, county_fips)
+    with _basemap_lock:
+        if key in _basemap_cache:
+            return _basemap_cache[key]
+    geom = _county_geometry(state_fips, county_fips)
+    if geom is None or geom.empty:
+        raise RuntimeError(
+            "The county boundary map could not be loaded — the boundary service "
+            "(Census TIGERweb) was unreachable. Check your internet/VPN and retry."
+        )
+    place = build_place_name(state_fips, county_fips)
+    from backend.assess.renderer import render_base_map
+
+    html = render_base_map(geom, place)
+    with _basemap_lock:
+        _basemap_cache[key] = html
+    return html
+
+
 def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from backend.assess.netdiag import friendly_net_reason, take_fetch_errors
 
     factors = _confirmed(project, 2)["factors"]
     names = sorted({layer for f in factors for layer in METRIC_LAYERS[f["metric"]]})
-    lat, lon = _confirmed(project, 1)["centroid"]
-    bbox = _bbox_from_centroid(lat, lon)
+    study_area, bbox, describe = _resolve_study_area(project)
     fetchers = _layer_fetchers()
     pid = project["id"]
     total = len(names) + 1  # +1: the CDC PLACES fetch at the end
+
+    # Live per-layer checklist: each layer starts "fetching", flips to "done"
+    # (with its feature count) or "error" the moment ITS fetch returns — not in
+    # submission order. This is the fix for Prof. Shi's "stuck at 1/7 then
+    # everything done at once": the old ex.map yielded strictly in order, so a
+    # single slow layer froze the bar while the rest silently finished.
+    detail = [
+        {"name": _layer_meta(n)[0], "layer": n, "source": _layer_meta(n)[1],
+         "status": "fetching"}
+        for n in names
+    ]
+    set_progress_detail(pid, 3, detail)
     set_progress(pid, 3, 2, f"fetching {len(names)} map layers…")
-    gdfs = []
+
+    results: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=4) as ex:
-        # consume lazily so progress advances as each layer's fetch completes
-        for g in ex.map(lambda n: fetchers[n](tuple(bbox)), names):
-            gdfs.append(g)
-            set_progress(pid, 3, len(gdfs) / total * 100,
-                         f"map layers {len(gdfs)}/{len(names)}")
+        futures = {ex.submit(fetchers[n], tuple(bbox)): n for n in names}
+        done = 0
+        for fut in as_completed(futures):
+            n = futures[fut]
+            g = fut.result()
+            results[n] = g
+            done += 1
+            slot = next(d for d in detail if d["layer"] == n)
+            slot["status"] = "done"
+            slot["count"] = int(len(g))
+            set_progress_detail(pid, 3, detail)
+            set_progress(pid, 3, done / total * 100,
+                         f"map layers {done}/{len(names)} · {_layer_meta(n)[0]} "
+                         f"({len(g):,} features)")
+    gdfs = [results[n] for n in names]
     # Failed fetches surface in the artifact (Prof. Shi's blocked-network test:
     # silent empty layers looked like a working run with no data).
     errs = take_fetch_errors()
-    inventory = [
-        {
+    inventory = []
+    for n, g in zip(names, gdfs):
+        label, source, geom_type = _layer_meta(n)
+        err = errs.get(getattr(fetchers[n], "__name__", ""))
+        if err:
+            slot = next(d for d in detail if d["layer"] == n)
+            slot["status"] = "error"
+            slot["note"] = err
+        inventory.append({
             "layer": n,
+            "name": label,
             "feature_count": int(len(g)),
             "crs": str(g.crs),
-            **({"error": e} if (e := errs.get(getattr(fetchers[n], "__name__", ""))) else {}),
-        }
-        for n, g in zip(names, gdfs)
-    ]
+            "source": source,
+            "geom_type": geom_type,
+            **({"error": err} if err else {}),
+        })
+    set_progress_detail(pid, 3, detail)
 
     from backend.assess import places
 
     meta = project["meta"]
-    set_progress(pid, 3, (total - 1) / total * 100, "county health outcomes…")
+    set_progress(pid, 3, (total - 1) / total * 100,
+                 "county health outcomes — CDC PLACES…")
     try:
         outcomes = places.fetch_health_outcomes(meta["state_fips"], meta["county_fips"])
     except Exception as exc:  # CDC being down shouldn't block the OSM layers
@@ -625,13 +782,36 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
         outcomes = {"source": "CDC PLACES", "measures": [],
                     "note": f"unavailable this run: {friendly_net_reason(exc)}"}
 
-    return {
+    # The study area as a first-class layer of record, so its attribute table
+    # (FIPS, area, population) and properties can be shown like any other layer.
+    study_layer = {
+        "kind": describe["kind"],
+        "name": "Study area",
+        "fips": describe.get("fips"),
+        "crs": "EPSG:5070 (CONUS Albers Equal Area)",
+        "extent_4326": bbox,
+        "source": "US Census TIGERweb county boundaries"
+                  if describe["kind"] == "county" else "Derived 5 km centroid buffer",
+        "geom_type": "polygon",
+    }
+    if describe.get("area_km2") is not None:
+        study_layer["area_km2"] = describe["area_km2"]
+    if describe.get("radius_m") is not None:
+        study_layer["radius_m"] = describe["radius_m"]
+    pop = (outcomes or {}).get("total_population")
+    if pop is not None:
+        study_layer["population"] = pop
+
+    artifact = {
         "kind": "layer_inventory",
         "bbox": bbox,
-        "radius_m": 5000,
+        "study_area": study_layer,
         "layers": inventory,
         "health_outcomes": outcomes,
-    }, None, None
+    }
+    if describe["kind"] == "disc":
+        artifact["radius_m"] = 5000  # back-compat for the disc-fallback path
+    return artifact, None, None
 
 
 # ponytail: this dict IS the mock knowledgebase — the kg.community_summary /
@@ -791,11 +971,22 @@ def _metric_computers() -> dict:
 
 def _run_step_5(project: dict) -> tuple[dict, str | None, dict | None]:
     inv = _confirmed(project, 3)
+    sa = inv.get("study_area") or {}
+    # Prefer the step-3 study-area description; fall back for old disc artifacts.
+    if sa:
+        study_desc = (
+            f"{sa.get('name', 'Study area')} · "
+            + (f"county boundary ({sa['area_km2']} km²)" if sa.get("kind") == "county"
+               else f"{sa.get('radius_m', 5000)} m centroid buffer")
+        )
+    else:
+        study_desc = f"{inv.get('radius_m', 5000)} m circular buffer around the county centroid"
     return {
         "kind": "gis_database",
         "crs": "EPSG:5070 (CONUS Albers Equal Area)",
         "extent_bbox_4326": inv["bbox"],
-        "study_area": f"{inv['radius_m']}m circular buffer around the county centroid",
+        "study_area": study_desc,
+        "study_area_detail": sa,
         "layers": inv["layers"],
         "storage": "layers fetched from OSM per run; artifacts persisted in the audit store",
     }, None, None
@@ -812,7 +1003,7 @@ def _run_step_6(project: dict) -> tuple[dict, str | None, dict | None]:
 
 
 def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from backend.assess import generate_interventions
     from backend.assess.netdiag import take_fetch_errors
@@ -821,24 +1012,44 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     plan = [s for s in _confirmed(project, 6)["steps"] if s["action"] == "compute"]
     metrics_wanted = [s["metric"] for s in plan]
     names = sorted({layer for m in metrics_wanted for layer in METRIC_LAYERS[m]})
-    lat, lon = _confirmed(project, 1)["centroid"]
-    bbox = tuple(_bbox_from_centroid(lat, lon))
+    study_area, bbox_list, describe = _resolve_study_area(project)
+    bbox = tuple(bbox_list)
     fetchers = _layer_fetchers()
     pid = project["id"]
+    detail = [
+        {"name": _layer_meta(n)[0], "layer": n, "source": _layer_meta(n)[1],
+         "status": "fetching"}
+        for n in names
+    ]
+    set_progress_detail(pid, 7, detail)
     set_progress(pid, 7, 2, f"fetching {len(names)} map layers…")
-    fetched = []
+    results: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=4) as ex:
-        for g in ex.map(lambda n: fetchers[n](bbox), names):
-            fetched.append(g)
-            set_progress(pid, 7, len(fetched) / max(len(names), 1) * 65,
-                         f"map layers {len(fetched)}/{len(names)}")
-    layers = dict(zip(names, fetched))
+        futures = {ex.submit(fetchers[n], bbox): n for n in names}
+        done = 0
+        for fut in as_completed(futures):
+            n = futures[fut]
+            results[n] = fut.result()
+            done += 1
+            slot = next(d for d in detail if d["layer"] == n)
+            slot["status"] = "done"
+            slot["count"] = int(len(results[n]))
+            set_progress_detail(pid, 7, detail)
+            set_progress(pid, 7, done / max(len(names), 1) * 65,
+                         f"map layers {done}/{len(names)} · {_layer_meta(n)[0]} "
+                         f"({len(results[n]):,} features)")
+    layers = {n: results[n] for n in names}
     errs = take_fetch_errors()
     fetch_errors = {
         n: e for n in names
         if (e := errs.get(getattr(fetchers[n], "__name__", "")))
     }
-    study_area = _study_area(lat, lon)
+    for n, e in fetch_errors.items():
+        slot = next(d for d in detail if d["layer"] == n)
+        slot["status"] = "error"
+        slot["note"] = e
+    set_progress_detail(pid, 7, detail)
+    # study_area resolved above (county polygon, or 5 km disc fallback)
     computers = _metric_computers()
     set_progress(pid, 7, 70, "computing metrics…")
     metrics: dict = {}
@@ -963,11 +1174,42 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     results = _confirmed(project, 7)
     cited = {r["title"]: r for refs in REFERENCES.values() for r in refs}
 
+    step3 = _confirmed(project, 3)
+    sa = (step3.get("study_area") or {}) if isinstance(step3, dict) else {}
+    study_line = ""
+    if sa.get("kind") == "county":
+        study_line = (
+            f"\n_Study area: {area.get('place_name', 'study area')} — entire county boundary"
+            + (f" ({sa['area_km2']} km²)." if sa.get("area_km2") is not None else ".")
+            + "_\n"
+        )
+    elif sa:
+        study_line = "\n_Study area: 5 km buffer around the county centroid._\n"
+
+    # Prof. Shi 2026-07-27: the report must include maps. The interactive study-
+    # area map is embedded in the HTML export (Download HTML) and shown in the
+    # app; markdown carries this section so the map has a home in every format.
+    map_section = ["\n## Study area map"]
+    if results.get("map_available"):
+        map_section.append(
+            "An interactive map of the study area and its data layers "
+            "(buildings, green space, roads, facilities, and more) is included in "
+            "the HTML export of this report and shown in the assessment app. Each "
+            "layer can be toggled on or off."
+        )
+    else:
+        map_section.append(
+            "_The map could not be rendered on the last analysis run — re-run "
+            "step 7 with a working connection to include it._"
+        )
+
     lines = [
         f"# Healthy Community Assessment: {area.get('place_name', 'study area')}",
-        f"\n_Project: {project['meta']['title']}_\n",
+        f"\n_Project: {project['meta']['title']}_",
+        study_line,
         "## Methodology",
         framework.get("framework", ""),
+        *map_section,
         "\n### Theoretical basis",
         *[f"- **{t['theory']}** — {t['application']}" for t in framework.get("theoretical_basis", [])],
         "\n### Factors and metrics",
