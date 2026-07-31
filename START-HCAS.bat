@@ -71,6 +71,11 @@ echo Saved.
 echo.
 echo Starting HCAS. Your browser will open at http://127.0.0.1:8000/hcas
 echo Leave this window open while using the tool. Close it to stop.
-start "" "http://127.0.0.1:8000/hcas"
+REM Opening the browser immediately races uvicorn's startup (import geopandas/
+REM osmnx etc. takes a few seconds), so the first load shows "unavailable"
+REM until manually refreshed. Delay the open in a detached, hidden PowerShell
+REM process (present on all supported Windows versions) so this window can
+REM move straight on to starting uvicorn instead of blocking on a wait here.
+start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 4; Start-Process 'http://127.0.0.1:8000/hcas'"
 python -m uvicorn backend.app:app --port 8000
 pause
