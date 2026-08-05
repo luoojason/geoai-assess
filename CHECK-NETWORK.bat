@@ -47,25 +47,32 @@ REM (cdn.jsdelivr.net 301s the bare domain). Reporting an unfollowed 3xx as a ca
 REM portal sends the user chasing a network fault that does not exist. We record the
 REM FINAL status and the URL we actually landed on, so a real portal - which lands you
 REM on a different host - is still visible in the output a human reads.
-curl.exe -sSL -m 12 -o NUL -w "%%{http_code} %%{url_effective}" %1 > "%STATUSFILE%" 2>nul
+curl.exe -sSL -m 12 -o NUL -w "%%{http_code} %%{num_redirects} %%{url_effective}" %1 > "%STATUSFILE%" 2>nul
 set rc=%errorlevel%
 set "code="
 set "landed="
-if exist "%STATUSFILE%" for /f "usebackq tokens=1,2" %%A in ("%STATUSFILE%") do set "code=%%A" & set "landed=%%B"
+set "hops=0"
+if exist "%STATUSFILE%" for /f "usebackq tokens=1,2,3" %%A in ("%STATUSFILE%") do set "code=%%A" & set "hops=%%B" & set "landed=%%C"
 if not defined code set "code=000"
 
 REM --- transport-level failures: the server was never reached ---
 if "%rc%"=="6"  echo   FAILED  %~2 - DNS lookup failed: this computer cannot find the server's address
-if "%rc%"=="6"  exit /b 0
+if "%rc%"=="6"  if "%rc%"=="6" if not "%hops%"=="0" echo             ...after %hops% redirect(s), last stop %landed% - this is what a captive portal looks like
+if "%rc%"=="6" exit /b 0
 if "%rc%"=="7"  echo   FAILED  %~2 - connection blocked: address found but unreachable
-if "%rc%"=="7"  exit /b 0
+if "%rc%"=="7"  if "%rc%"=="7" if not "%hops%"=="0" echo             ...after %hops% redirect(s), last stop %landed% - this is what a captive portal looks like
+if "%rc%"=="7" exit /b 0
 if "%rc%"=="28" echo   FAILED  %~2 - timed out
+if "%rc%"=="28" if "%rc%"=="28" if not "%hops%"=="0" echo             ...after %hops% redirect(s), last stop %landed% - this is what a captive portal looks like
 if "%rc%"=="28" exit /b 0
 if "%rc%"=="35" echo   FAILED  %~2 - secure connection failed: something on this network is intercepting HTTPS
+if "%rc%"=="35" if "%rc%"=="35" if not "%hops%"=="0" echo             ...after %hops% redirect(s), last stop %landed% - this is what a captive portal looks like
 if "%rc%"=="35" exit /b 0
 if "%rc%"=="56" echo   FAILED  %~2 - a proxy on this network refused the connection
+if "%rc%"=="56" if "%rc%"=="56" if not "%hops%"=="0" echo             ...after %hops% redirect(s), last stop %landed% - this is what a captive portal looks like
 if "%rc%"=="56" exit /b 0
 if "%rc%"=="60" echo   FAILED  %~2 - certificate not trusted: traffic is being intercepted by a proxy or filter
+if "%rc%"=="60" if "%rc%"=="60" if not "%hops%"=="0" echo             ...after %hops% redirect(s), last stop %landed% - this is what a captive portal looks like
 if "%rc%"=="60" exit /b 0
 if not "%rc%"=="0" echo   FAILED  %~2 - error code %rc%
 if not "%rc%"=="0" exit /b 0

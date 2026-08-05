@@ -95,13 +95,52 @@ def test_block_page_is_reported_as_failed(status):
 
 
 def test_redirect_to_a_portal_is_reported_as_failed():
+    # The script follows redirects (-L), because a bare 3xx is NORMAL for several of
+    # the real targets — cdn.jsdelivr.net 301s its own bare domain, and reporting
+    # that as a captive portal sent the user chasing a fault that did not exist. So
+    # we no longer assert on the intermediate "302". What must survive is that a
+    # redirect off to a portal still FAILS and that the portal is named, so whoever
+    # reads the screenshot can see where their traffic was sent.
     server = _serve(302)
     try:
         out = _run_check(f"http://127.0.0.1:{server.server_address[1]}/")
     finally:
         server.shutdown()
-    assert "FAILED" in out and "302" in out, out
+    assert "FAILED" in out, out
+    assert not re.search(r"^\s*OK\s", out, re.M), out
+    assert "portal.example" in out, out          # where the traffic actually went
+    assert "redirect" in out, out                # and that it got there via a redirect
     assert "captive portal" in out, out
+
+
+def test_a_normal_redirect_to_a_working_host_is_not_called_a_portal():
+    # Regression guard for the false failure this replaced: a plain 3xx that lands
+    # somewhere healthy is a success, and the landing URL must still be printed so a
+    # genuine off-host portal stays visible to a human.
+    dest = _serve(200, b'{"ok":true}')
+    port = dest.server_address[1]
+
+    class Redirect(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(301)
+            self.send_header("Location", f"http://127.0.0.1:{port}/landed")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    hop = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=hop.serve_forever, daemon=True).start()
+    try:
+        out = _run_check(f"http://127.0.0.1:{hop.server_address[1]}/")
+    finally:
+        hop.shutdown()
+        dest.shutdown()
+    assert re.search(r"^\s*OK\s+TEST TARGET - HTTP 200", out, re.M), out
+    assert "FAILED" not in out, out
+    assert "captive portal" not in out, out
+    assert f"127.0.0.1:{port}/landed" in out, out
 
 
 def test_real_200_still_reports_ok():
