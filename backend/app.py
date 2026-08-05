@@ -31,14 +31,16 @@ from backend.assess import (
     compute_building_coverage,
     compute_greenspace_coverage,
     compute_road_density,
-    compute_far,
     compute_parking_coverage,
     compute_pedestrian_density,
     compute_transit_access,
     compute_facility_access,
+    compute_far_detail,
     render_assessment_map,
     generate_interventions,
 )
+from backend.assess.metrics import unmeasured_metric_keys
+from backend.assess.netdiag import collect_fetch_errors
 
 logger = logging.getLogger(__name__)
 
@@ -107,18 +109,19 @@ class AssessResponse(BaseModel):
     map_html: str
     study_area_display: str
     interventions: list
+    # Honest-degradation channel, same shape the HCAS wizard already uses:
+    # fetch_errors maps a failed layer to a plain-language reason, and every
+    # metric derived from it is null in `metrics` and named in
+    # unmeasured_metrics. A null is never a measurement of zero.
+    fetch_errors: dict = {}
+    unmeasured_metrics: list[str] = []
+    map_note: Optional[str] = None
 
 
 @app.post("/assess", response_model=AssessResponse, dependencies=_assess_deps)
 async def assess(body: AssessRequest):
     """Run a structured sub-tract community assessment for a county or custom bbox."""
-    metrics, interventions, map_html, study_area_display = await _run_assessment(body)
-    return AssessResponse(
-        metrics=metrics,
-        map_html=map_html,
-        study_area_display=study_area_display,
-        interventions=interventions,
-    )
+    return (await _run_assessment(body)).response()
 
 
 class ReportResponse(BaseModel):
@@ -131,9 +134,42 @@ class ReportResponse(BaseModel):
     low_severity_count: int
     top_issues: list[str]
     map_html: str
+    fetch_errors: dict = {}
+    unmeasured_metrics: list[str] = []
+    map_note: Optional[str] = None
 
 
-async def _run_assessment(body: AssessRequest) -> tuple[dict, list, str, str]:
+class _Assessment:
+    """One assessment run plus what went wrong during it.
+
+    `metrics` carries None for any metric whose source layer failed to fetch;
+    `interventions` is generated only from the metrics that were actually
+    measured, so a data outage can never manufacture a public-health finding.
+    """
+
+    def __init__(self, metrics, interventions, map_html, display, fetch_errors,
+                 unmeasured, map_note):
+        self.metrics = metrics
+        self.interventions = interventions
+        self.map_html = map_html
+        self.display = display
+        self.fetch_errors = fetch_errors
+        self.unmeasured = unmeasured
+        self.map_note = map_note
+
+    def response(self) -> AssessResponse:
+        return AssessResponse(
+            metrics=self.metrics,
+            map_html=self.map_html,
+            study_area_display=self.display,
+            interventions=self.interventions,
+            fetch_errors=self.fetch_errors,
+            unmeasured_metrics=self.unmeasured,
+            map_note=self.map_note,
+        )
+
+
+async def _run_assessment(body: AssessRequest) -> "_Assessment":
     """Shared assessment logic used by /assess, /report, and /compare."""
     import geopandas as _gpd
     from shapely.geometry import box as _box
@@ -165,60 +201,88 @@ async def _run_assessment(body: AssessRequest) -> tuple[dict, list, str, str]:
         osm_bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
         study_area_display = county_row.iloc[0].get("NAME", target_geoid)
 
+    # Three separate concerns, three separate failure policies. They used to
+    # share one try/except, so a map-render failure rebound `metrics` to an
+    # all-zeros literal and shipped it as a complete 200 assessment — a
+    # fabricated public-health finding. Never again: fetch+compute failing
+    # makes the whole response meaningless, so it 502s; the map failing loses
+    # only the map.
+    with collect_fetch_errors() as fetch_errors:
+        try:
+            buildings, greenspace, roads, parking, sidewalks, transit_stops, facilities = await asyncio.gather(
+                asyncio.to_thread(fetch_buildings, osm_bbox),
+                asyncio.to_thread(fetch_greenspace, osm_bbox),
+                asyncio.to_thread(fetch_road_network, osm_bbox),
+                asyncio.to_thread(fetch_parking, osm_bbox),
+                asyncio.to_thread(fetch_sidewalks, osm_bbox),
+                asyncio.to_thread(fetch_transit_stops, osm_bbox),
+                asyncio.to_thread(fetch_facilities, osm_bbox),
+            )
+            greenspace_metrics = compute_greenspace_coverage(greenspace, study_area)
+            transit_metrics = compute_transit_access(transit_stops, study_area)
+            facility_metrics = compute_facility_access(facilities, study_area)
+            far_metrics = compute_far_detail(buildings, study_area)
+            metrics = {
+                "building_coverage_ratio": compute_building_coverage(buildings, study_area),
+                "greenspace_coverage_ratio": greenspace_metrics["ratio"],
+                "greenspace_area_m2": greenspace_metrics["area_m2"],
+                "road_density_km_per_km2": compute_road_density(roads, study_area),
+                "far": far_metrics["far"],
+                "levels_tagged_pct": far_metrics["levels_tagged_pct"],
+                "parking_coverage_ratio": compute_parking_coverage(parking, study_area),
+                "pedestrian_density_km_per_km2": compute_pedestrian_density(sidewalks, study_area),
+                "transit_stop_count": transit_metrics["stop_count"],
+                "transit_stop_density_per_km2": transit_metrics["stop_density_per_km2"],
+                "facility_count": facility_metrics["facility_count"],
+                "facility_density_per_km2": facility_metrics["facility_density_per_km2"],
+            }
+        except Exception as exc:
+            # No usable numbers exist, so there is nothing honest to return.
+            logger.exception("assessment fetch/compute failed")
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "The assessment could not be computed "
+                    f"({type(exc).__name__}: {exc}). No metrics were produced — "
+                    "nothing in this response would have been a measurement. "
+                    "Check the network self-test (CHECK-NETWORK.bat) and retry."
+                ),
+            )
+
+    # A layer that failed to fetch came back empty, and every metric derived
+    # from it computed a plausible 0.0. Mark those null rather than publish a
+    # zero a reader would take for "this county has no parks".
+    unmeasured = [k for k in unmeasured_metric_keys(fetch_errors) if k in metrics]
+    for key in unmeasured:
+        metrics[key] = None
+    measured = {k: v for k, v in metrics.items() if v is not None}
+    interventions = generate_interventions(measured)
+
+    map_note = None
     try:
-        buildings, greenspace, roads, parking, sidewalks, transit_stops, facilities = await asyncio.gather(
-            asyncio.to_thread(fetch_buildings, osm_bbox),
-            asyncio.to_thread(fetch_greenspace, osm_bbox),
-            asyncio.to_thread(fetch_road_network, osm_bbox),
-            asyncio.to_thread(fetch_parking, osm_bbox),
-            asyncio.to_thread(fetch_sidewalks, osm_bbox),
-            asyncio.to_thread(fetch_transit_stops, osm_bbox),
-            asyncio.to_thread(fetch_facilities, osm_bbox),
-        )
-        greenspace_metrics = compute_greenspace_coverage(greenspace, study_area)
-        transit_metrics = compute_transit_access(transit_stops, study_area)
-        facility_metrics = compute_facility_access(facilities, study_area)
-        metrics = {
-            "building_coverage_ratio": compute_building_coverage(buildings, study_area),
-            "greenspace_coverage_ratio": greenspace_metrics["ratio"],
-            "greenspace_area_m2": greenspace_metrics["area_m2"],
-            "road_density_km_per_km2": compute_road_density(roads, study_area),
-            "far": compute_far(buildings, study_area),
-            "parking_coverage_ratio": compute_parking_coverage(parking, study_area),
-            "pedestrian_density_km_per_km2": compute_pedestrian_density(sidewalks, study_area),
-            "transit_stop_count": transit_metrics["stop_count"],
-            "transit_stop_density_per_km2": transit_metrics["stop_density_per_km2"],
-            "facility_count": facility_metrics["facility_count"],
-            "facility_density_per_km2": facility_metrics["facility_density_per_km2"],
-        }
-        interventions = generate_interventions(metrics)
         map_html = await asyncio.to_thread(
             render_assessment_map, study_area, buildings, greenspace, roads, metrics,
             parking, sidewalks, transit_stops, facilities,
         )
     except Exception as exc:
-        logger.warning(f"OSM fetch/render failed: {exc} — returning partial result")
-        _empty = _gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
-        metrics = {
-            "building_coverage_ratio": 0.0,
-            "greenspace_coverage_ratio": 0.0,
-            "greenspace_area_m2": 0.0,
-            "road_density_km_per_km2": 0.0,
-            "far": 0.0,
-            "parking_coverage_ratio": 0.0,
-            "pedestrian_density_km_per_km2": 0.0,
-            "transit_stop_count": 0,
-            "transit_stop_density_per_km2": 0.0,
-            "facility_count": 0,
-            "facility_density_per_km2": 0.0,
-        }
-        interventions = generate_interventions(metrics)
-        map_html = await asyncio.to_thread(
-            render_assessment_map, study_area, _empty, _empty, _empty, metrics,
-            _empty, _empty, _empty, _empty,
+        # The map is an illustration of the metrics, not their source. Losing
+        # it must not disturb a single number above.
+        logger.exception("assessment map render failed")
+        map_html = ""
+        map_note = (
+            f"The map could not be rendered ({type(exc).__name__}: {exc}). "
+            "The metrics in this response are unaffected."
         )
 
-    return metrics, interventions, map_html, study_area_display
+    # Layer names read better than fetcher function names for a human.
+    friendly_errors = {
+        fn.replace("fetch_", "").replace("_network", ""): msg
+        for fn, msg in fetch_errors.items()
+    }
+    return _Assessment(
+        metrics, interventions, map_html, study_area_display,
+        friendly_errors, unmeasured, map_note,
+    )
 
 
 @app.post("/report", response_model=ReportResponse, dependencies=_assess_deps)
@@ -226,22 +290,26 @@ async def report(body: AssessRequest):
     """Run full assessment and return structured report JSON."""
     from datetime import datetime, timezone
 
-    metrics, interventions, map_html, study_area_display = await _run_assessment(body)
+    run = await _run_assessment(body)
+    interventions = run.interventions
 
     high = [i for i in interventions if i["severity"] == "high"]
     medium = [i for i in interventions if i["severity"] == "medium"]
     low = [i for i in interventions if i["severity"] == "low"]
 
     return ReportResponse(
-        area=study_area_display,
+        area=run.display,
         generated_at=datetime.now(timezone.utc).isoformat(),
-        metrics=metrics,
+        metrics=run.metrics,
         intervention_count=len(interventions),
         high_severity_count=len(high),
         medium_severity_count=len(medium),
         low_severity_count=len(low),
         top_issues=[i["finding"] for i in high],
-        map_html=map_html,
+        map_html=run.map_html,
+        fetch_errors=run.fetch_errors,
+        unmeasured_metrics=run.unmeasured,
+        map_note=run.map_note,
     )
 
 
@@ -254,38 +322,35 @@ class CompareResponse(BaseModel):
     area_a: AssessResponse
     area_b: AssessResponse
     diff: dict
+    # Metrics absent from `diff` because at least one side was not measured.
+    # Without this the reader sees a shorter diff and assumes the rest matched.
+    undiffable_metrics: list[str] = []
 
 
 @app.post("/compare", response_model=CompareResponse, dependencies=_assess_deps)
 async def compare(body: CompareRequest):
     """Run two assessments concurrently and return a metric diff (area_b - area_a)."""
-    (metrics_a, interventions_a, map_a, display_a), (metrics_b, interventions_b, map_b, display_b) = (
-        await asyncio.gather(
-            _run_assessment(body.area_a),
-            _run_assessment(body.area_b),
-        )
+    run_a, run_b = await asyncio.gather(
+        _run_assessment(body.area_a),
+        _run_assessment(body.area_b),
     )
+    metrics_a, metrics_b = run_a.metrics, run_b.metrics
 
+    # A metric that was not measured on either side cannot be differenced.
+    # Subtracting an unmeasured side would invent the entire delta.
+    comparable = [k for k in metrics_a if k in metrics_b]
     diff = {
         k: (metrics_b[k] - metrics_a[k])
-        for k in metrics_a
-        if isinstance(metrics_a[k], (int, float)) and k in metrics_b
+        for k in comparable
+        if isinstance(metrics_a[k], (int, float)) and isinstance(metrics_b[k], (int, float))
     }
+    undiffable = sorted(set(comparable) - set(diff))
 
     return CompareResponse(
-        area_a=AssessResponse(
-            metrics=metrics_a,
-            map_html=map_a,
-            study_area_display=display_a,
-            interventions=interventions_a,
-        ),
-        area_b=AssessResponse(
-            metrics=metrics_b,
-            map_html=map_b,
-            study_area_display=display_b,
-            interventions=interventions_b,
-        ),
+        area_a=run_a.response(),
+        area_b=run_b.response(),
         diff=diff,
+        undiffable_metrics=undiffable,
     )
 
 

@@ -39,6 +39,13 @@
 
     .status { font-size: 0.82rem; color: #718096; text-align: center; }
     .status.error { color: #e53e3e; }
+    /* Data-quality warnings: a metric that could not be measured must be
+       visibly different from a metric that measured zero. */
+    .warnbar { display: none; margin: 10px 0; padding: 8px 10px; border-radius: 6px;
+               background: #fffaf0; border: 1px solid #dd6b20; color: #7b341e;
+               font-size: 0.8rem; line-height: 1.45; }
+    .warnbar.on { display: block; }
+    .value.unmeasured { color: #dd6b20; font-style: italic; font-weight: 500; }
 
     .map-area { flex: 1; position: relative; }
     .map-area iframe { width: 100%; height: 100%; border: none; }
@@ -146,6 +153,7 @@
       <button class="btn-secondary" id="export-btn" style="display:none" onclick="exportReport()">Export Report</button>
 
       <div class="status" id="status-msg"></div>
+      <div class="warnbar" id="data-quality"></div>
 
       <hr class="divider" />
 
@@ -282,15 +290,52 @@
       btn.textContent = (list.classList.contains("open") ? "▼" : "▶") + btn.textContent.slice(1);
     }
 
+    // A null metric means the source layer could not be fetched. It is NOT a
+    // zero, and must never be rendered as one: showing "0.0%" greenspace for a
+    // failed Overpass call is the difference between "this county has no parks"
+    // and "we could not ask".
+    function setMetric(id, value, format) {
+      const el = document.getElementById(id);
+      if (value === null || value === undefined) {
+        el.textContent = "not measured";
+        el.classList.add("unmeasured");
+      } else {
+        el.textContent = format(value);
+        el.classList.remove("unmeasured");
+      }
+    }
+
     function applyMetrics(metrics) {
-      document.getElementById("m-bldg").textContent = (metrics.building_coverage_ratio * 100).toFixed(1) + "%";
-      document.getElementById("m-green").textContent = (metrics.greenspace_coverage_ratio * 100).toFixed(1) + "%";
-      document.getElementById("m-green-area").textContent = (metrics.greenspace_area_m2 / 1e4).toFixed(1) + " ha";
-      document.getElementById("m-road").textContent = metrics.road_density_km_per_km2.toFixed(2) + " km/km²";
-      document.getElementById("m-far").textContent = (metrics.far ?? 0).toFixed(2);
-      document.getElementById("m-parking").textContent = ((metrics.parking_coverage_ratio ?? 0) * 100).toFixed(1) + "%";
-      document.getElementById("m-ped").textContent = (metrics.pedestrian_density_km_per_km2 ?? 0).toFixed(2) + " km/km²";
-      document.getElementById("m-transit").textContent = (metrics.transit_stop_count ?? 0) + " stops";
+      setMetric("m-bldg", metrics.building_coverage_ratio, v => (v * 100).toFixed(1) + "%");
+      setMetric("m-green", metrics.greenspace_coverage_ratio, v => (v * 100).toFixed(1) + "%");
+      setMetric("m-green-area", metrics.greenspace_area_m2, v => (v / 1e4).toFixed(1) + " ha");
+      setMetric("m-road", metrics.road_density_km_per_km2, v => v.toFixed(2) + " km/km²");
+      // FAR assumes 1 storey per untagged building; show how much of it is tagged.
+      const tagged = metrics.levels_tagged_pct;
+      setMetric("m-far", metrics.far, v => v.toFixed(2) +
+        (tagged === null || tagged === undefined ? "" : ` (${tagged}% of buildings have a levels tag)`));
+      setMetric("m-parking", metrics.parking_coverage_ratio, v => (v * 100).toFixed(1) + "%");
+      setMetric("m-ped", metrics.pedestrian_density_km_per_km2, v => v.toFixed(2) + " km/km²");
+      setMetric("m-transit", metrics.transit_stop_count, v => v + " stops");
+    }
+
+    function applyDataQuality(data) {
+      const bar = document.getElementById("data-quality");
+      const errs = data.fetch_errors || {};
+      const keys = Object.keys(errs);
+      const parts = [];
+      if (keys.length) {
+        parts.push("<b>Data sources failed on this run:</b> " +
+          keys.map(k => `${k} — ${errs[k]}`).join("; "));
+      }
+      if ((data.unmeasured_metrics || []).length) {
+        parts.push("<b>Not measured</b> (shown as \"not measured\", not as 0): " +
+          data.unmeasured_metrics.join(", ") +
+          ". No intervention was generated from these — a missing finding here means unknown, not fine.");
+      }
+      if (data.map_note) parts.push(data.map_note);
+      bar.innerHTML = parts.join("<br>");
+      bar.classList.toggle("on", parts.length > 0);
     }
 
     async function runAssess() {
@@ -319,17 +364,22 @@
         const data = await res.json();
 
         applyMetrics(data.metrics);
+        applyDataQuality(data);
         document.getElementById("interventions-panel").innerHTML = renderInterventionCards(data.interventions);
 
         const mapArea = document.getElementById("map-area");
         document.getElementById("map-placeholder")?.remove();
         let iframe = document.getElementById("assess-iframe");
         if (!iframe) { iframe = document.createElement("iframe"); iframe.id = "assess-iframe"; mapArea.appendChild(iframe); }
-        iframe.srcdoc = data.map_html;
+        iframe.srcdoc = data.map_html || "<p style='font:13px sans-serif;padding:12px;color:#7b341e'>The map could not be rendered on this run. The metrics are unaffected.</p>";
 
         document.getElementById("export-btn").style.display = "";
-        status.textContent = `Assessment complete — ${data.study_area_display}`;
-        status.className = "status";
+        const degraded = Object.keys(data.fetch_errors || {}).length ||
+                         (data.unmeasured_metrics || []).length || data.map_note;
+        status.textContent = degraded
+          ? `Assessment INCOMPLETE — ${data.study_area_display} (see the data-quality warning above)`
+          : `Assessment complete — ${data.study_area_display}`;
+        status.className = degraded ? "status error" : "status";
       } catch (err) {
         status.textContent = `Error: ${err.message}`;
         status.className = "status error";

@@ -10,6 +10,34 @@ import geopandas as gpd
 import pandas as pd
 
 
+# Which published metric keys are derived from which layer fetcher.
+#
+# A failed fetch returns an empty GeoDataFrame (osm_layers never raises), and
+# every computation below then produces a perfectly plausible 0.0. Zero parks
+# and "we could not reach the park data" are the same number, so a caller that
+# knows a fetcher failed must mark these keys as not-measured instead of
+# publishing the zero. Keyed by fetcher __name__, which is what
+# netdiag.record_fetch_error records.
+METRIC_KEYS_BY_FETCHER: dict[str, tuple[str, ...]] = {
+    "fetch_buildings": ("building_coverage_ratio", "far", "levels_tagged_pct"),
+    "fetch_greenspace": ("greenspace_coverage_ratio", "greenspace_area_m2"),
+    "fetch_road_network": ("road_density_km_per_km2",),
+    "fetch_parking": ("parking_coverage_ratio",),
+    "fetch_sidewalks": ("pedestrian_density_km_per_km2",),
+    "fetch_transit_stops": ("transit_stop_count", "transit_stop_density_per_km2"),
+    "fetch_facilities": ("facility_count", "facility_density_per_km2"),
+    "fetch_landuse": ("land_use_mix", "land_use_categories"),
+}
+
+
+def unmeasured_metric_keys(failed_fetchers) -> list[str]:
+    """Metric keys that cannot be measurements because their source fetch failed."""
+    out: set[str] = set()
+    for fn in failed_fetchers:
+        out.update(METRIC_KEYS_BY_FETCHER.get(fn, ()))
+    return sorted(out)
+
+
 def _clipped_area(geoms: gpd.GeoSeries, study_area: gpd.GeoDataFrame) -> gpd.GeoSeries:
     """Per-feature area (m²) clipped to the study-area polygon, index preserved.
 
@@ -77,28 +105,51 @@ def compute_road_density(
     return float(length_km / area_km2)
 
 
+def compute_far_detail(
+    buildings: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> dict[str, float | None]:
+    """Return {'far': float, 'levels_tagged_pct': float | None}.
+
+    far = sum(footprint * stories) / study_area area. Uses the 'building:levels'
+    column when present; every building without a parseable value is *assumed*
+    to be 1 level.
+
+    That assumption is the whole reason for the second key. OSM tags
+    building:levels on only a small minority of US footprints, so in most
+    counties FAR collapses to roughly the building-coverage ratio and is an
+    assumed lower bound rather than an independent measurement of vertical
+    density. levels_tagged_pct is the share (0-100) of buildings that actually
+    carried a usable tag, so a reader can see how much of FAR was measured.
+    It is None when there are no buildings to tag (FAR is then a real 0.0, but
+    the tagged share is undefined — do not report it as 0%).
+    """
+    if buildings.empty:
+        return {"far": 0.0, "levels_tagged_pct": None}
+    if buildings.crs != study_area.crs:
+        buildings = buildings.to_crs(study_area.crs)
+    area_total = study_area.geometry.area.sum()
+    if "building:levels" in buildings.columns:
+        parsed = pd.to_numeric(buildings["building:levels"], errors="coerce")
+        levels = parsed.fillna(1.0).clip(lower=1.0)
+        tagged_pct = round(float(parsed.notna().sum()) / len(buildings) * 100, 2)
+    else:
+        levels = pd.Series(1.0, index=buildings.index)
+        tagged_pct = 0.0
+    if area_total == 0:
+        return {"far": 0.0, "levels_tagged_pct": tagged_pct}
+    floor_area = (_clipped_area(buildings.geometry, study_area) * levels).sum()
+    return {"far": float(floor_area / area_total), "levels_tagged_pct": tagged_pct}
+
+
 def compute_far(
     buildings: gpd.GeoDataFrame,
     study_area: gpd.GeoDataFrame,
 ) -> float:
-    """Return Floor Area Ratio = sum(footprint * stories) / study_area area.
-
-    Uses 'building:levels' column when present; defaults to 1.0 per building
-    when the column is missing or NaN. Returns 0.0 when buildings is empty.
-    """
-    if buildings.empty:
-        return 0.0
-    if buildings.crs != study_area.crs:
-        buildings = buildings.to_crs(study_area.crs)
-    area_total = study_area.geometry.area.sum()
-    if area_total == 0:
-        return 0.0
-    if "building:levels" in buildings.columns:
-        levels = pd.to_numeric(buildings["building:levels"], errors="coerce").fillna(1.0).clip(lower=1.0)
-    else:
-        levels = pd.Series(1.0, index=buildings.index)
-    floor_area = (_clipped_area(buildings.geometry, study_area) * levels).sum()
-    return float(floor_area / area_total)
+    """Return the Floor Area Ratio alone. See compute_far_detail — callers that
+    publish FAR should use that instead, so the levels-tagged share travels
+    with the number."""
+    return float(compute_far_detail(buildings, study_area)["far"])
 
 
 def compute_parking_coverage(

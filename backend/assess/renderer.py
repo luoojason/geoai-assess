@@ -180,13 +180,23 @@ def render_assessment_map(
 
     folium.LayerControl(collapsed=False).add_to(m)
 
-    bldg_pct = f"{metrics.get('building_coverage_ratio', 0.0):.1%}"
-    green_pct = f"{metrics.get('greenspace_coverage_ratio', 0.0):.1%}"
-    road_den = f"{metrics.get('road_density_km_per_km2', 0.0):.1f}"
-    park_pct = f"{metrics.get('parking_coverage_ratio', 0.0):.1%}"
-    ped_den = f"{metrics.get('pedestrian_density_km_per_km2', 0.0):.1f}"
-    transit_ct = metrics.get('transit_stop_count', 0)
-    facility_ct = metrics.get('facility_count', 0)
+    # A metric that is absent or explicitly None was not measured (its source
+    # layer failed to fetch). Printing the old 0.0 default drew a confident
+    # "Greenspace Coverage: 0.0%" over a map of a county whose park data never
+    # arrived, so say so instead.
+    _MISSING = "not measured"
+
+    def _fmt(key, spec, suffix=""):
+        v = metrics.get(key)
+        return _MISSING if v is None else f"{v:{spec}}{suffix}"
+
+    bldg_pct = _fmt("building_coverage_ratio", ".1%")
+    green_pct = _fmt("greenspace_coverage_ratio", ".1%")
+    road_den = _fmt("road_density_km_per_km2", ".1f", " km/km&sup2;")
+    park_pct = _fmt("parking_coverage_ratio", ".1%")
+    ped_den = _fmt("pedestrian_density_km_per_km2", ".1f", " km/km&sup2;")
+    transit_ct = _fmt("transit_stop_count", "d")
+    facility_ct = _fmt("facility_count", "d")
     panel_html = f"""
     <div style="
         position: fixed; top: 10px; right: 10px; z-index: 1000;
@@ -197,9 +207,9 @@ def render_assessment_map(
         <b style="font-size:14px">Assessment Metrics</b><br>
         Building Coverage: <b>{bldg_pct}</b><br>
         Greenspace Coverage: <b>{green_pct}</b><br>
-        Road Density: <b>{road_den} km/km&sup2;</b><br>
+        Road Density: <b>{road_den}</b><br>
         Parking Coverage: <b>{park_pct}</b><br>
-        Pedestrian Density: <b>{ped_den} km/km&sup2;</b><br>
+        Pedestrian Density: <b>{ped_den}</b><br>
         Transit Stops: <b>{transit_ct}</b><br>
         Facilities: <b>{facility_ct}</b>
     </div>

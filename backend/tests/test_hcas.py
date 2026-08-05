@@ -888,3 +888,180 @@ class TestCountyStudyArea:
     def test_basemap_unknown_county_raises(self):
         with pytest.raises(ValueError, match="Unknown county"):
             hcas.basemap_for_county("99", "999")
+
+
+class TestReportDataQuality:
+    """The exported markdown is the academic deliverable. Step 7 has always
+    recorded fetch_errors, but step 8 never read them, so metrics computed from
+    a failed fetch were printed as measurements and the intervention engine
+    cited APA/EPA/FTA standards against them."""
+
+    def _failing_greenspace(self):
+        from backend.assess.netdiag import record_fetch_error
+
+        def fetch_greenspace(bbox):
+            record_fetch_error(
+                "fetch_greenspace", OSError("[Errno 11001] getaddrinfo failed"))
+            return _fake_gdf()
+
+        return fetch_greenspace
+
+    def test_step7_nulls_metrics_from_a_failed_layer(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers", lambda: {"greenspace": self._failing_greenspace()})
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)
+        draft = hcas.run_step(pid, 7, db=db)
+
+        assert draft["metrics"]["greenspace_coverage_ratio"] is None
+        assert draft["metrics"]["greenspace_area_m2"] is None
+        assert set(draft["unmeasured_metrics"]) == {
+            "greenspace_coverage_ratio", "greenspace_area_m2"}
+        # No high-severity park finding may be manufactured from a DNS failure.
+        assert draft["interventions"] == []
+
+    def test_step8_report_surfaces_the_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers", lambda: {"greenspace": self._failing_greenspace()})
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        md = next(s for s in hcas.get_project(pid, db=db)["steps"]
+                  if s["step"] == 8)["ai_draft"]["markdown"]
+
+        assert "## Data quality" in md
+        assert "DNS lookup failed" in md
+        assert "`greenspace` could not be fetched" in md
+        # The Results block must not print a bare 0.0 for an unfetched layer.
+        assert "- `greenspace_coverage_ratio`: 0.0" not in md
+        assert "`greenspace_coverage_ratio`: not measured" in md
+        assert "critically below recommended minimums" not in md
+        assert "means *unknown*, not *no problem*" in md
+
+    def test_healthy_report_has_no_data_quality_section(self, tmp_path, monkeypatch):
+        all_layers = {l for ls in hcas.METRIC_LAYERS.values() for l in ls}
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers",
+            lambda: {n: (lambda bbox: _fake_gdf(3)) for n in all_layers},
+        )
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        md = next(s for s in hcas.get_project(pid, db=db)["steps"]
+                  if s["step"] == 8)["ai_draft"]["markdown"]
+        assert "## Data quality" not in md
+        assert "- `greenspace_coverage_ratio`: 0.0" in md
+
+
+class TestReportStudyAreaMatchesAnalysis:
+    """Steps 3 and 7 resolve the study area independently. A TIGERweb blip
+    between them silently downgraded step 7 to a ~78 km2 disc while step 8 kept
+    quoting step 3's whole-county area - an ~18x denominator error."""
+
+    def _county_gdf(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        return (
+            gpd.GeoDataFrame(geometry=[box(-83.2, 39.8, -82.8, 40.1)], crs="EPSG:4326")
+            .to_crs("EPSG:5070")
+            .reset_index(drop=True)
+        )
+
+    def test_step7_records_the_extent_it_analysed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "_county_geometry", lambda s, c: self._county_gdf())
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)
+        draft = hcas.run_step(pid, 7, db=db)
+        assert draft["study_area"]["kind"] == "county"
+        assert draft["study_area"]["area_km2"] > 0
+
+    def test_report_flags_a_county_to_disc_downgrade(self, tmp_path, monkeypatch):
+        """County boundary reachable at step 3, unreachable at step 7."""
+        calls = {"n": 0}
+        county = self._county_gdf()
+
+        def flaky(state, county_fips):
+            # step 3 resolves it successfully; the step-7 call finds it gone
+            calls["n"] += 1
+            return county if calls["n"] <= 1 else None
+
+        monkeypatch.setattr(hcas, "_county_geometry", flaky)
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)  # steps 3 and 5 consume the county polygon
+        step7 = hcas.run_step(pid, 7, db=db)
+        assert step7["study_area"]["kind"] == "disc"
+        hcas.confirm_step(pid, 7, step7, db=db)
+        md = hcas.run_step(pid, 8, db=db)["markdown"]
+
+        # The study line must describe what was ANALYSED, not what was planned.
+        study_line = next(l for l in md.splitlines() if l.startswith("_Study area:"))
+        assert "5 km buffer around the county centroid" in study_line
+        assert "entire county boundary" not in study_line
+        assert "## Data quality" in md
+        assert "fell back to a different study area" in md
+
+    def test_agreeing_runs_produce_no_mismatch_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "_county_geometry", lambda s, c: self._county_gdf())
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        md = next(s for s in hcas.get_project(pid, db=db)["steps"]
+                  if s["step"] == 8)["ai_draft"]["markdown"]
+        assert "entire county boundary" in md
+        assert "fell back to a different study area" not in md
+
+    def test_legacy_artifact_without_study_area_is_flagged(self, tmp_path):
+        """An artifact drafted before step 7 recorded its extent cannot be
+        reconciled, so the report must say the extent is unverified rather than
+        assert step 3's figure over step 7's numbers."""
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)
+        step7 = hcas.run_step(pid, 7, db=db)
+        step7.pop("study_area")  # simulate the pre-fix artifact shape
+        hcas.confirm_step(pid, 7, step7, db=db)
+        md = hcas.run_step(pid, 8, db=db)["markdown"]
+        assert "## Data quality" in md
+        assert "was not verified against the extent" in md
+
+
+class TestFarHonestyFlagInReport:
+    _STEP2_FAR = {
+        "factors": [
+            {"factor": "vertical density", "metric": "far",
+             "rationale": "Floor area ratio proxies built intensity."},
+        ],
+        "notes": "",
+    }
+
+    def _far_llm(self, system, prompt, schema, model="m"):
+        shape = _CANNED_STEP4 if "framework" in schema["properties"] else self._STEP2_FAR
+        return shape, _CANNED_USAGE
+
+    def _buildings(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        # 2 buildings, neither carrying building:levels -> 0% tagged
+        return gpd.GeoDataFrame(
+            geometry=[box(0, 0, 100, 100), box(200, 0, 300, 100)], crs="EPSG:5070")
+
+    def test_far_carries_levels_tagged_pct_and_the_report_discloses_it(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "_llm_structured", self._far_llm)
+        monkeypatch.setattr(
+            hcas, "_layer_fetchers", lambda: {"buildings": lambda bbox: self._buildings()})
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        steps = {s["step"]: s for s in hcas.get_project(pid, db=db)["steps"]}
+
+        metrics = steps[7]["ai_draft"]["metrics"]
+        assert set(metrics) == {"far", "levels_tagged_pct"}
+        assert metrics["levels_tagged_pct"] == 0.0
+
+        md = steps[8]["ai_draft"]["markdown"]
+        assert "levels_tagged_pct" in md
+        assert "assumes 1 storey" in md
+        assert "not an independent measurement of vertical density" in md
+
+    def test_registry_promise_is_now_backed_by_a_real_field(self):
+        # hcas.METRICS and _STEP4_SYSTEM both tell the LLM this flag exists.
+        assert "levels_tagged_pct" in hcas.METRICS["far"]
+        assert "levels_tagged_pct" in hcas.METRIC_RESULT_KEYS["far"]

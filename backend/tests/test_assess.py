@@ -448,3 +448,209 @@ class TestFacilities:
             {"facility_count": 1}, facilities=facilities,
         )
         assert "Facilities" in html
+
+
+# ---------------------------------------------------------------------------
+# TestHonestDegradation - a value that reaches the caller must be a measurement
+#
+# Regression cover for the single try/except that used to span fetch + compute +
+# intervention generation + map render in _run_assessment: ANY exception rebound
+# `metrics` to an all-zeros literal and returned a complete-looking HTTP 200.
+# ---------------------------------------------------------------------------
+
+_FAKE_POLY = gpd.GeoDataFrame(geometry=[box(-83.1, 39.9, -83.0, 40.0)], crs="EPSG:4326")
+_FAKE_LINE = gpd.GeoDataFrame(
+    geometry=[LineString([(-83.05, 39.95), (-83.04, 39.95)])], crs="EPSG:4326"
+)
+
+_BBOX_BODY = {"state_fips": "39", "county_fips": "049", "bbox": [-83.1, 39.9, -83.0, 40.0]}
+
+
+def _patched_layers(**overrides):
+    """ExitStack patching every /assess fetcher; overrides take a side_effect fn."""
+    from contextlib import ExitStack
+
+    empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+    defaults = {
+        "fetch_buildings": _FAKE_POLY.to_crs("EPSG:5070"),
+        "fetch_greenspace": _FAKE_POLY.to_crs("EPSG:5070"),
+        "fetch_road_network": _FAKE_LINE.to_crs("EPSG:5070"),
+        "fetch_parking": empty,
+        "fetch_sidewalks": empty,
+        "fetch_transit_stops": empty,
+        "fetch_facilities": empty,
+    }
+    stack = ExitStack()
+    for name, value in defaults.items():
+        if name in overrides:
+            stack.enter_context(patch("backend.app." + name, side_effect=overrides[name]))
+        else:
+            stack.enter_context(patch("backend.app." + name, return_value=value))
+    return stack
+
+
+class TestHonestDegradation:
+    def test_map_render_failure_keeps_real_metrics(self, client):
+        """A folium/MemoryError blowup must lose the map, not the measurements."""
+        with _patched_layers():
+            baseline = client.post("/assess", json=_BBOX_BODY).json()
+        assert baseline["metrics"]["building_coverage_ratio"] > 0.0
+
+        with _patched_layers(), patch(
+            "backend.app.render_assessment_map", side_effect=MemoryError("map too big")
+        ):
+            resp = client.post("/assess", json=_BBOX_BODY)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # The numbers survive untouched - this is the whole point.
+        assert data["metrics"] == baseline["metrics"]
+        assert data["metrics"]["building_coverage_ratio"] > 0.0
+        # ...and the loss of the map is stated rather than hidden.
+        assert data["map_html"] == ""
+        assert "MemoryError" in data["map_note"]
+
+    def test_compute_failure_502s_instead_of_returning_zeros(self, client):
+        """No usable numbers exist, so there is nothing honest to return with a 200."""
+        from shapely.errors import GEOSException
+
+        with _patched_layers(), patch(
+            "backend.app.compute_building_coverage",
+            side_effect=GEOSException("TopologyException: side location conflict"),
+        ):
+            resp = client.post("/assess", json=_BBOX_BODY)
+
+        assert resp.status_code == 502
+        assert "No metrics were produced" in resp.json()["detail"]
+
+    def test_fetch_failure_nulls_the_metric_and_names_it(self, client):
+        """An unreachable Overpass must not publish 'this county has no parks'."""
+        from backend.assess import netdiag
+
+        def failing_greenspace(bbox):
+            netdiag.record_fetch_error(
+                "fetch_greenspace", OSError("[Errno 11001] getaddrinfo failed")
+            )
+            return gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+
+        with _patched_layers(fetch_greenspace=failing_greenspace):
+            resp = client.post("/assess", json=_BBOX_BODY)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metrics"]["greenspace_coverage_ratio"] is None
+        assert data["metrics"]["greenspace_area_m2"] is None
+        # An unaffected layer is still a real measurement.
+        assert data["metrics"]["building_coverage_ratio"] > 0.0
+        assert "DNS lookup failed" in data["fetch_errors"]["greenspace"]
+        assert set(data["unmeasured_metrics"]) == {
+            "greenspace_coverage_ratio", "greenspace_area_m2"
+        }
+        # No APA/EPA finding may be manufactured from a failed fetch.
+        assert not [i for i in data["interventions"]
+                    if i["category"] in ("Greenspace", "Park Access")]
+        assert "not measured" in data["map_html"]
+
+    def test_healthy_run_carries_no_degradation_flags(self, client):
+        with _patched_layers():
+            data = client.post("/assess", json=_BBOX_BODY).json()
+        assert data["fetch_errors"] == {}
+        assert data["unmeasured_metrics"] == []
+        assert data["map_note"] is None
+
+    def test_report_endpoint_carries_the_same_flags(self, client):
+        from backend.assess import netdiag
+
+        def failing_transit(bbox):
+            netdiag.record_fetch_error("fetch_transit_stops", TimeoutError("timed out"))
+            return gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+
+        with _patched_layers(fetch_transit_stops=failing_transit):
+            data = client.post("/report", json=_BBOX_BODY).json()
+
+        assert data["metrics"]["transit_stop_count"] is None
+        assert "transit_stops" in data["fetch_errors"]
+        # The FTA "limited public transit access" finding must not appear.
+        assert not [t for t in data["top_issues"] if "transit" in t.lower()]
+
+    def test_compare_never_diffs_against_an_unmeasured_side(self, client):
+        from backend.assess import netdiag
+
+        calls = {"n": 0}
+
+        def greenspace_failing_once(bbox):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                netdiag.record_fetch_error(
+                    "fetch_greenspace", OSError("[Errno 11001] getaddrinfo failed")
+                )
+                return gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+            return _FAKE_POLY.to_crs("EPSG:5070")
+
+        with _patched_layers(fetch_greenspace=greenspace_failing_once):
+            resp = client.post("/compare", json={"area_a": _BBOX_BODY, "area_b": _BBOX_BODY})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Subtracting an unmeasured side would have invented the whole delta.
+        assert "greenspace_coverage_ratio" not in data["diff"]
+        assert "greenspace_coverage_ratio" in data["undiffable_metrics"]
+        assert "building_coverage_ratio" in data["diff"]
+        # Exactly one of the two areas is flagged - the scoped error registry
+        # must not let one run steal (or share) the other run's failure.
+        flagged = [a for a in ("area_a", "area_b") if data[a]["fetch_errors"]]
+        assert len(flagged) == 1
+
+
+class TestFarHonestyFlag:
+    """compute_far assumes 1 storey per untagged building; the METRICS registry
+    has always promised a levels_tagged_pct flag disclosing how much of FAR that
+    assumption covers. It was never implemented."""
+
+    def test_tagged_pct_reported(self):
+        from backend.assess.metrics import compute_far_detail
+
+        buildings = gpd.GeoDataFrame(
+            {"building:levels": ["2", None, "bogus", None]},
+            geometry=[box(0, 0, 100, 100), box(200, 0, 300, 100),
+                      box(400, 0, 500, 100), box(600, 0, 700, 100)],
+            crs="EPSG:5070",
+        )
+        out = compute_far_detail(buildings, STUDY)
+        assert out["levels_tagged_pct"] == 25.0  # 1 of 4 parseable
+
+    def test_no_levels_column_is_zero_pct_not_silence(self):
+        from backend.assess.metrics import compute_far_detail
+
+        out = compute_far_detail(_sq(0, 0, 500, 500), STUDY)
+        assert out["far"] == pytest.approx(0.25)
+        assert out["levels_tagged_pct"] == 0.0
+
+    def test_no_buildings_leaves_tagged_pct_undefined(self):
+        from backend.assess.metrics import compute_far_detail
+
+        out = compute_far_detail(_empty_gdf(), STUDY)
+        assert out["far"] == 0.0
+        # Not 0.0 - there was nothing to tag, so reporting "0% tagged" would
+        # itself be a fabricated coverage figure.
+        assert out["levels_tagged_pct"] is None
+
+    def test_assess_publishes_the_flag(self, client):
+        with _patched_layers():
+            data = client.post("/assess", json=_BBOX_BODY).json()
+        assert "levels_tagged_pct" in data["metrics"]
+
+
+class TestRendererMarksUnmeasured:
+    def test_none_metric_renders_as_not_measured(self):
+        from backend.assess.renderer import render_assessment_map
+
+        html = render_assessment_map(
+            STUDY, _empty_gdf(), _empty_gdf(), _empty_gdf(),
+            {"greenspace_coverage_ratio": None, "building_coverage_ratio": 0.25},
+        )
+        # folium escapes the panel into an iframe srcdoc, so match the escaped form.
+        assert "Greenspace Coverage: &lt;b&gt;not measured&lt;/b&gt;" in html
+        assert "Building Coverage: &lt;b&gt;25.0%&lt;/b&gt;" in html
+        # The old code printed a confident 0.0% here for a layer nobody fetched.
+        assert "Greenspace Coverage: &lt;b&gt;0.0%&lt;/b&gt;" not in html

@@ -3,10 +3,23 @@ process-wide registry the step runners pop to surface per-layer fetch errors
 in the wizard (fetchers deliberately never raise — see osm_layers)."""
 from __future__ import annotations
 
+import contextvars
 import threading
+from contextlib import contextmanager
 
 _errors: dict[str, str] = {}
 _lock = threading.Lock()
+
+# When set, record_fetch_error writes here instead of the process-wide registry.
+# The HCAS step runners drain the global registry between sequential steps, but
+# /compare runs two assessments at once — a shared registry would let one area's
+# failure be popped by the other, and the robbed area would then claim a clean
+# run. A contextvar keeps each concurrent assessment's failures its own
+# (asyncio Tasks get their own context copy, and asyncio.to_thread carries the
+# context into the worker thread).
+_scope: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "netdiag_scope", default=None
+)
 
 
 def friendly_net_reason(exc: Exception) -> str:
@@ -35,8 +48,29 @@ def friendly_net_reason(exc: Exception) -> str:
 
 
 def record_fetch_error(layer_fn: str, exc: Exception) -> None:
+    reason = friendly_net_reason(exc)
+    sink = _scope.get()
+    if sink is not None:
+        sink[layer_fn] = reason
+        return
     with _lock:
-        _errors[layer_fn] = friendly_net_reason(exc)
+        _errors[layer_fn] = reason
+
+
+@contextmanager
+def collect_fetch_errors():
+    """Route record_fetch_error into a private dict for the duration of the
+    block, so concurrent runs cannot steal each other's failures.
+
+    Yields the dict; it is populated in place as fetchers fail, so read it
+    *after* the block (or after the fetches complete) to see everything.
+    """
+    sink: dict[str, str] = {}
+    token = _scope.set(sink)
+    try:
+        yield sink
+    finally:
+        _scope.reset(token)
 
 
 def take_fetch_errors() -> dict[str, str]:

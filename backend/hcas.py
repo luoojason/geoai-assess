@@ -114,6 +114,33 @@ METRIC_LAYERS = {
     "land_use_mix": ["landuse"],
 }
 
+# The flat result keys each registry metric contributes to step 7's metrics
+# dict — mirrors _metric_computers(). Used to work out which published numbers
+# are downstream of a layer that failed to fetch, so they can be marked as
+# not-measured instead of shipped as a plausible 0.0.
+METRIC_RESULT_KEYS = {
+    "building_coverage_ratio": ["building_coverage_ratio"],
+    "greenspace_coverage": ["greenspace_coverage_ratio", "greenspace_area_m2"],
+    "road_density_km_per_km2": ["road_density_km_per_km2"],
+    "far": ["far", "levels_tagged_pct"],
+    "parking_coverage_ratio": ["parking_coverage_ratio"],
+    "pedestrian_density_km_per_km2": ["pedestrian_density_km_per_km2"],
+    "transit_access": ["transit_stop_count", "transit_stop_density_per_km2"],
+    "facility_access": ["facility_count", "facility_density_per_km2"],
+    "land_use_mix": ["land_use_mix", "land_use_categories"],
+}
+
+
+def _unmeasured_metric_keys(failed_layers) -> list[str]:
+    """Result keys that cannot be measurements because a layer they need failed."""
+    failed = set(failed_layers)
+    out: set[str] = set()
+    for metric, layers in METRIC_LAYERS.items():
+        if failed.intersection(layers):
+            out.update(METRIC_RESULT_KEYS.get(metric, []))
+    return sorted(out)
+
+
 # Human name, source, and geometry kind for each layer. Surfaced in the data
 # inventory so the wizard's layer list can show a real name and a right-click
 # "Properties" panel (source, geometry type) without re-deriving from geometry
@@ -954,7 +981,10 @@ def _metric_computers() -> dict:
         "road_density_km_per_km2": lambda L, sa: {
             "road_density_km_per_km2": a.compute_road_density(L["roads"], sa)
         },
-        "far": lambda L, sa: {"far": a.compute_far(L["buildings"], sa)},
+        # compute_far_detail, not compute_far: FAR assumes 1 level for every
+        # untagged building, so levels_tagged_pct must travel with it to the
+        # report (the METRICS registry promises this flag).
+        "far": lambda L, sa: a.compute_far_detail(L["buildings"], sa),
         "parking_coverage_ratio": lambda L, sa: {
             "parking_coverage_ratio": a.compute_parking_coverage(L["parking"], sa)
         },
@@ -1058,13 +1088,31 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     metrics = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in metrics.items()}
     set_progress(pid, 7, 82, "drawing the map…")
 
+    # A failed fetch yields an empty layer, and an empty layer computes a
+    # perfectly plausible 0.0. Null those out so nothing downstream — the
+    # intervention engine, the wizard, or the exported report — can read
+    # "source unreachable" as "this county has none of it".
+    unmeasured = [k for k in _unmeasured_metric_keys(fetch_errors) if k in metrics]
+    for key in unmeasured:
+        metrics[key] = None
+    measured = {k: v for k, v in metrics.items() if v is not None}
+
     artifact = {
         "kind": "execution_results",
         "metrics": metrics,
-        "interventions": generate_interventions(metrics),
+        # Only measured metrics may produce a public-health finding.
+        "interventions": generate_interventions(measured),
+        # The extent the metrics were ACTUALLY computed over. Step 3 resolves
+        # the study area independently and can disagree (a boundary-service
+        # outage silently downgrades a county to a 5 km disc), and step 8 used
+        # to take its study-area line from step 3 while taking its numbers from
+        # here — an ~18x denominator error with nothing to catch it.
+        "study_area": describe,
     }
     if fetch_errors:
         artifact["fetch_errors"] = fetch_errors
+    if unmeasured:
+        artifact["unmeasured_metrics"] = unmeasured
     if layers and all(g.empty for g in layers.values()):
         artifact["map_note"] = (
             "Every data layer came back empty, so the map has no features to "
@@ -1175,16 +1223,46 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     cited = {r["title"]: r for refs in REFERENCES.values() for r in refs}
 
     step3 = _confirmed(project, 3)
-    sa = (step3.get("study_area") or {}) if isinstance(step3, dict) else {}
+    sa3 = (step3.get("study_area") or {}) if isinstance(step3, dict) else {}
+    # The numbers below come from step 7, so the study-area line must describe
+    # the extent step 7 ACTUALLY analysed. Step 3 resolves the study area on its
+    # own run and a boundary-service outage between the two silently downgrades
+    # a whole county to a 5 km disc — the report used to keep quoting step 3's
+    # county area over disc-computed densities.
+    sa7 = results.get("study_area") or {}
+    sa = sa7 or sa3
+
+    def _describe_area(d: dict) -> str:
+        if d.get("kind") == "county":
+            return (
+                f"{area.get('place_name', 'study area')} — entire county boundary"
+                + (f" ({d['area_km2']} km²)" if d.get("area_km2") is not None else "")
+            )
+        if d.get("kind") == "disc":
+            radius_km = (d.get("radius_m") or 5000) / 1000
+            return f"{radius_km:g} km buffer around the county centroid"
+        return "not recorded"
+
     study_line = ""
-    if sa.get("kind") == "county":
-        study_line = (
-            f"\n_Study area: {area.get('place_name', 'study area')} — entire county boundary"
-            + (f" ({sa['area_km2']} km²)." if sa.get("area_km2") is not None else ".")
-            + "_\n"
+    if sa:
+        study_line = f"\n_Study area: {_describe_area(sa)}._\n"
+    study_warnings: list[str] = []
+    if not sa7:
+        study_warnings.append(
+            "This run predates study-area recording on the analysis step, so the "
+            "extent above is the one planned at step 3 — it was not verified "
+            "against the extent the metrics were computed over. Re-run step 7 to "
+            "confirm it."
         )
-    elif sa:
-        study_line = "\n_Study area: 5 km buffer around the county centroid._\n"
+    elif sa3 and sa3.get("kind") != sa7.get("kind"):
+        study_warnings.append(
+            f"The analysis step fell back to a different study area than the one "
+            f"confirmed at step 3 (planned: {_describe_area(sa3)}; analysed: "
+            f"{_describe_area(sa7)}). The boundary service was most likely "
+            "unreachable on one of the two runs. Every density and coverage "
+            "figure below uses the ANALYSED area as its denominator — re-run "
+            "steps 3 and 7 together before citing these numbers."
+        )
 
     # Prof. Shi 2026-07-27: the report must include maps. The interactive study-
     # area map is embedded in the HTML export (Download HTML) and shown in the
@@ -1203,11 +1281,64 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
             "step 7 with a working connection to include it._"
         )
 
+    # --- Data quality -------------------------------------------------------
+    # Step 7 records which layers failed to fetch, but the exported report used
+    # to ignore that key entirely: metrics computed from an empty layer were
+    # printed as measurements, and the intervention engine cited APA/EPA/FTA
+    # standards against them. This is the academic deliverable — the failure
+    # has to appear here, not only in the wizard's step-7 warnbar.
+    fetch_errors = results.get("fetch_errors") or {}
+    unmeasured = results.get("unmeasured_metrics") or _unmeasured_metric_keys(fetch_errors)
+    unmeasured = [k for k in unmeasured if k in results["metrics"]]
+    quality: list[str] = []
+    if fetch_errors or unmeasured or study_warnings or results.get("map_note"):
+        quality.append("\n## Data quality")
+    for w in study_warnings:
+        quality.append(f"- **Study area:** {w}")
+    for layer, reason in sorted(fetch_errors.items()):
+        quality.append(f"- **`{layer}` could not be fetched** — {reason}")
+    if unmeasured:
+        quality.append(
+            "- Because of the failure(s) above, these metrics were **not measured** "
+            "and are reported as `not measured` rather than as a value: "
+            + ", ".join(f"`{k}`" for k in unmeasured)
+            + ". No intervention below is derived from them, and an absent finding "
+            "for these topics means *unknown*, not *no problem*."
+        )
+    if results.get("map_note"):
+        quality.append(f"- {results['map_note']}")
+
+    def _result_line(k, v) -> str:
+        if v is None:
+            return f"- `{k}`: not measured — the source data could not be fetched on this run."
+        return f"- `{k}`: {v}"
+
+    results_lines = [_result_line(k, v) for k, v in results["metrics"].items()]
+    # FAR assumes 1 level for every building OSM does not tag, so it must never
+    # stand next to building_coverage_ratio as an independent measurement.
+    tagged = results["metrics"].get("levels_tagged_pct")
+    if "far" in results["metrics"] and results["metrics"]["far"] is not None:
+        if tagged is None:
+            results_lines.append(
+                "\n_`far` assumes 1 storey for every building without an OSM "
+                "`building:levels` tag. No buildings were present in the study "
+                "area, so the tagged share is undefined._"
+            )
+        else:
+            results_lines.append(
+                f"\n_`far` assumes 1 storey for every building without an OSM "
+                f"`building:levels` tag; only {tagged}% of buildings here carry one "
+                f"(`levels_tagged_pct`). At that coverage FAR is an assumed lower "
+                f"bound close to `building_coverage_ratio`, not an independent "
+                f"measurement of vertical density._"
+            )
+
     lines = [
         f"# Healthy Community Assessment: {area.get('place_name', 'study area')}",
         f"\n_Project: {project['meta']['title']}_",
         study_line,
-        "## Methodology",
+        *quality,
+        "\n## Methodology",
         framework.get("framework", ""),
         *map_section,
         "\n### Theoretical basis",
@@ -1215,7 +1346,7 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         "\n### Factors and metrics",
         *[f"- {f['factor']} → `{f['metric']}`: {f['rationale']}" for f in factors],
         "\n## Results",
-        *[f"- `{k}`: {v}" for k, v in results["metrics"].items()],
+        *results_lines,
     ]
     outcomes = _confirmed(project, 3).get("health_outcomes") or {}
     if outcomes.get("measures"):
@@ -1244,7 +1375,14 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
             f"_Standard: {iv['standard']}_",
         ]
     if not results["interventions"]:
-        lines.append("All computed metrics fall within acceptable ranges.")
+        lines.append(
+            "All measured metrics fall within acceptable ranges."
+            + (
+                " This does NOT cover the metrics listed as not measured under "
+                "Data quality above — those were never evaluated."
+                if unmeasured else ""
+            )
+        )
     def _strs(key: str) -> list[str]:
         return [x for x in framework.get(key, []) if isinstance(x, str) and x.strip()]
 

@@ -830,9 +830,13 @@ function viewWorkflow(a){
 
 /* step 7 — analysis results */
 function viewExecution(a){
+  // null = the layer this metric needs failed to fetch. Never render it as a
+  // number; "not measured" and 0 are different claims about a community.
   const metrics = Object.entries(a.metrics||{}).map(([k,v])=>`
     <div class="metric-c"><div class="mn">${esc(k)}</div>
-      <div class="mv">${typeof v==="number"?(+v).toLocaleString(undefined,{maximumFractionDigits:3}):esc(v)}</div></div>`).join("");
+      <div class="mv"${v===null||v===undefined?' style="color:var(--warn,#dd6b20);font-style:italic;font-size:12px;"':''}>${
+        v===null||v===undefined?"not measured"
+        :typeof v==="number"?(+v).toLocaleString(undefined,{maximumFractionDigits:3}):esc(v)}</div></div>`).join("");
   const ivs = (a.interventions||[]).map(iv=>`
     <div class="iv ${esc(iv.severity||"")}"><span class="sev">${esc(iv.severity||"")}</span>
       <div class="cat">${esc(iv.category)}</div>
@@ -842,6 +846,8 @@ function viewExecution(a){
   const errKeys = Object.keys(errs);
   const warn = errKeys.length?`<div class="warnbar">⚠<div><b>Data sources failed during this run:</b> ${errKeys.map(esc).join(", ")} — ${esc(errs[errKeys[0]])}</div></div>`:"";
   const note = a.map_note?`<div class="warnbar">⚠<div>${esc(a.map_note)}</div></div>`:"";
+  const um = a.unmeasured_metrics||[];
+  const unmeasured = um.length?`<div class="warnbar">⚠<div><b>Not measured this run:</b> ${um.map(esc).join(", ")} — shown as "not measured", not as 0. No recommendation was generated from them, so an absent finding here means unknown, not fine.</div></div>`:"";
   const map = a.map_available
     ? `<iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe>`
     : `<div class="lab"><div class="eyebrow">Map view</div>
@@ -853,7 +859,7 @@ function viewExecution(a){
   const inv = s3 ? (s3.human_final||s3.ai_draft||{}) : {};
   const list = layerListPanel(inv.layers||[], inv.study_area, {toggles:!!a.map_available});
   // Prof. Shi's layout: layer list left · map upper-right · metrics + recs beneath
-  return `${warn}${note}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+  return `${warn}${note}${unmeasured}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
     <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Layers</div>${list}
       <div class="subnote">Toggle a layer's checkbox to show/hide it; right-click for attributes &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
