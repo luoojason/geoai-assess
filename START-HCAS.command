@@ -29,12 +29,22 @@ python3 -m pip install --quiet -r requirements.txt
 
 # Prompt when .env is missing OR exists without a real key (an empty
 # ANTHROPIC_API_KEY= line from an earlier install must not silence the prompt).
-if ! grep -qE "(ANTHROPIC|OPENROUTER)_API_KEY=." .env 2>/dev/null; then
+# Anchored to start-of-line: unanchored, this matched the COMMENTED placeholder
+# "# ANTHROPIC_API_KEY=sk-ant-..." that .env.example ships with, so anyone who
+# followed the README's "cp .env.example .env" was told a key was already saved
+# and then failed at the step-2 LLM call instead of at this prompt.
+if ! grep -qE "^(ANTHROPIC|OPENROUTER)_API_KEY=." .env 2>/dev/null; then
   echo ""
   echo "The AI steps (2 and 4) need an API key (Anthropic sk-ant-... or OpenRouter sk-or-...)."
   read -r -p "Paste the API key (or press Enter to skip for now): " KEY
   if [ -n "$KEY" ]; then
-    echo "ANTHROPIC_API_KEY=$KEY" > .env
+    # Drop only the old key line, keep everything else. "> .env" truncated the
+    # file, silently discarding DEMO_PASSWORD / CORS_ALLOWED_ORIGINS / HOST / PORT.
+    if [ -f .env ]; then
+      grep -v '^ANTHROPIC_API_KEY=' .env > .env.tmp 2>/dev/null || true
+      mv .env.tmp .env
+    fi
+    echo "ANTHROPIC_API_KEY=$KEY" >> .env
     echo "Saved."
   else
     echo "Skipped — steps 2 and 4 will error until a key is added to a .env file."
@@ -45,7 +55,12 @@ else
   echo ""
   read -r -p "An API key is already saved. Press Enter to keep it, or paste a different key to replace it: " NEWKEY
   if [ -n "$NEWKEY" ]; then
-    echo "ANTHROPIC_API_KEY=$NEWKEY" > .env
+    # Same non-truncating write as above.
+    if [ -f .env ]; then
+      grep -v '^ANTHROPIC_API_KEY=' .env > .env.tmp 2>/dev/null || true
+      mv .env.tmp .env
+    fi
+    echo "ANTHROPIC_API_KEY=$NEWKEY" >> .env
     echo "Updated."
   fi
 fi

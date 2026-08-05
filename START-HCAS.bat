@@ -29,7 +29,11 @@ REM Key prompt lives OUTSIDE any ( ) block: cmd expands %KEY% when a block is
 REM parsed, not when it runs, so the old block-form wrote an EMPTY key to .env.
 REM Also re-prompts when .env exists but its key line is empty (that bug's leftover).
 if not exist .env goto :promptkey
-findstr /r /c:"ANTHROPIC_API_KEY=." /c:"OPENROUTER_API_KEY=." .env >nul 2>nul
+REM Anchor to start-of-line: unanchored, this matched the COMMENTED placeholder
+REM "# ANTHROPIC_API_KEY=sk-ant-..." that .env.example ships with, so anyone who
+REM followed the README's "copy .env.example to .env" was told a key was already
+REM saved and then failed at the step-2 LLM call instead of at this prompt.
+findstr /r /c:"^ANTHROPIC_API_KEY=." /c:"^OPENROUTER_API_KEY=." .env >nul 2>nul
 if errorlevel 1 goto :promptkey
 REM A key is already saved. Offer to keep or replace it, so a wrong/revoked key
 REM is not stuck (re-running used to silently reuse it). Write stays OUTSIDE any
@@ -38,7 +42,13 @@ echo.
 set "NEWKEY="
 set /p NEWKEY="An API key is already saved. Press Enter to keep it, or paste a different key to replace it: "
 if not defined NEWKEY goto :launch
->.env echo ANTHROPIC_API_KEY=%NEWKEY%
+REM Drop only the old key line, keep everything else. ">.env" truncated the file,
+REM silently discarding DEMO_PASSWORD / CORS_ALLOWED_ORIGINS / HOST / PORT.
+if exist .env (
+  findstr /v /r /c:"^ANTHROPIC_API_KEY=" .env > "%TEMP%\hcas_env.tmp" 2>nul
+  move /y "%TEMP%\hcas_env.tmp" .env >nul
+)
+>>.env echo ANTHROPIC_API_KEY=%NEWKEY%
 echo Updated.
 goto :launch
 
@@ -48,7 +58,12 @@ echo The AI steps ^(2 and 4^) need an API key ^(Anthropic sk-ant-... or OpenRout
 set "KEY="
 set /p KEY="Paste the API key (or press Enter to skip for now): "
 if not defined KEY goto :launch
->.env echo ANTHROPIC_API_KEY=%KEY%
+REM Same non-truncating write as above.
+if exist .env (
+  findstr /v /r /c:"^ANTHROPIC_API_KEY=" .env > "%TEMP%\hcas_env.tmp" 2>nul
+  move /y "%TEMP%\hcas_env.tmp" .env >nul
+)
+>>.env echo ANTHROPIC_API_KEY=%KEY%
 echo Saved.
 
 :launch
