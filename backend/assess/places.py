@@ -5,6 +5,13 @@ prevalence only. These are county-wide estimates — coarser than the 5km
 study area the OSM metrics describe; the report says so.
 """
 
+# Defers annotation evaluation so the PEP 604 union in _query's return type
+# (`int | None`, 3.10+ syntax) does not raise at import on Python 3.9. Prof. Shi
+# hit exactly this class of crash on Windows Store Python 3.9 via
+# app.py -> hcas.py -> gis/counties.py; that site was fixed, this one was missed,
+# and hcas.py is safe only because it already carries this same import.
+from __future__ import annotations
+
 import logging
 
 import requests
