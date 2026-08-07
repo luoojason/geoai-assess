@@ -818,23 +818,44 @@ class TestFetchErrorSurfacing:
             ol._failed_over = False
         assert calls["n"] == 2
 
-    def test_mirror_failure_points_the_next_request_back_at_the_primary(self, monkeypatch):
-        """The failed call is not retried — that would only repeat a wait we have
-        already paid — but the endpoint flips back, so a run is never stranded on
-        whichever host happens to be the bad one.
+    def test_a_failing_endpoint_rotates_and_the_call_retries_once(self, monkeypatch):
+        """Every endpoint gets a turn, and one call pays at most two timeouts.
 
-        Measured within ten minutes on one link (2026-08-07): primary 8.0 s /
-        mirror timeout, then primary timeout / mirror 3.1 s, then primary 22 s /
-        mirror timeout. Neither host is reliably better, so a one-way switch is a
-        trap rather than a safety net.
+        Measured with the same query on 2026-08-07: primary 21.7 s, kumi 504,
+        private.coffee 4.2 s — and ten minutes earlier kumi was the fast one. No
+        host is reliably best, so a one-way switch to a designated mirror strands
+        the run on whichever host is sick today.
         """
         import osmnx as ox
 
         from backend.assess import osm_layers as ol
 
-        monkeypatch.setattr(ol, "_failed_over", True)
         old_url = ox.settings.overpass_url
-        ox.settings.overpass_url = ol._OVERPASS_MIRROR
+        ox.settings.overpass_url = ol._OVERPASS_MIRROR      # start mid-rotation
+        seen = []
+
+        def flaky():
+            seen.append(ox.settings.overpass_url)
+            if len(seen) == 1:
+                raise OSError("[WinError 10065] unreachable host")
+            return "ok"
+
+        try:
+            assert ol._with_overpass_failover(flaky) == "ok"
+            assert seen == [ol._OVERPASS_MIRROR, ol._OVERPASS_MIRROR2]  # rotated, retried
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._failed_over = False
+
+    def test_a_second_failure_rotates_again_without_a_third_timeout(self, monkeypatch):
+        """The call gives up after two attempts — a third would just repeat a
+        wait already paid — but the endpoint moves on for the NEXT call."""
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        old_url = ox.settings.overpass_url
+        ox.settings.overpass_url = ol._OVERPASS_PRIMARY
         calls = {"n": 0}
 
         def dead():
@@ -844,9 +865,8 @@ class TestFetchErrorSurfacing:
         try:
             with pytest.raises(OSError):
                 ol._with_overpass_failover(dead)
-            assert calls["n"] == 1                                    # not retried here
-            assert ox.settings.overpass_url == ol._OVERPASS_PRIMARY   # but flipped back
-            assert ol._failed_over is False
+            assert calls["n"] == 2                                  # not three
+            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR2  # rotated onward
         finally:
             ox.settings.overpass_url = old_url
             ol._failed_over = False

@@ -228,13 +228,51 @@ class TestOverpassTiling:
 
         assert ol._start_tiles((0.0, 0.0, 0.1, 0.1)) == [(0.0, 0.0, 0.1, 0.1)]
 
-    def test_probe_switches_to_the_mirror_when_the_primary_is_unreachable(self, monkeypatch):
+    def test_probe_walks_the_rotation_to_a_host_that_answers(self, monkeypatch):
+        """The probe settles the whole run on an endpoint that is answering
+        today, instead of assuming the designated mirror is healthy — on
+        2026-08-07 the mirror was the sick one (504)."""
         import osmnx as ox
 
         from backend.assess import osm_layers as ol
 
         old_url = ox.settings.overpass_url
-        ox.settings.overpass_url = "https://overpass-api.de/api"
+        ox.settings.overpass_url = ol._OVERPASS_PRIMARY
+        monkeypatch.setattr(ol, "_probed", False)
+        monkeypatch.setattr(ol, "_failed_over", False)
+        tried = []
+
+        class _R:
+            def __init__(self, code):
+                self.status_code = code
+
+        def fake_post(url, data=None, headers=None, timeout=None):
+            tried.append(url)
+            if url.startswith(ol._OVERPASS_PRIMARY):
+                raise OSError("connect timeout")
+            if url.startswith(ol._OVERPASS_MIRROR):
+                return _R(504)
+            return _R(200)
+
+        monkeypatch.setattr("requests.post", fake_post)
+        try:
+            ol._probe_overpass_once()
+            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR2
+            assert len(tried) == 3
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._failed_over = False
+            ol._probed = False
+
+    def test_probe_leaves_the_endpoint_alone_when_none_answer(self, monkeypatch):
+        """A total outage is the fetchers' story to tell, with a plain-language
+        reason — not something the probe should swallow by picking a host."""
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        old_url = ox.settings.overpass_url
+        ox.settings.overpass_url = ol._OVERPASS_PRIMARY
         monkeypatch.setattr(ol, "_probed", False)
         monkeypatch.setattr(ol, "_failed_over", False)
 
@@ -244,10 +282,9 @@ class TestOverpassTiling:
         monkeypatch.setattr("requests.post", dead)
         try:
             ol._probe_overpass_once()
-            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR
+            assert ox.settings.overpass_url == ol._OVERPASS_PRIMARY
         finally:
             ox.settings.overpass_url = old_url
-            ol._failed_over = False
             ol._probed = False
 
     def test_probe_accepts_a_406_from_the_primary(self, monkeypatch):

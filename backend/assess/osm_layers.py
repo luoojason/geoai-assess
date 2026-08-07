@@ -25,9 +25,28 @@ logger = logging.getLogger(__name__)
 # whole process to the mirror and retry — sticky, so later fetchers start there.
 _OVERPASS_PRIMARY = "https://overpass-api.de/api"
 _OVERPASS_MIRROR = "https://overpass.kumi.systems/api"
+_OVERPASS_MIRROR2 = "https://overpass.private.coffee/api"
+
+# Tried in order, rotating on failure. Three, not two, because on 2026-08-07 a
+# real query measured 21.7 s on the primary, 504 on kumi, and 4.2 s on
+# private.coffee — the endpoint we had as our only fallback was the sick one, so
+# a two-host rotation had nowhere good to go.
+#
+# Endpoints are added only if they serve GLOBAL data. overpass.osm.ch answered
+# the same probe in 0.7 s with ZERO ways: it is a Switzerland-only extract, so
+# adding it would turn "wrong server" into "this county has no buildings" —
+# silently, which is the exact failure class this file exists to prevent.
+_OVERPASS_ENDPOINTS = [_OVERPASS_PRIMARY, _OVERPASS_MIRROR, _OVERPASS_MIRROR2]
+
+
+def _next_endpoint(used: str) -> str:
+    try:
+        i = _OVERPASS_ENDPOINTS.index(used)
+    except ValueError:
+        return _OVERPASS_ENDPOINTS[0]
+    return _OVERPASS_ENDPOINTS[(i + 1) % len(_OVERPASS_ENDPOINTS)]
 _failover_lock = threading.Lock()
 _failed_over = False
-
 # --- request budget ---------------------------------------------------------
 # osmnx defaults to a 180 s socket timeout and osmnx>=2 retries, so ONE hung
 # layer could hold a step for many minutes with nothing the user could do. Since
@@ -43,10 +62,21 @@ OSM_TIMEOUT_S = int(os.environ.get("OSM_TIMEOUT_S", "90"))
 # on arrival. Identify the app.
 _USER_AGENT = "HCAS/1.0 (Healthy Community Assessment System; +https://github.com/luoojason)"
 
-# osmnx interpolates requests_timeout into the Overpass `[timeout:…]` header too
-# (_overpass._make_overpass_settings), so one setting bounds both the socket and
-# the server-side query.
-ox.settings.requests_timeout = OSM_TIMEOUT_S
+# Connect and read are bounded SEPARATELY. A single scalar made both 90 s, and
+# the failure seen repeatedly on 2026-08-07 was a *connect* timeout: the host
+# accepted a one-node probe seconds earlier, then refused to complete the TCP
+# handshake for the real query. Waiting 90 s to learn a server will not talk to
+# us is 80 s of nothing — and it is paid per layer, before the rotation can move
+# on. A server that is up completes a handshake in well under 10 s.
+#
+# requests takes (connect, read) as a tuple and osmnx passes requests_timeout
+# straight through; the tuple would otherwise land in the Overpass query header
+# as "[timeout:(10, 90)]", so the settings string is pinned to a literal (the
+# default template's {maxsize} is empty unless overpass_memory is set).
+OSM_CONNECT_TIMEOUT_S = int(os.environ.get("OSM_CONNECT_TIMEOUT_S", "10"))
+
+ox.settings.requests_timeout = (OSM_CONNECT_TIMEOUT_S, OSM_TIMEOUT_S)
+ox.settings.overpass_settings = f"[out:json][timeout:{OSM_TIMEOUT_S}]"
 ox.settings.http_user_agent = _USER_AGENT
 
 
@@ -60,45 +90,54 @@ _probed = False
 
 
 def _probe_overpass_once() -> None:
-    """Pick a reachable Overpass endpoint before the first real query.
+    """Settle on a working Overpass endpoint before the first real query.
 
-    Failing over on the real query costs a full `requests_timeout` first — 90 s
-    of connect timeout on a network that cannot reach overpass-api.de at all
-    (measured on a Windows client 2026-08-07), paid before a single byte of data
-    is requested. A 6 s probe answers the same question.
+    Discovering a dead endpoint through the real query costs a full
+    `requests_timeout` first — 90 s of connect timeout on a link that cannot
+    reach the host at all (measured 2026-08-07). Probing each endpoint in turn
+    costs at most _PROBE_TIMEOUT_S each and lands the whole run on a host that is
+    answering *today*: on 2026-08-07 the primary took 21.7 s and the mirror
+    returned 504, while the third endpoint answered the same query in 4.2 s.
+
+    The probe is a tiny REAL query against /interpreter, not /status: /status
+    answered inside the probe window on a link where /interpreter still timed
+    out, so the cheap endpoint proves nothing about the one that matters.
     """
     global _probed, _failed_over
     with _failover_lock:
         if _probed:
             return
         _probed = True
-    if _failed_over:
-        return
     import requests
 
-    try:
-        # A tiny REAL query against /interpreter, not /status: on the machine
-        # this was measured on, /status answered inside the probe window while
-        # /interpreter still connect-timed out at 90 s, so probing the cheap
-        # endpoint proved nothing about the one that matters.
-        r = requests.post(
-            f"{ox.settings.overpass_url}/interpreter",
-            data={"data": "[out:json][timeout:5];node(0,0,0.001,0.001);out 1;"},
-            headers={"User-Agent": _USER_AGENT},
-            timeout=_PROBE_TIMEOUT_S,
-        )
-        if r.status_code < 500:
-            return
-        reason = f"HTTP {r.status_code}"
-    except Exception as exc:
-        reason = repr(exc)
-    logger.warning(
-        f"Overpass primary unreachable in {_PROBE_TIMEOUT_S:g}s ({reason}) — "
-        f"starting on {_OVERPASS_MIRROR}"
-    )
-    with _failover_lock:
-        ox.settings.overpass_url = _OVERPASS_MIRROR
-        _failed_over = True
+    start = ox.settings.overpass_url
+    order = [start] + [e for e in _OVERPASS_ENDPOINTS if e != start]
+    reasons = []
+    for url in order:
+        try:
+            r = requests.post(
+                f"{url}/interpreter",
+                data={"data": "[out:json][timeout:5];node(0,0,0.001,0.001);out 1;"},
+                headers={"User-Agent": _USER_AGENT},
+                timeout=_PROBE_TIMEOUT_S,
+            )
+            if r.status_code < 500:
+                if url != start:
+                    logger.warning(
+                        f"Overpass: starting on {url} — earlier endpoints unavailable "
+                        f"({'; '.join(reasons)})"
+                    )
+                with _failover_lock:
+                    ox.settings.overpass_url = url
+                    _failed_over = url != _OVERPASS_PRIMARY
+                return
+            reasons.append(f"{url} HTTP {r.status_code}")
+        except Exception as exc:
+            reasons.append(f"{url} {type(exc).__name__}")
+    # Every endpoint failed its probe. Leave the URL where it started and let the
+    # real call report the failure — an outage is the fetchers' story to tell,
+    # with a plain-language reason, not something to swallow here.
+    logger.warning(f"Overpass: no endpoint answered a probe ({'; '.join(reasons)})")
 
 
 def _with_overpass_failover(call):
@@ -120,32 +159,31 @@ def _with_overpass_failover(call):
     except InsufficientResponseError:
         raise
     except Exception as exc:
-        if used == _OVERPASS_MIRROR:
-            # The mirror failed. Point back at the primary so the NEXT tile tries
-            # it rather than hammering an endpoint we now have evidence against —
-            # neither host is reliably the good one. Measured 2026-08-07 within
-            # ten minutes on the same link: primary 8.0 s / mirror timeout, then
-            # primary timeout / mirror 3.1 s, then primary 22 s / mirror timeout.
-            # A one-way switch strands the whole run on whichever host happened
-            # to be bad second. This call still fails; retrying it here would
-            # just repeat the wait we already paid.
-            with _failover_lock:
-                if _failed_over:
-                    logger.warning(
-                        f"Overpass mirror failed too ({exc!r}) — next request goes "
-                        f"back to {_OVERPASS_PRIMARY}"
-                    )
-                    ox.settings.overpass_url = _OVERPASS_PRIMARY
-                    _failed_over = False
-            raise
+        # Rotate to the next endpoint and give this call ONE more attempt there.
+        # Rotating (rather than switching one way to a designated mirror) is what
+        # keeps a run off whichever host is sick today: measured 2026-08-07 with
+        # the same query, primary 21.7 s / kumi 504 / private.coffee 4.2 s — and
+        # ten minutes earlier kumi had been the fast one. No host is reliably best.
+        nxt = _next_endpoint(used)
         with _failover_lock:
-            if not _failed_over:
-                logger.warning(
-                    f"Overpass primary failed ({exc!r}) — failing over to {_OVERPASS_MIRROR}"
-                )
-                _failed_over = True
-            ox.settings.overpass_url = _OVERPASS_MIRROR
-        return call()
+            ox.settings.overpass_url = nxt
+            _failed_over = nxt != _OVERPASS_PRIMARY
+        logger.warning(f"Overpass {used} failed ({exc!r}) — retrying on {nxt}")
+        try:
+            return call()
+        except InsufficientResponseError:
+            raise
+        except Exception as exc2:
+            # Two timeouts is all one call pays; a third would just repeat a wait
+            # already spent. Move the endpoint on so the NEXT call starts fresh.
+            after = _next_endpoint(nxt)
+            with _failover_lock:
+                ox.settings.overpass_url = after
+                _failed_over = after != _OVERPASS_PRIMARY
+            logger.warning(
+                f"Overpass {nxt} failed too ({exc2!r}) — next request tries {after}"
+            )
+            raise
 
 
 # --- adaptive tiling -------------------------------------------------------
