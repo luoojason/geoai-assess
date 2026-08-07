@@ -63,6 +63,26 @@ def _county_attributes(state_fips: str, county_fips: str) -> dict:
     return feats[0].get("attributes") or {}
 
 
+def _county_extent(state_fips: str, county_fips: str) -> tuple:
+    """The county's real bounding box in EPSG:4326, from TIGERweb."""
+    r = requests.get(
+        f"{_TIGER}/{_COUNTY_LAYER}/query",
+        params={
+            "where": f"GEOID='{state_fips}{county_fips}'",
+            "returnExtentOnly": "true",
+            "outSR": "4326",
+            "f": "json",
+        },
+        timeout=20,
+    )
+    r.raise_for_status()
+    ext = (r.json() or {}).get("extent") or {}
+    try:
+        return (ext["xmin"], ext["ymin"], ext["xmax"], ext["ymax"])
+    except KeyError:
+        raise LookupError(f"TIGERweb returned no extent for {state_fips}{county_fips}")
+
+
 def _acs_profile(state_fips: str, county_fips: str, api_key: str) -> dict:
     """ACS 5-year county figures. api.census.gov now rejects keyless requests
     (verified 2026-08-07: every endpoint returns a 'Missing Key' page with HTTP
@@ -199,15 +219,20 @@ def areal_unit_availability(state_fips: str, county_fips: str, unit: str) -> dic
         params = {"where": where, "outFields": "GEOID", "returnGeometry": "false",
                   "returnCountOnly": "true", "f": "json"}
     else:
-        # ZCTAs cross county lines, so match them against the county's envelope.
+        # ZCTAs cross county lines and carry no county field, so they are matched
+        # geographically — against the county's OWN bounding box, asked for by
+        # name. An earlier version used a fixed +/-0.75 degree box around the
+        # centroid, which is ~120 km wide and reported 206 ZIP areas "for"
+        # Grafton County; a bbox that is not the county's is not a search of the
+        # county. The wording below still says overlap, because a bounding box
+        # is not the polygon.
         try:
-            attrs = _county_attributes(state_fips, county_fips)
-            lat, lon = float(attrs["CENTLAT"]), float(attrs["CENTLON"])
+            xmin, ymin, xmax, ymax = _county_extent(state_fips, county_fips)
         except Exception as exc:
             return {"unit": unit, "label": label, "available": False, "count": 0,
                     "note": f"Could not locate the county to search for {label}s ({type(exc).__name__})."}
         params = {
-            "geometry": f"{lon - 0.75},{lat - 0.6},{lon + 0.75},{lat + 0.6}",
+            "geometry": f"{xmin},{ymin},{xmax},{ymax}",
             "geometryType": "esriGeometryEnvelope", "inSR": "4326",
             "spatialRel": "esriSpatialRelIntersects",
             "outFields": "GEOID", "returnGeometry": "false",
@@ -237,8 +262,12 @@ def areal_unit_availability(state_fips: str, county_fips: str, unit: str) -> dic
             "note": f"Census publishes no {label} boundaries for this county, so "
                     f"results stay at the county level.",
         }
+    # Nested units are counted inside the county by GEOID; ZCTAs are counted by
+    # bounding-box overlap, so say which was measured rather than letting an
+    # overlap count read as a containment count.
+    where = "in this county" if spec.get("prefix") else "overlapping this county's extent"
     return {
         "unit": unit, "label": label, "available": True, "count": count,
         "source": "US Census TIGERweb",
-        "note": f"{count} {label} boundaries found for this county.",
+        "note": f"{count} {label} boundaries found {where}.",
     }

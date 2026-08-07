@@ -293,3 +293,58 @@ class TestCensusProfileHonesty:
     def test_county_unit_needs_no_lookup(self):
         out = _real_unit_availability("33", "009", "county")
         assert out["available"] is True and out["count"] == 1
+
+    def test_zcta_is_searched_in_the_county_extent_and_says_so(self, monkeypatch):
+        """ZCTAs carry no county field, so they are matched geographically. The
+        box must be the COUNTY's, and the wording must say overlap rather than
+        containment.
+
+        Caught in the 2026-08-07 pre-ship run: a fixed +/-0.75 degree box around
+        the centroid is ~120 km wide and reported 206 ZIP areas "for this
+        county" (real answer over the county's own extent: 98).
+        """
+        from backend.gis import profile as p
+
+        seen = {}
+        monkeypatch.setattr(p, "_county_extent", lambda s, c: (-72.34, 43.53, -71.35, 44.41))
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"count": 98}
+
+        def fake_get(url, params=None, timeout=None):
+            seen["url"], seen["params"] = url, params
+            return _Resp()
+
+        monkeypatch.setattr(p.requests, "get", fake_get)
+        out = _real_unit_availability("33", "009", "zcta")
+
+        assert seen["params"]["geometry"] == "-72.34,43.53,-71.35,44.41"
+        assert out["count"] == 98
+        assert "overlapping this county's extent" in out["note"]
+
+    def test_nested_units_are_counted_by_geoid_prefix(self, monkeypatch):
+        from backend.gis import profile as p
+
+        seen = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"count": 28}
+
+        def fake_get(url, params=None, timeout=None):
+            seen["params"] = params
+            return _Resp()
+
+        monkeypatch.setattr(p.requests, "get", fake_get)
+        out = _real_unit_availability("33", "009", "tract")
+        assert seen["params"]["where"] == "GEOID LIKE '33009%'"
+        assert "in this county" in out["note"]
