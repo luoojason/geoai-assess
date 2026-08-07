@@ -79,3 +79,19 @@ def take_fetch_errors() -> dict[str, str]:
         out = dict(_errors)
         _errors.clear()
         return out
+
+
+def pop_fetch_error(layer_fn: str) -> str | None:
+    """Pop one fetcher's failure, or None if it succeeded.
+
+    Lets a step runner classify each layer the moment ITS fetch returns instead
+    of waiting for the whole batch. Prof. Shi (2026-08-07) saw layers reported
+    as "done · 0 features" while they had in fact failed, because the error flag
+    was only applied after every layer finished — so a stalled run looked like a
+    finished one.
+    """
+    sink = _scope.get()
+    if sink is not None:  # inside collect_fetch_errors(), same rule as recording
+        return sink.pop(layer_fn, None)
+    with _lock:
+        return _errors.pop(layer_fn, None)

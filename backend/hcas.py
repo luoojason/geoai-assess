@@ -69,6 +69,14 @@ from backend.gis.counties import build_place_name, centroid_of_county, lookup_co
 
 DB_PATH = Path(__file__).with_name("hcas.db")
 
+# Wall-clock ceiling for the whole per-step layer fetch. Layers still running
+# when it expires are abandoned and reported as timed out, so a step ALWAYS
+# returns a confirmable artifact (see _fetch_layers). Raise it with
+# HCAS_LAYER_BUDGET_S for a very large county on a slow link.
+import os as _os
+
+LAYER_FETCH_BUDGET_S = float(_os.environ.get("HCAS_LAYER_BUDGET_S", "420"))
+
 # (step, phase, title, runner kind)
 STEPS = [
     (1, "scope", "Study area intake", "deterministic"),
@@ -234,16 +242,47 @@ def _conn(db: Path):
 
 def _run_step_1(meta: dict) -> dict:
     """Typed study-area artifact. bbox-first union so a China pivot is a new
-    kind, not a rewrite (ponytail: only us_county implemented)."""
+    kind, not a rewrite (ponytail: only us_county implemented).
+
+    Carries a descriptive Census profile (area, population, income where a key
+    is configured) — Prof. Shi 2026-08-07 #10: FIPS codes are not information a
+    reader needs, and "I tried to ask AI what the population of the specified
+    county and it said this is not available from the current data". Putting the
+    profile ON the artifact is what makes the assistant able to answer, since it
+    reads the step artifact and nothing else.
+    """
+    import os
+
+    from backend.gis.profile import DEFAULT_AREAL_UNIT, county_profile
+
+    from backend.assess import places
+
     state, county = meta["state_fips"], meta["county_fips"]
     lat, lon = centroid_of_county(state, county)
-    return {
+    key = os.environ.get("CENSUS_API_KEY") or None
+    # PLACES carries the county total population and needs no key, so the
+    # headline figure is available from step 1 rather than only at step 3.
+    pop = places.fetch_total_population(state, county)
+    try:
+        profile = county_profile(state, county, population=pop, census_api_key=key)
+    except Exception as exc:  # never let a descriptive extra fail the step
+        logger.warning(f"county_profile failed: {exc!r}")
+        profile = {"unavailable": {"profile": f"could not be fetched ({type(exc).__name__})."}}
+    out = {
         "kind": "us_county",
         "state_fips": state,
         "county_fips": county,
         "place_name": build_place_name(state, county),
         "centroid": [lat, lon],
+        "extent": "Entire county boundary",
+        "areal_unit": meta.get("areal_unit", DEFAULT_AREAL_UNIT),
+        "profile": profile,
     }
+    if meta.get("location_query"):
+        out["location_query"] = meta["location_query"]
+    if meta.get("notes"):
+        out["notes"] = meta["notes"]
+    return out
 
 
 # One plain-language message per upstream failure mode, shared by the step
@@ -362,6 +401,10 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
             ["claude", "-p", full, "--output-format", "json",
              "--model", model, "--append-system-prompt", system, "--max-turns", "1"],
             capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL,
+            # text=True alone decodes with the locale codepage — cp1252 on a
+            # Windows install — which turned every em dash and curly quote in a
+            # model reply into mojibake ("â€”"). Seen in the wizard 2026-08-07.
+            encoding="utf-8", errors="replace",
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -548,6 +591,7 @@ def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple
             ["claude", "-p", prompt, "--output-format", "json", "--model", model,
              "--append-system-prompt", system, "--max-turns", "1"],
             capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+            encoding="utf-8", errors="replace",  # see _llm_via_claude_cli
         )
         if proc.returncode != 0:
             raise RuntimeError(f"claude CLI failed (rc={proc.returncode}): {proc.stderr[-400:]}")
@@ -733,59 +777,119 @@ def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None
     return html
 
 
-def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
+                  pct_span: tuple[float, float] = (2.0, 100.0)) -> tuple[dict, dict, list]:
+    """Fetch `names` concurrently under a wall-clock budget.
 
-    from backend.assess.netdiag import friendly_net_reason, take_fetch_errors
+    Returns (results, errors, detail). A layer that has not returned when the
+    budget expires is abandoned: it becomes an empty layer with a timed-out
+    error, exactly like a refused connection. Nothing here can block forever —
+    Prof. Shi 2026-08-07 ("after the data are fetched, the process cannot move
+    on") was a step with no upper bound on its own runtime, so the wizard had no
+    state to advance to and no way back.
 
-    factors = _confirmed(project, 2)["factors"]
-    names = sorted({layer for f in factors for layer in METRIC_LAYERS[f["metric"]]})
-    study_area, bbox, describe = _resolve_study_area(project)
+    Each layer's checklist row flips to done/error the moment ITS fetch returns,
+    so a failed layer is never displayed as "done · 0 features" while the rest
+    are still running.
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout, as_completed
+
+    from backend.assess.netdiag import pop_fetch_error, take_fetch_errors
+
+    # Drain anything left in the process-wide registry first. An abandoned fetch
+    # from a previous run can still be in flight and record its failure later;
+    # without this, that error would be popped by whichever layer of THIS run
+    # happens to share the fetcher name, and reported against the wrong data.
+    take_fetch_errors()
     fetchers = _layer_fetchers()
-    pid = project["id"]
-    total = len(names) + 1  # +1: the CDC PLACES fetch at the end
-
-    # Live per-layer checklist: each layer starts "fetching", flips to "done"
-    # (with its feature count) or "error" the moment ITS fetch returns — not in
-    # submission order. This is the fix for Prof. Shi's "stuck at 1/7 then
-    # everything done at once": the old ex.map yielded strictly in order, so a
-    # single slow layer froze the bar while the rest silently finished.
     detail = [
         {"name": _layer_meta(n)[0], "layer": n, "source": _layer_meta(n)[1],
          "status": "fetching"}
         for n in names
     ]
-    set_progress_detail(pid, 3, detail)
-    set_progress(pid, 3, 2, f"fetching {len(names)} map layers…")
+    set_progress_detail(pid, step, detail)
+    lo, hi = pct_span
+    set_progress(pid, step, lo, f"fetching {len(names)} map layers…")
 
     results: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    errors: dict[str, str] = {}
+    started = time.time()
+    ex = ThreadPoolExecutor(max_workers=4)
+    try:
         futures = {ex.submit(fetchers[n], tuple(bbox)): n for n in names}
         done = 0
-        for fut in as_completed(futures):
-            n = futures[fut]
-            g = fut.result()
-            results[n] = g
-            done += 1
-            slot = next(d for d in detail if d["layer"] == n)
-            slot["status"] = "done"
-            slot["count"] = int(len(g))
-            set_progress_detail(pid, 3, detail)
-            set_progress(pid, 3, done / total * 100,
-                         f"map layers {done}/{len(names)} · {_layer_meta(n)[0]} "
-                         f"({len(g):,} features)")
+        try:
+            for fut in as_completed(futures, timeout=budget_s):
+                n = futures[fut]
+                try:
+                    g = fut.result()
+                except Exception as exc:  # a fetcher is not supposed to raise
+                    logger.warning(f"{n} fetcher raised: {exc!r}")
+                    g = _empty_layer()
+                    errors[n] = f"the data source failed unexpectedly ({type(exc).__name__})."
+                err = pop_fetch_error(getattr(fetchers[n], "__name__", ""))
+                if err:
+                    errors[n] = err
+                results[n] = g
+                done += 1
+                slot = next(d for d in detail if d["layer"] == n)
+                slot["elapsed_s"] = round(time.time() - started, 1)
+                if n in errors:
+                    slot["status"] = "error"
+                    slot["note"] = errors[n]
+                else:
+                    slot["status"] = "done"
+                    slot["count"] = int(len(g))
+                set_progress_detail(pid, step, detail)
+                set_progress(pid, step, lo + (hi - lo) * done / len(names),
+                             f"map layers {done}/{len(names)} · {_layer_meta(n)[0]} "
+                             + (f"({len(g):,} features)" if n not in errors else "— unavailable"))
+        except FutTimeout:
+            for fut, n in futures.items():
+                if n in results:
+                    continue
+                fut.cancel()
+                results[n] = _empty_layer()
+                errors[n] = (
+                    f"gave up after {int(budget_s)}s — the OpenStreetMap server did "
+                    "not answer for this area in time. A whole county is a large "
+                    "query; try again, or use CHECK-NETWORK to test the connection."
+                )
+                slot = next(d for d in detail if d["layer"] == n)
+                slot["status"] = "error"
+                slot["note"] = errors[n]
+                slot["elapsed_s"] = round(time.time() - started, 1)
+            set_progress_detail(pid, step, detail)
+            logger.warning(
+                f"step {step}: layer budget {budget_s}s expired with "
+                f"{len(errors)} layer(s) unfinished"
+            )
+    finally:
+        # Do NOT join abandoned worker threads: a hung Overpass socket would
+        # put the block back exactly where it was removed from.
+        ex.shutdown(wait=False, cancel_futures=True)
+    return results, errors, detail
+
+
+def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
+    from backend.assess.netdiag import friendly_net_reason
+
+    factors = _confirmed(project, 2)["factors"]
+    names = sorted({layer for f in factors for layer in METRIC_LAYERS[f["metric"]]})
+    study_area, bbox, describe = _resolve_study_area(project)
+    pid = project["id"]
+
+    results, errs_by_layer, detail = _fetch_layers(
+        pid, 3, names, bbox, LAYER_FETCH_BUDGET_S, pct_span=(2.0, 88.0)
+    )
     gdfs = [results[n] for n in names]
     # Failed fetches surface in the artifact (Prof. Shi's blocked-network test:
     # silent empty layers looked like a working run with no data).
-    errs = take_fetch_errors()
     inventory = []
     for n, g in zip(names, gdfs):
         label, source, geom_type = _layer_meta(n)
-        err = errs.get(getattr(fetchers[n], "__name__", ""))
-        if err:
-            slot = next(d for d in detail if d["layer"] == n)
-            slot["status"] = "error"
-            slot["note"] = err
+        err = errs_by_layer.get(n)
+        slot = next((d for d in detail if d["layer"] == n), {})
         inventory.append({
             "layer": n,
             "name": label,
@@ -793,15 +897,14 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
             "crs": str(g.crs),
             "source": source,
             "geom_type": geom_type,
+            **({"fetch_seconds": slot["elapsed_s"]} if slot.get("elapsed_s") is not None else {}),
             **({"error": err} if err else {}),
         })
-    set_progress_detail(pid, 3, detail)
 
     from backend.assess import places
 
     meta = project["meta"]
-    set_progress(pid, 3, (total - 1) / total * 100,
-                 "county health outcomes — CDC PLACES…")
+    set_progress(pid, 3, 90, "county health outcomes — CDC PLACES…")
     try:
         outcomes = places.fetch_health_outcomes(meta["state_fips"], meta["county_fips"])
     except Exception as exc:  # CDC being down shouldn't block the OSM layers
@@ -829,10 +932,25 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     if pop is not None:
         study_layer["population"] = pop
 
+    # Prof. Shi 2026-08-07 #5: the reporting unit is the user's choice, and when
+    # its data does not exist the system must SAY so after searching — which is
+    # what this does: a real Census query, then a plain-language verdict.
+    from backend.gis.profile import DEFAULT_AREAL_UNIT, areal_unit_availability
+
+    set_progress(pid, 3, 95, "searching for the chosen reporting unit…")
+    unit = meta.get("areal_unit", DEFAULT_AREAL_UNIT)
+    areal = areal_unit_availability(meta["state_fips"], meta["county_fips"], unit)
+    if areal.get("available") and unit != "county":
+        areal["note"] += (
+            " Metrics in this version are still computed over the whole study "
+            "area; per-unit tabulation is not implemented yet."
+        )
+
     artifact = {
         "kind": "layer_inventory",
         "bbox": bbox,
         "study_area": study_layer,
+        "areal_unit": areal,
         "layers": inventory,
         "health_outcomes": outcomes,
     }
@@ -1033,10 +1151,7 @@ def _run_step_6(project: dict) -> tuple[dict, str | None, dict | None]:
 
 
 def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     from backend.assess import generate_interventions
-    from backend.assess.netdiag import take_fetch_errors
 
     # Execute the human-confirmed workflow: a deleted compute step stays deleted.
     plan = [s for s in _confirmed(project, 6)["steps"] if s["action"] == "compute"]
@@ -1044,41 +1159,11 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     names = sorted({layer for m in metrics_wanted for layer in METRIC_LAYERS[m]})
     study_area, bbox_list, describe = _resolve_study_area(project)
     bbox = tuple(bbox_list)
-    fetchers = _layer_fetchers()
     pid = project["id"]
-    detail = [
-        {"name": _layer_meta(n)[0], "layer": n, "source": _layer_meta(n)[1],
-         "status": "fetching"}
-        for n in names
-    ]
-    set_progress_detail(pid, 7, detail)
-    set_progress(pid, 7, 2, f"fetching {len(names)} map layers…")
-    results: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {ex.submit(fetchers[n], bbox): n for n in names}
-        done = 0
-        for fut in as_completed(futures):
-            n = futures[fut]
-            results[n] = fut.result()
-            done += 1
-            slot = next(d for d in detail if d["layer"] == n)
-            slot["status"] = "done"
-            slot["count"] = int(len(results[n]))
-            set_progress_detail(pid, 7, detail)
-            set_progress(pid, 7, done / max(len(names), 1) * 65,
-                         f"map layers {done}/{len(names)} · {_layer_meta(n)[0]} "
-                         f"({len(results[n]):,} features)")
+    results, fetch_errors, detail = _fetch_layers(
+        pid, 7, names, bbox, LAYER_FETCH_BUDGET_S, pct_span=(2.0, 65.0)
+    )
     layers = {n: results[n] for n in names}
-    errs = take_fetch_errors()
-    fetch_errors = {
-        n: e for n in names
-        if (e := errs.get(getattr(fetchers[n], "__name__", "")))
-    }
-    for n, e in fetch_errors.items():
-        slot = next(d for d in detail if d["layer"] == n)
-        slot["status"] = "error"
-        slot["note"] = e
-    set_progress_detail(pid, 7, detail)
     # study_area resolved above (county polygon, or 5 km disc fallback)
     computers = _metric_computers()
     set_progress(pid, 7, 70, "computing metrics…")
@@ -1421,12 +1506,20 @@ def create_project(
     county_fips: str,
     gate_mode: str = "gated",
     db: Path | None = None,
+    areal_unit: str | None = None,
+    location_query: str = "",
+    notes: str = "",
 ) -> str:
+    from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
+
     db = db or DB_PATH
     if lookup_county(state_fips, county_fips) is None:
         raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
     if gate_mode not in ("gated", "auto"):
         raise ValueError("gate_mode must be 'gated' or 'auto'")
+    unit = areal_unit or DEFAULT_AREAL_UNIT
+    if unit not in AREAL_UNITS:
+        raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
     # ponytail: gate_mode is stored only; the auto path lands with the M2 ablation
     pid = uuid.uuid4().hex[:12]
     meta = {
@@ -1434,12 +1527,74 @@ def create_project(
         "state_fips": state_fips,
         "county_fips": county_fips,
         "gate_mode": gate_mode,
+        "areal_unit": unit,
+        "location_query": location_query,
+        "notes": notes,
         "current_step": 1,
         "created_at": time.time(),
     }
     with _conn(db) as conn:
         conn.execute("INSERT INTO projects VALUES (?, ?)", (pid, json.dumps(meta)))
     return pid
+
+
+def update_project_scope(
+    pid: str,
+    title: str | None = None,
+    state_fips: str | None = None,
+    county_fips: str | None = None,
+    areal_unit: str | None = None,
+    location_query: str | None = None,
+    notes: str | None = None,
+    db: Path | None = None,
+) -> dict:
+    """Redefine an existing project instead of starting a new one.
+
+    Prof. Shi 2026-08-07 #8 asked for a working Back button on step 1 "allowing
+    the user to go back to re-define the project". Changing the study area
+    invalidates everything drafted from it, so every artifact is marked stale
+    (the same signal an edited upstream step already produces) and the step-1
+    draft is dropped so it must be re-run against the new scope.
+    """
+    from backend.gis.profile import AREAL_UNITS
+
+    db = db or DB_PATH
+    with _conn(db) as conn:
+        row = conn.execute("SELECT meta_json FROM projects WHERE id = ?", (pid,)).fetchone()
+        if row is None:
+            raise KeyError(pid)
+        meta = json.loads(row["meta_json"])
+        new_state = state_fips or meta["state_fips"]
+        new_county = county_fips or meta["county_fips"]
+        if lookup_county(new_state, new_county) is None:
+            raise ValueError(f"Unknown county FIPS {new_state}-{new_county}")
+        if areal_unit is not None and areal_unit not in AREAL_UNITS:
+            raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
+
+        scope_changed = (new_state, new_county) != (meta["state_fips"], meta["county_fips"]) or (
+            areal_unit is not None and areal_unit != meta.get("areal_unit")
+        )
+        meta.update(state_fips=new_state, county_fips=new_county)
+        if title:
+            meta["title"] = title
+        if areal_unit is not None:
+            meta["areal_unit"] = areal_unit
+        if location_query is not None:
+            meta["location_query"] = location_query
+        if notes is not None:
+            meta["notes"] = notes
+        conn.execute("UPDATE projects SET meta_json = ? WHERE id = ?", (json.dumps(meta), pid))
+
+        stale = 0
+        if scope_changed:
+            # Step 1 is re-derived from the new scope, so its old draft is not
+            # "stale", it is wrong — remove it. Later steps keep their rows so
+            # the audit trail survives, flagged stale.
+            conn.execute("DELETE FROM artifacts WHERE project_id = ? AND step = 1", (pid,))
+            stale = conn.execute(
+                "UPDATE artifacts SET status = 'stale' WHERE project_id = ?", (pid,)
+            ).rowcount
+    return {"project_id": pid, "scope_changed": scope_changed, "stale_steps": stale}
 
 
 def get_project(pid: str, db: Path | None = None) -> dict:
@@ -1564,6 +1719,198 @@ def confirm_step(
     return {"step": step, "status": "confirmed", "stale_downstream": stale}
 
 
+_INTAKE_SYSTEM = (
+    "You are the intake assistant of HCAS (Healthy Community Assessment System), a "
+    "step-by-step GIS + AI assessment of community health for a US county. The "
+    "analyst has not created a project yet, so you have no project data: answer "
+    "questions about what the system does, what the eight steps are (define project, "
+    "choose factors, gather data, set methodology, build database, plan workflow, run "
+    "analysis, write report), what data it uses (OpenStreetMap built environment, CDC "
+    "PLACES county health outcomes, US Census boundaries), and how to define a study "
+    "area. Be concise. Never invent measurements for any place — no assessment has "
+    "been run. If asked for numbers about a specific area, say the analyst should "
+    "create the project and run the steps."
+)
+
+_AREA_SYSTEM = (
+    "You resolve a free-text description of a place in the United States to the single "
+    "US county that contains it. The description may be a ZIP code, a neighborhood or "
+    "community name, a city, a landmark ('around Dartmouth-Hitchcock Medical Center'), "
+    "or a natural feature. Return the county and state as plain names — the county "
+    "WITHOUT the word 'County' (e.g. 'Grafton', 'Franklin', 'St. Louis'), and the state "
+    "as its full name. Also return what you understood and, when the place spans more "
+    "than one county or you are unsure, say so in `caveat` and pick the county holding "
+    "most of it. If the text is not a US place at all, set `county` and `state` to the "
+    "empty string and explain in `caveat`."
+)
+
+_AREA_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "county": {"type": "string"},
+        "state": {"type": "string"},
+        "interpretation": {"type": "string"},
+        "caveat": {"type": "string"},
+    },
+    "required": ["county", "state", "interpretation", "caveat"],
+    "additionalProperties": False,
+}
+
+
+def _match_county(county_name: str, state_name: str) -> dict | None:
+    """Map the model's plain names onto the shipped county table.
+
+    The county list is 3,143 rows — far too large for a schema enum — so the
+    model returns names and the MATCH happens here, deterministically. An
+    unmatched name is a miss, never a guess at a nearby county.
+    """
+    from backend.gis.counties import list_counties, list_states
+
+    def norm(s: str) -> str:
+        s = (s or "").strip().lower()
+        for suffix in (" county", " parish", " borough", " census area", " city and borough",
+                       " municipality", " municipio"):
+            if s.endswith(suffix):
+                s = s[: -len(suffix)]
+        return s.replace(".", "").replace("'", "").replace("-", " ").strip()
+
+    state = next((s for s in list_states() if norm(s["state_name"]) == norm(state_name)), None)
+    if state is None:
+        return None
+    target = norm(county_name)
+    for c in list_counties(state["state_fips"]):
+        if norm(c["county_name"]) == target:
+            return c
+    return None
+
+
+def resolve_area(text: str) -> dict:
+    """Turn a free-text location into a study area (Prof. Shi 2026-08-07 #4).
+
+    Returns {resolved: bool, state_fips, county_fips, county_name, state_name,
+    interpretation, caveat}. `resolved` False means the wizard keeps the manual
+    State/County selects — the point of the box is to save typing, never to
+    silently assess somewhere the analyst did not ask for.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Describe the location first (ZIP code, community, landmark…).")
+    draft, _usage = _llm_structured(
+        _AREA_SYSTEM,
+        f"Location description: {text}",
+        _AREA_SCHEMA,
+        model="claude-sonnet-5",  # a lookup, not a methodology decision
+    )
+    match = _match_county(draft.get("county", ""), draft.get("state", ""))
+    if match is None:
+        return {
+            "resolved": False,
+            "interpretation": draft.get("interpretation", ""),
+            "caveat": draft.get("caveat")
+            or f"Could not match “{draft.get('county')}, {draft.get('state')}” to a US "
+               "county. Choose the state and county manually.",
+            "query": text,
+        }
+    return {
+        "resolved": True,
+        "state_fips": match["state_fips"],
+        "county_fips": match["county_fips"],
+        "county_name": match["county_name"],
+        "state_name": match["state_name"],
+        "interpretation": draft.get("interpretation", ""),
+        "caveat": draft.get("caveat", ""),
+        "query": text,
+    }
+
+
+_REVISE_SYSTEM = (
+    "You revise an existing factor list for a healthy-community assessment in "
+    "response to one instruction from the analyst. Do NOT redesign the list. Return "
+    "only what to ADD and what to REMOVE. Add a factor only if the instruction asks "
+    "for it; remove one only if the instruction asks for it. Every added factor must "
+    "map to exactly one metric from the registry below. If the instruction asks for "
+    "something the registry cannot measure, add nothing and explain in `note`.\n\n"
+    "METRIC REGISTRY:\n"
+    + "\n".join(f"- {name}: {desc}" for name, desc in METRICS.items())
+)
+
+_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "add": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "factor": {"type": "string"},
+                    "metric": {"type": "string", "enum": list(METRICS)},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["factor", "metric", "rationale"],
+                "additionalProperties": False,
+            },
+        },
+        "remove": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string"},
+    },
+    "required": ["add", "remove", "note"],
+    "additionalProperties": False,
+}
+
+
+def revise_factors(current: dict, instruction: str, place: str = "the study area") -> dict:
+    """Apply one analyst instruction to the current factor list, incrementally.
+
+    Prof. Shi 2026-08-07 #11: re-running step 2 redrafted everything, so an
+    instruction like "add pollution data" came back with a different list in a
+    different order and the selection never converged. The model is therefore
+    asked ONLY for a diff, and the merge below is deterministic: factors the
+    analyst kept stay, in their original order; requested removals drop; new
+    factors are appended at the end. Order can only change if the analyst
+    changes it.
+    """
+    instruction = (instruction or "").strip()
+    if not instruction:
+        raise ValueError("Type what to change first.")
+    factors = list(current.get("factors") or [])
+    listing = "\n".join(
+        f"- {f['factor']} -> {f['metric']}" for f in factors
+    ) or "- (the list is empty)"
+    draft, usage = _llm_structured(
+        _REVISE_SYSTEM,
+        f"Study area: {place}.\n\nCurrent factor list, in order:\n{listing}\n\n"
+        f"Analyst instruction: {instruction}",
+        _REVISE_SCHEMA,
+        model="claude-sonnet-5",
+    )
+
+    def key(f: dict) -> str:
+        return f"{f.get('factor', '').strip().lower()}|{f.get('metric', '')}"
+
+    drop = {(d or "").strip().lower() for d in draft.get("remove") or []}
+    kept = [f for f in factors if f.get("factor", "").strip().lower() not in drop]
+    removed = [f["factor"] for f in factors if f.get("factor", "").strip().lower() in drop]
+
+    have = {key(f) for f in kept}
+    added = []
+    for f in draft.get("add") or []:
+        if key(f) in have:
+            continue
+        have.add(key(f))
+        kept.append(f)
+        added.append(f["factor"])
+
+    revised = dict(current)
+    revised["factors"] = kept
+    return {
+        "artifact": revised,
+        "added": added,
+        "removed": removed,
+        "note": draft.get("note", ""),
+        "usage": usage,
+    }
+
+
 def chat(
     pid: str,
     step: int,
@@ -1582,6 +1929,16 @@ def chat(
     artifact = (row.get("human_final") or row.get("ai_draft")) if row else None
 
     ctx = [f"Project: {project['meta']['title']}", f"Current step: {step} — {title}"]
+    # The study area and its Census profile travel with EVERY step's context.
+    # Prof. Shi 2026-08-07 #10 asked the assistant for the county's population
+    # and was told it was not available — it was simply not in the prompt.
+    s1 = next((s for s in project["steps"] if s["step"] == 1), None)
+    area = (s1.get("human_final") or s1.get("ai_draft")) if s1 else None
+    if area and step != 1:
+        ctx.append(
+            "Study area and Census profile (JSON):\n"
+            + json.dumps(area, indent=1)[:2500]
+        )
     if artifact is not None:
         ctx.append("Current step artifact (JSON):\n" + json.dumps(artifact, indent=1)[:6000])
     else:
@@ -1595,4 +1952,18 @@ def chat(
 
     prompt = "\n\n".join(ctx) + "\n\n---\n\n" + "\n".join(convo) + "\n\nAssistant:"
     reply, usage = _llm_text(_CHAT_SYSTEM, prompt)
+    return {"reply": reply, "usage": usage}
+
+
+def chat_intake(message: str, history: list[dict] | None = None) -> dict:
+    """Answer questions before a project exists (Prof. Shi 2026-08-07 #3:
+    "Allow the user to ask AI questions – even before creating a project").
+    Same side-channel guarantee: it writes nothing, and it has no project data,
+    so its system prompt forbids inventing any."""
+    convo = []
+    for turn in (history or [])[-6:]:
+        who = "User" if turn.get("role") == "user" else "Assistant"
+        convo.append(f"{who}: {turn.get('content', '')}")
+    convo.append(f"User: {message}")
+    reply, usage = _llm_text(_INTAKE_SYSTEM, "\n".join(convo) + "\n\nAssistant:")
     return {"reply": reply, "usage": usage}

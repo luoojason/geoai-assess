@@ -123,7 +123,11 @@
   .tree .gname::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--teal);display:inline-block;}
   .tree .leaf{font:400 var(--fs-sm) var(--sans);color:var(--muted);padding:3px 0 3px 16px;display:flex;justify-content:space-between;gap:10px;}
   .tree .leaf .c{font:400 var(--fs-xs) var(--mono);color:var(--ghost);white-space:nowrap;}
-  .mapview{height:264px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;
+  /* Prof. Shi 2026-08-07 #1: "Expand the map view on all pages to have a larger
+     size and a similar-to-square (rather than elongated) shape." Aspect-ratio
+     drives the height, so the map grows with the panel and stays near-square
+     instead of the old fixed 264px letterbox. */
+  .mapview{aspect-ratio:5/4;min-height:420px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;
            background-color:var(--teal-tint);
            background-image:linear-gradient(var(--grid) 1px,transparent 1px),
                             linear-gradient(90deg,var(--grid) 1px,transparent 1px);
@@ -191,6 +195,9 @@
   details.raw summary::before{content:"▸";transition:transform .15s;display:inline-block;}
   details.raw[open] summary::before{transform:rotate(90deg);}
   details.raw summary:hover{color:var(--teal-d);}
+  .linkbtn{border:none;background:none;font:500 var(--fs-xs) var(--mono);letter-spacing:.03em;
+           color:var(--faint);padding:4px 0;border-bottom:1px dashed var(--line-d);}
+  .linkbtn:hover{color:var(--teal-d);border-bottom-color:var(--teal);}
   details.raw textarea{width:100%;min-height:220px;margin-top:10px;font:400 var(--fs-xs)/1.55 var(--mono);
                        padding:12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);}
   .subnote{font:400 var(--fs-xs) var(--sans);color:var(--ghost);margin-top:6px;}
@@ -235,7 +242,9 @@
   .lrow:hover{background:var(--teal-tint);}
   .lvis{width:15px;height:15px;accent-color:var(--teal);flex:none;cursor:pointer;margin:0;}
   .lvis-sp{width:15px;flex:none;display:inline-block;}
-  .lname{flex:1;color:var(--ink);font:400 var(--fs-sm) var(--sans);}
+  .lname{flex:1;color:var(--ink);font:400 var(--fs-sm) var(--sans);min-width:0;}
+  .lmeta{display:block;margin-top:1px;}
+  .lsrc{font:400 var(--fs-xs) var(--mono);color:var(--ghost);margin-right:4px;}
   .lkebab{border:none;background:none;color:var(--ghost);font-size:15px;line-height:1;padding:2px 5px;border-radius:5px;
           opacity:0;transition:opacity .12s,background .12s;}
   .lrow:hover .lkebab{opacity:1;} .lkebab:hover{background:var(--line);color:var(--ink);}
@@ -400,7 +409,7 @@ const RUN_HINTS = {
 const DEFAULT_SYS = "Focus on spatial analysis for community-health assessment. Be concise and specific.";
 
 const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
-            chats:{}, sys:DEFAULT_SYS, busy:false };
+            chats:{}, sys:DEFAULT_SYS, busy:false, redefining:false };
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -464,16 +473,24 @@ function selectStep(n){
   renderRail(); renderCanvas(); renderChat(); renderCmd();
 }
 
-/* ---- command bar state ---- */
+/* ---- command bar state ----
+   Prof. Shi 2026-08-07: #8 Back works on step 1's result page (it re-opens the
+   definition form); #9 Re-run is deactivated there, because re-running step 1
+   only re-derives the same county — the useful action is Back. */
 function renderCmd(){
   const row = stepRow(S.current);
   const confirmed = new Set((S.project?.steps||[]).filter(s=>s.status==="confirmed").map(s=>s.step));
   const prevOk = S.current===1 || confirmed.has(S.current-1);
-  $("runbtn").disabled = S.busy || (!prevOk && !row);
-  $("nextbtn").disabled = S.busy || !row;
-  $("prevbtn").disabled = S.busy || S.current===1;
+  const onStep1Result = S.current===1 && !!row && !S.redefining;
+  $("runbtn").disabled = S.busy || (!prevOk && !row) || onStep1Result;
+  $("nextbtn").disabled = S.busy || !row || S.redefining;
+  $("prevbtn").disabled = S.busy || (S.current===1 && !onStep1Result);
   $("nextbtn").textContent = S.current===8 ? "Save report" : "Confirm →";
-  $("runbtn").textContent = row ? "Re-run" : "Run step";
+  $("runbtn").textContent = S.redefining ? "Apply & re-run" : (row ? "Re-run" : "Run step");
+  $("prevbtn").textContent = onStep1Result ? "← Re-define" : "← Back";
+  $("runbtn").title = onStep1Result
+    ? "Step 1 only re-derives the same county — use Re-define to change the study area."
+    : "";
 }
 
 /* ================= CANVAS ================= */
@@ -512,19 +529,25 @@ function renderChecklist(detail){
    from the backend; the LLM steps (2 & 4) can't, so a time-based estimate
    keeps the bar honest-ish and moving. Capped at 97% until the run returns. */
 let PROG = null;
-const STEP_ETA = {1:4, 2:60, 3:90, 4:60, 5:3, 6:3, 7:150, 8:4};  // seconds, typical
+const STEP_ETA = {1:6, 2:60, 3:180, 4:60, 5:3, 6:3, 7:240, 8:4};  // seconds, typical
+function mmss(s){ return Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"); }
 function startProgress(){
   stopProgress();
   const step = S.current, t0 = Date.now();
   PROG = setInterval(async ()=>{
     let b = {pct:0, label:""};
     try{ b = await api(`/hcas/projects/${S.pid}/steps/${step}/progress`); }catch(_){}
-    const est = Math.min(90, ((Date.now()-t0)/1000) / (STEP_ETA[step]||10) * 90);
+    const secs = (Date.now()-t0)/1000;
+    const est = Math.min(90, secs / (STEP_ETA[step]||10) * 90);
     const pct = Math.min(97, Math.max(b.pct||0, est));
     const f = $("pfill");
     if(!f) return;
     f.style.width = pct+"%";
-    $("ppct").textContent = Math.round(pct)+"%";
+    // Elapsed time next to the percentage: a big county's OpenStreetMap query
+    // legitimately takes minutes, and a bar alone cannot tell "working" from
+    // "stuck" (Prof. Shi 2026-08-07). The step also stops itself — see
+    // HCAS_LAYER_BUDGET_S — so this clock always ends.
+    $("ppct").textContent = Math.round(pct)+"%  ·  "+mmss(secs)+" elapsed";
     if(b.label) $("plabel").textContent = b.label;
     if(b.detail) renderChecklist(b.detail);
   }, 700);
@@ -534,13 +557,14 @@ function renderCanvas(){
   const n = S.current, row = stepRow(n), a = S.edited;
   const head = canvasHead(n);
   let body;
-  if(n===1 && !S.pid) body = defineForm();
+  const defining = n===1 && (!S.pid || S.redefining);
+  if(defining) body = defineForm();
   else if(!row) body = `<div class="empty"><div class="big">Nothing here yet</div>
       <div>Run this step to generate it.</div></div>`;
   else body = ({1:viewIntake,2:viewFactors,3:viewData,4:viewSolution,5:viewDatabase,
                 6:viewWorkflow,7:viewExecution,8:viewReport}[n] || viewRaw)(a);
-  $("canvas").innerHTML = head + body + (row && n!==8 ? rawEditor() : "");
-  if(n===1 && !S.pid) loadStates();
+  $("canvas").innerHTML = head + body + (row && !defining && n!==8 ? rawEditor() : "");
+  if(defining) loadStates();
   if(n===2 && row) wireFactors();
   if(n===7 && row) wireMapCheck();
   if(n===8 && row) wireReport();
@@ -559,34 +583,79 @@ function stepTag(n){
   return "";
 }
 
-/* step 1 — create form */
+/* step 1 — create form.
+   Prof. Shi 2026-08-07: #4 a free-text location box resolved by AI, #5 a real
+   areal-unit choice, #6 no Mode option (confirmation is always on), #7 no
+   coordinate-system box (the system determines it). */
 function defineForm(){
   return `<div class="panel form"><div class="ph">Project setup</div>
     <div class="row">
       <div class="fld"><label>Project title</label><input id="f_title" placeholder="e.g. Riverside County · Health Equity 2026"></div>
-      <div class="fld"><label>Mode</label><select id="f_mode">
-        <option value="gated">Gated · you confirm each step</option>
-        <option value="auto">Automatic · run all steps without review</option></select></div>
+      <div class="fld"><label>Reporting unit</label><select id="f_unit"></select>
+        <div class="hint">Searched for at step 3; if Census publishes none for this area, the system says so.</div></div>
+    </div>
+    <div class="fld" style="margin-bottom:var(--sp-4);">
+      <label>Describe the location (optional)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input id="f_where" style="flex:1;min-width:240px;"
+               placeholder="e.g. 03755 · the neighborhood around Dartmouth-Hitchcock · west of Lake Champlain"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();resolveArea();}">
+        <button class="cbtn" id="f_findbtn" onclick="resolveArea()">Find with AI</button>
+      </div>
+      <div class="hint" id="f_wherehint">A ZIP code, community, landmark or description — the assistant
+        works out which county contains it and fills in the two boxes below, which you can always override.</div>
     </div>
     <div class="row">
       <div class="fld"><label>State</label><select id="f_state"></select></div>
       <div class="fld"><label>County (study area)</label><select id="f_county"></select></div>
-    </div>
-    <div class="row">
-      <div class="fld"><label>Area unit</label><input value="Census tract" disabled></div>
-      <div class="fld"><label>Coordinate system</label><input value="EPSG:4269 (NAD83) — auto-detected" disabled></div>
     </div>
     <div class="fld"><label>Notes</label>
       <textarea id="f_tasks" placeholder="e.g. calculate a neighborhood health index; identify priority areas…"></textarea>
       <div class="hint">The study area is the entire county boundary. Run this step to create the project and locate it.</div>
     </div>
     <div class="fld"><label>Study area preview</label>
-      <div class="mapview" id="f_mappreview" style="height:240px;">
+      <div class="mapview" id="f_mappreview" style="min-height:340px;">
         <div class="lab"><div class="eyebrow">Map view</div>
           <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">Select a county to preview its boundary.</div></div>
       </div></div>
     </div>`;
 }
+/* Free-text location -> county (Prof. Shi 2026-08-07 #4). The resolved county is
+   written into the same two selects the analyst can edit, so the AI never picks
+   a study area that is not visible and overridable on screen. */
+async function resolveArea(){
+  const box=$("f_where"), hint=$("f_wherehint"), btn=$("f_findbtn");
+  const text=(box?.value||"").trim();
+  if(!text){ hint.textContent="Type a place first — ZIP code, community, landmark…"; return; }
+  btn.disabled=true; btn.textContent="Finding…";
+  hint.innerHTML='<span class="spin"></span>Asking the assistant…';
+  try{
+    const r=await api("/hcas/resolve-area",{method:"POST",body:JSON.stringify({text})});
+    if(r.resolved){
+      $("f_state").value=r.state_fips;
+      await loadCounties();
+      $("f_county").value=r.county_fips;
+      updateFormPreview();
+      hint.innerHTML=`<b>${esc(r.county_name)}, ${esc(r.state_name)}</b> — ${esc(r.interpretation||"resolved")}`
+        + (r.caveat?` <span style="color:var(--amber)">${esc(r.caveat)}</span>`:"")
+        + `<br>Not right? Change the State and County boxes below.`;
+    }else{
+      hint.innerHTML=`<span style="color:var(--amber)">${esc(r.caveat||"Could not place that.")}</span>`
+        + ` Choose the state and county manually.`;
+    }
+  }catch(e){ hint.innerHTML=`<span style="color:var(--red)">${esc(e.message)}</span>`; }
+  finally{ btn.disabled=false; btn.textContent="Find with AI"; }
+}
+async function loadUnits(sel){
+  try{
+    const {units, default:def} = await api("/hcas/areal-units");
+    AREAL_UNITS = units;
+    const el=$("f_unit"); if(!el) return;
+    el.innerHTML = units.map(u=>`<option value="${esc(u.id)}">${esc(u.label)}</option>`).join("");
+    el.value = sel || def;
+  }catch(e){ /* selects stay empty; create falls back to the server default */ }
+}
+let AREAL_UNITS = [];
 function updateFormPreview(){
   const s=$("f_state"), c=$("f_county"), box=$("f_mappreview");
   if(!box || !s || !c || !s.value || !c.value) return;
@@ -594,10 +663,16 @@ function updateFormPreview(){
 }
 async function loadStates(){
   try{
+    const m = S.project?.meta;           // re-defining an existing project
     const {states} = await api("/states");
     $("f_state").innerHTML = states.map(s=>`<option value="${s.state_fips}">${esc(s.state_name)}</option>`).join("");
-    $("f_state").value = "39";
+    $("f_state").value = m?.state_fips || "39";
     await loadCounties();
+    if(m?.county_fips) $("f_county").value = m.county_fips;
+    if(m?.title) $("f_title").value = m.title;
+    if(m?.notes) $("f_tasks").value = m.notes;
+    if(m?.location_query) $("f_where").value = m.location_query;
+    await loadUnits(m?.areal_unit);
     $("f_state").onchange = async ()=>{ await loadCounties(); updateFormPreview(); };
     $("f_county").onchange = updateFormPreview;
     updateFormPreview();
@@ -608,49 +683,115 @@ async function loadCounties(){
   $("f_county").innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
 }
 
-/* step 1 — study area (now with a live base map, Prof. Shi 2026-07-27) */
+/* step 1 — study area (live base map since 2026-07-27).
+   Prof. Shi 2026-08-07 #10: FIPS codes out, descriptive Census figures in.
+   Anything the Census could not give us is listed as missing with the reason,
+   never filled in with a plausible number. */
+function num(v, digits){ return v==null?null:(+v).toLocaleString(undefined,{maximumFractionDigits:digits==null?0:digits}); }
 function viewIntake(a){
+  const p = a.profile||{};
+  const rows = [
+    ["Place", esc(a.place_name||"—")],
+    ["Total area", p.total_area_km2!=null?`${num(p.total_area_km2)} km² (land ${num(p.land_area_km2)} km²)`:null],
+    ["Total population", num(p.population)],
+    ["Population density", p.population_density_per_km2!=null?`${num(p.population_density_per_km2,1)} / km²`:null],
+    ["Median household income", p.median_household_income_usd!=null?`$${num(p.median_household_income_usd)}`:null],
+    ["Median home value", p.median_home_value_usd!=null?`$${num(p.median_home_value_usd)}`:null],
+    ["Median age", num(p.median_age,1)],
+    ["Reporting unit", esc(unitLabel(a.areal_unit))],
+    ["Extent", "Entire county boundary"],
+  ].filter(r=>r[1]!=null);
+  const missing = Object.entries(p.unavailable||{});
+  const sources = [p.source_boundary, p.source_acs, p.source_population]
+    .filter(Boolean).filter((v,i,arr)=>arr.indexOf(v)===i);
   return `<div class="panel"><div class="ph">Study area</div>
     <div class="cols" style="align-items:stretch;">
-      <dl class="kv" style="flex:none;width:280px;">
-        <dt>Place</dt><dd>${esc(a.place_name||"—")}</dd>
-        <dt>State FIPS</dt><dd class="mono">${esc(a.state_fips||"")}</dd>
-        <dt>County FIPS</dt><dd class="mono">${esc(a.county_fips||"")}</dd>
-        <dt>Centroid</dt><dd class="mono">${(a.centroid||[]).map(x=>(+x).toFixed(4)).join(", ")}</dd>
-        <dt>Extent</dt><dd>Entire county boundary</dd>
-      </dl>
+      <div style="flex:none;width:320px;">
+        <dl class="kv">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+        ${sources.length?`<div class="subnote">Source: ${esc(sources.join(" · "))}</div>`:""}
+        ${missing.length?`<div class="subnote" style="margin-top:10px;">Not available:<ul style="margin:4px 0;padding-left:16px;">
+          ${missing.map(([k,v])=>`<li><b>${esc(k)}</b> — ${esc(v)}</li>`).join("")}</ul></div>`:""}
+      </div>
       <div class="mapview" style="flex:1;">${baseMapFrame()}</div>
     </div></div>`;
 }
+function unitLabel(id){
+  const u = AREAL_UNITS.find(u=>u.id===id);
+  return u ? u.label : (id||"Census tract");
+}
 
-/* step 2 — factors (editable toggles) */
+/* step 2 — factors (editable toggles).
+   The rows are the CURRENT list (checked, in order) followed by any factor from
+   the AI draft the analyst has since dropped (unchecked), so a factor added by
+   a revision appears and an un-checked one can be restored. */
+function factorRows(a){
+  const key = f => f.factor+"|"+f.metric;
+  const rows = (a.factors||[]).map(f=>({f, on:true}));
+  const have = new Set(rows.map(r=>key(r.f)));
+  ((stepRow(2)?.ai_draft?.factors)||[]).forEach(f=>{
+    if(!have.has(key(f))){ have.add(key(f)); rows.push({f, on:false}); }
+  });
+  return rows;
+}
 function viewFactors(a){
-  const base = (stepRow(2).ai_draft.factors)||[];
-  const kept = new Set((a.factors||[]).map(f=>f.factor+"|"+f.metric));
-  const items = base.map((f,i)=>{
-    const on = kept.has(f.factor+"|"+f.metric);
-    return `<label class="factor ${on?'':'off'}" data-i="${i}">
-      <input type="checkbox" ${on?'checked':''} data-i="${i}">
+  const rows = factorRows(a);
+  const items = rows.map((r,i)=>{
+    const f = r.f;
+    return `<label class="factor ${r.on?'':'off'}" data-i="${i}">
+      <input type="checkbox" ${r.on?'checked':''} data-i="${i}">
       <div><span class="fname">${esc(f.factor)}</span><span class="metric">${esc(f.metric)}</span>
         <div class="rat">${esc(f.rationale||"")}</div></div>
     </label>`;
   }).join("");
+  // Prof. Shi 2026-08-07 #11: asking for a change used to re-run the whole step
+  // and return a different list in a different order. This box sends ONE
+  // instruction and applies it as a diff — kept factors stay put, in order.
   return `<div class="panel"><div class="ph">Suggested factors — keep the ones that apply</div>
     ${items||'<div class="empty">No factors suggested.</div>'}
+    <div class="sec" style="margin-top:14px;"><h4>Change the list</h4>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input id="f_revise" style="flex:1;min-width:260px;font:400 var(--fs-sm) var(--sans);padding:9px 11px;border:1px solid var(--line-d);border-radius:var(--r-sm);color:var(--ink);"
+               placeholder="e.g. add pollution data · drop parking"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();reviseFactors();}">
+        <button class="cbtn" id="revisebtn" onclick="reviseFactors()">Apply change</button>
+      </div>
+      <div class="hint" id="revisehint">Only what you ask for changes — the factors you keep stay in place,
+        in this order. Un-check a factor to drop it.</div>
+    </div>
     <div class="sec" style="margin-top:14px;"><h4>Notes</h4>
       <input id="f_notes" style="width:100%;font:400 var(--fs-sm) var(--sans);padding:9px 11px;border:1px solid var(--line-d);border-radius:var(--r-sm);color:var(--ink);"
              value="${esc(a.notes||"")}"></div></div>`;
 }
 function wireFactors(){
-  const base = stepRow(2).ai_draft.factors||[];
+  // Same row order the view just rendered, so index -> factor stays aligned.
+  const base = factorRows(S.edited||{}).map(r=>r.f);
   const sync = ()=>{
     const keep=[...document.querySelectorAll('.factor input:checked')].map(c=>+c.dataset.i);
     S.edited.factors = keep.map(i=>base[i]);
     document.querySelectorAll('.factor').forEach(l=>l.classList.toggle('off',!l.querySelector('input').checked));
-    syncRaw();
   };
   document.querySelectorAll('.factor input').forEach(c=>c.onchange=sync);
-  const nt=$("f_notes"); if(nt) nt.oninput=()=>{ S.edited.notes=nt.value; syncRaw(); };
+  const nt=$("f_notes"); if(nt) nt.oninput=()=>{ S.edited.notes=nt.value; };
+}
+async function reviseFactors(){
+  const box=$("f_revise"), hint=$("revisehint"), btn=$("revisebtn");
+  const instruction=(box?.value||"").trim();
+  if(!instruction){ hint.textContent="Type what to change first."; return; }
+  btn.disabled=true; hint.innerHTML='<span class="spin"></span>Applying your change…';
+  try{
+    const place=(stepRow(1)?.human_final||stepRow(1)?.ai_draft||{}).place_name||"the study area";
+    const r=await api("/hcas/revise-factors",{method:"POST",
+      body:JSON.stringify({artifact:S.edited, instruction, place})});
+    S.edited=r.artifact;
+    renderCanvas();
+    const bits=[];
+    if(r.added?.length) bits.push(`added ${r.added.map(esc).join(", ")}`);
+    if(r.removed?.length) bits.push(`removed ${r.removed.map(esc).join(", ")}`);
+    if(!bits.length) bits.push("no change was needed");
+    $("revisehint").innerHTML = `<b>${bits.join(" · ")}.</b> `
+      + (r.note?esc(r.note)+" ":"") + "Everything else kept its place.";
+  }catch(e){ hint.innerHTML=`<span style="color:var(--red)">${esc(e.message)}</span>`; }
+  finally{ const b=$("revisebtn"); if(b) b.disabled=false; }
 }
 
 /* ---- layer list (Prof. Shi 2026-07-27): names only, per-layer visibility
@@ -659,15 +800,21 @@ function wireFactors(){
 let LAYER_DATA = {};    // key -> inventory entry (or study-area block)
 let STUDY_DATA = null;  // study-area block for shared extent/crs
 
+/* Prof. Shi 2026-08-07 #12: "On the data list, always show the data sources."
+   The source rides under the layer name (still no EPSG column — his 2026-07-27
+   note); it stays in Properties too. */
 function layerRow(key, name, o){
   o = o||{};
   const cb = (o.toggle && o.foliumLabel)
     ? `<input type="checkbox" class="lvis" checked title="Show / hide on map"
          onclick="event.stopPropagation()" onchange="toggleMapLayer('${esc(o.foliumLabel)}',this.checked)">`
     : `<span class="lvis-sp"></span>`;
+  const src = o.source ? `<span class="lsrc">${esc(o.source)}</span>` : "";
+  const count = (o.count!=null) ? `<span class="lsrc">· ${(+o.count).toLocaleString()} features</span>` : "";
   return `<div class="leaf lrow" oncontextmenu="return layerMenu(event,'${esc(key)}')"
        title="Right-click for Attribute Table &amp; Properties">
-    ${cb}<span class="lname">${esc(name)}${o.hasError?' <span style="color:var(--red)" title="fetch error">⚠</span>':''}</span>
+    ${cb}<span class="lname">${esc(name)}${o.hasError?' <span style="color:var(--red)" title="fetch error">⚠</span>':''}
+      <span class="lmeta">${src}${count}</span></span>
     <button class="lkebab" onclick="layerMenu(event,'${esc(key)}')" title="Layer options">⋯</button></div>`;
 }
 function layerListPanel(layers, studyArea, o){
@@ -676,11 +823,13 @@ function layerListPanel(layers, studyArea, o){
   let rows = "";
   if(studyArea){
     LAYER_DATA["__study__"] = studyArea;
-    rows += layerRow("__study__", studyArea.name||"Study area", {toggle:o.toggles, foliumLabel:"Study Area"});
+    rows += layerRow("__study__", studyArea.name||"Study area",
+      {toggle:o.toggles, foliumLabel:"Study Area", source:studyArea.source});
   }
   (layers||[]).forEach(l=>{
     LAYER_DATA[l.layer] = l;
-    rows += layerRow(l.layer, l.name||l.layer, {toggle:o.toggles, foliumLabel:FOLIUM_LABEL[l.layer], hasError:!!l.error});
+    rows += layerRow(l.layer, l.name||l.layer, {toggle:o.toggles, foliumLabel:FOLIUM_LABEL[l.layer],
+      hasError:!!l.error, source:l.source, count:l.error?null:l.feature_count});
   });
   return `<div class="grp"><div class="gname">Layers</div>${rows||'<div class="empty" style="padding:10px;">No layers.</div>'}</div>`;
 }
@@ -763,14 +912,23 @@ function viewData(a){
   const list = layerListPanel(a.layers||[], a.study_area, {toggles:false});
   const ho = a.health_outcomes||{};
   const errs = (a.layers||[]).filter(l=>l.error);
-  const warn = errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> — the flagged layers are empty, so their metrics will read zero. ${esc(errs[0].error)}</div></div>`:"";
+  const warn = errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> —
+    the flagged layers are empty. Any metric that needs one is reported as <i>not measured</i> rather than as zero,
+    and no recommendation is derived from it. ${esc(errs[0].error)}
+    <br>You can confirm and continue, or re-run this step once the connection is back.</div></div>`:"";
   const rows = (ho.measures||[]).map(m=>{
     const flag = m.county_pct>m.us_pct ? '<span class="above">above US</span>' : '<span class="below">below US</span>';
     return `<tr><td>${esc(m.label)}</td><td>${m.county_pct}% ${flag}</td><td>${m.us_pct}%</td></tr>`;
   }).join("");
+  // Prof. Shi 2026-08-07 #5: report the outcome of the reporting-unit search,
+  // whether or not the data exists.
+  const au = a.areal_unit;
+  const unitbar = au ? `<div class="warnbar" style="${au.available
+      ? "background:var(--ok-tint);color:var(--ok)" : "background:var(--amber-tint);color:var(--amber)"}">
+      ${au.available?"✓":"⚠"}<div><b>Reporting unit — ${esc(au.label||au.unit)}:</b> ${esc(au.note||"")}</div></div>` : "";
   // Prof. Shi's layout: layers left · map upper-right · tables beneath the map
-  return `${warn}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
-    <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Data layers</div>${list}
+  return `${warn}${unitbar}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Data layers</div>${list}
       <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       <div class="panel"><div class="ph">Study area map</div>
@@ -802,7 +960,7 @@ function viewDatabase(a){
   const list = layerListPanel(a.layers||[], a.study_area_detail, {toggles:false});
   // Prof. Shi's map-step layout: layers left · map upper-right · details beneath
   return `<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
-    <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Database layers</div>${list}
+    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Database layers</div>${list}
       <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       <div class="panel"><div class="ph">Study area map</div>
@@ -860,11 +1018,11 @@ function viewExecution(a){
   const list = layerListPanel(inv.layers||[], inv.study_area, {toggles:!!a.map_available});
   // Prof. Shi's layout: layer list left · map upper-right · metrics + recs beneath
   return `${warn}${note}${unmeasured}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
-    <div class="panel tree" style="width:250px;flex:none;"><div class="ph">Layers</div>${list}
+    <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Layers</div>${list}
       <div class="subnote">Toggle a layer's checkbox to show/hide it; right-click for attributes &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       <div class="panel"><div class="ph">Map view${a.map_available?` · <a href="/hcas/projects/${S.pid}/map" target="_blank" style="text-transform:none;letter-spacing:0;">open full map ↗</a>`:""}</div>
-        <div class="mapview" style="height:330px;">${map}</div></div>
+        <div class="mapview">${map}</div></div>
       <div id="layerinfo"></div>
       <div class="panel"><div class="ph">Metrics</div>
         <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div></div>
@@ -905,7 +1063,7 @@ function viewReport(a){
   const mapOk = s7 && (s7.human_final||s7.ai_draft||{}).map_available;
   const mapPanel = mapOk
     ? `<div class="panel" style="margin-top:14px;"><div class="ph">Study area map (included in the report)</div>
-        <div class="mapview" style="height:300px;">
+        <div class="mapview">
           <iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe></div></div>`
     : `<div class="subnote" style="margin-top:14px;">No map available — re-run step 7 to include one in the report.</div>`;
   return `<div class="cols" style="align-items:flex-start;">
@@ -951,24 +1109,56 @@ table{border-collapse:collapse;margin:10px 0} th,td{border:1px solid #ccc;paddin
 
 function viewRaw(){ return `<div class="empty">Generated — see the data below.</div>`; }
 
-/* universal data editor (keeps the confirm/edit record working for every step) */
+/* Universal data editor. Prof. Shi 2026-08-07 #2: "Remove 'Edit underlying data
+   (advanced)' from all pages … If we really want to allow the user to do this,
+   put a button there to open a separate dialogue box for the user to do so."
+   So the textarea no longer sits under every step: a quiet button opens it in a
+   dialog and edits land only on Apply. The (ai_draft, human_final) audit tuple
+   is unaffected. */
 function rawEditor(){
-  return `<details class="raw"><summary>Edit underlying data (advanced)</summary>
-    <textarea id="rawjson">${esc(JSON.stringify(S.edited,null,2))}</textarea></details>`;
+  return `<div style="margin-top:var(--sp-4);"><button class="linkbtn" onclick="openRawEditor()"
+      title="Inspect or hand-edit this step's underlying data">Edit underlying data…</button></div>`;
 }
-function wireRaw(){
+function openRawEditor(){
+  modal(`<h3>Underlying data</h3>
+    <p>The raw record for this step. Editing it is for unusual cases — the panels
+    on the page cover normal use. Changes apply when you press Apply.</p>
+    <textarea id="rawjson" style="min-height:280px;font:400 var(--fs-xs)/1.55 var(--mono);">${esc(JSON.stringify(S.edited,null,2))}</textarea>
+    <div id="rawerr" style="color:var(--red);font-size:var(--fs-sm);min-height:18px;"></div>
+    <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
+      <button class="cbtn next" onclick="applyRawEditor()">Apply</button></div>`);
+}
+function applyRawEditor(){
   const ta=$("rawjson"); if(!ta) return;
-  ta.oninput=()=>{ try{ S.edited=JSON.parse(ta.value); $("msgline").textContent=""; }
-                   catch(e){ $("msgline").textContent="Invalid data — fix before confirming."; } };
+  try{
+    const parsed=JSON.parse(ta.value);
+    S.edited=parsed; closeModal(); setMsg(""); renderCanvas();
+  }catch(e){ $("rawerr").textContent="Invalid data — "+e.message; }
 }
-function syncRaw(){ const ta=$("rawjson"); if(ta) ta.value=JSON.stringify(S.edited,null,2); }
+function wireRaw(){ /* nothing to wire: the editor lives in a dialog now */ }
+function syncRaw(){ /* the dialog reads S.edited when it opens */ }
 
 /* ================= actions ================= */
+/* Reads the definition form. Creates the project, or — when the analyst came
+   back to re-define it (Prof. Shi 2026-08-07 #8) — updates it in place, which
+   marks everything drafted from the old scope stale. */
 async function ensureProject(){
-  if(S.pid) return;
-  const body={ title:($("f_title").value||"Untitled assessment"), state_fips:$("f_state").value,
-               county_fips:$("f_county").value, gate_mode:$("f_mode").value };
-  S.pid=(await api("/hcas/projects",{method:"POST",body:JSON.stringify(body)})).project_id;
+  const form={ title:($("f_title").value||"Untitled assessment"),
+               state_fips:$("f_state").value, county_fips:$("f_county").value,
+               areal_unit:($("f_unit")?.value||null),
+               location_query:($("f_where")?.value||""), notes:($("f_tasks")?.value||"") };
+  if(S.pid){
+    if(S.redefining){
+      await api(`/hcas/projects/${S.pid}`,{method:"PATCH",body:JSON.stringify(form)});
+      S.redefining=false;
+    }
+    return;
+  }
+  // gate_mode is always "gated": Prof. Shi 2026-08-07 #6 removed the choice —
+  // "always do the user-confirmation". The auto arm stays available to the
+  // research ablation through the API, not through the wizard.
+  S.pid=(await api("/hcas/projects",{method:"POST",
+        body:JSON.stringify({...form, gate_mode:"gated"})})).project_id;
 }
 async function refresh(keep){
   S.project=await api(`/hcas/projects/${S.pid}`);
@@ -989,7 +1179,8 @@ async function runStep(){
   if(S.busy) return;
   setBusy(true); setMsg(""); statusRun("Running…");
   try{
-    if(S.current===1) await ensureProject();  // reads the create form — must run before it's replaced
+    if(S.current===1 && (!S.pid || S.redefining))
+      await ensureProject();  // reads the definition form — before it is replaced
     renderCanvasLoading();                     // now safe to swap the canvas for the loading state
     startProgress();
     const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${S.current}/run`,{method:"POST"});
@@ -1021,19 +1212,34 @@ async function confirmStep(){
   finally{ setBusy(false); }
   if(autorun) await runStep();
 }
-function prevStep(){ if(S.current>1) selectStep(S.current-1); }
+function prevStep(){
+  // On step 1's result page, Back re-opens the definition form for the SAME
+  // project (Prof. Shi 2026-08-07 #8) rather than stepping to a step 0.
+  if(S.current===1){
+    if(!stepRow(1)) return;
+    S.redefining=true; setMsg("");
+    renderCanvas(); renderCmd();
+    return;
+  }
+  selectStep(S.current-1);
+}
 
 /* ================= assistant ================= */
 function renderChat(){
-  const h=S.chats[S.current] || (S.chats[S.current]=[{role:"assistant",
-     content:`Ask about ${STEP_TITLES[S.current-1].toLowerCase()}, or anything you see on this step.`}]);
+  const opener = S.pid
+    ? `Ask about ${STEP_TITLES[S.current-1].toLowerCase()}, or anything you see on this step.`
+    : `Ask anything about this system before you start — what the eight steps do, `
+      + `what data it uses, or how to define a study area.`;
+  const h=S.chats[S.current] || (S.chats[S.current]=[{role:"assistant", content:opener}]);
   $("msgs").innerHTML=h.map(m=>`<div class="bub ${m.role==='user'?'u':(m.err?'err':'a')}">${esc(m.content)}</div>`).join("");
   $("msgs").scrollTop=$("msgs").scrollHeight;
 }
+/* Prof. Shi 2026-08-07 #3: "Allow the user to ask AI questions – even before
+   creating a project." Without a project id the question goes to the intake
+   assistant, which knows the system but has no project data to invent from. */
 async function sendChat(){
   const inp=$("prompt"), text=inp.value.trim();
   if(!text) return;
-  if(!S.pid){ setMsg("Create a project first (Run step on step 1)."); return; }
   inp.value="";
   const h=S.chats[S.current]||(S.chats[S.current]=[]);
   h.push({role:"user",content:text}); renderChat();
@@ -1041,8 +1247,10 @@ async function sendChat(){
   $("msgs").scrollTop=$("msgs").scrollHeight;
   try{
     const hist=[{role:"user",content:"[Guidance] "+S.sys},...h.slice(-8)];
-    const {reply}=await api(`/hcas/projects/${S.pid}/chat`,
-      {method:"POST",body:JSON.stringify({message:text,step:S.current,history:hist})});
+    const {reply}= S.pid
+      ? await api(`/hcas/projects/${S.pid}/chat`,
+          {method:"POST",body:JSON.stringify({message:text,step:S.current,history:hist})})
+      : await api("/hcas/chat",{method:"POST",body:JSON.stringify({message:text,history:hist})});
     h.push({role:"assistant",content:reply});
   }catch(e){ h.push({role:"assistant",content:"⚠ "+e.message,err:true}); }
   renderChat();
@@ -1051,6 +1259,7 @@ async function sendChat(){
 /* ================= header actions ================= */
 function newProject(){
   S.pid=null; S.current=1; S.project=null; S.edited=null; S.chats={}; S.draftShownAt=null;
+  S.redefining=false;
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd(); setMsg("");
 }
 function openProject(){
@@ -1157,6 +1366,9 @@ function mdToHtml(md){
 
 /* ================= boot ================= */
 newProject();
+// Unit labels are needed by the step-1 view too (e.g. after Open project), not
+// only by the create form, so fetch the list once at start.
+loadUnits();
 </script>
 </body>
 </html>

@@ -8,6 +8,7 @@ no features are found for the area.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 
 import geopandas as gpd
@@ -25,25 +26,56 @@ _OVERPASS_MIRROR = "https://overpass.kumi.systems/api"
 _failover_lock = threading.Lock()
 _failed_over = False
 
+# --- request budget ---------------------------------------------------------
+# osmnx defaults to a 180 s socket timeout and osmnx>=2 retries, so ONE hung
+# layer could hold a step for many minutes with nothing the user could do. Since
+# 2026-07-27 the study area is the whole county (Prof. Shi's request), which made
+# every Overpass query 10-60x larger than the old 5 km disc and turned that
+# latent risk into his 2026-08-07 report: "after the data are fetched, the
+# process cannot move on". Bound it here, and again per layer in hcas.py.
+OSM_TIMEOUT_S = int(os.environ.get("OSM_TIMEOUT_S", "90"))
+
+# overpass.kumi.systems answers a generic client with HTTP 429 and the body
+# "Please include a meaningful User-Agent string with your requests to avoid
+# rate-limiting" (verified 2026-08-07), so the failover mirror was rejecting us
+# on arrival. Identify the app.
+_USER_AGENT = "HCAS/1.0 (Healthy Community Assessment System; +https://github.com/luoojason)"
+
+# osmnx interpolates requests_timeout into the Overpass `[timeout:…]` header too
+# (_overpass._make_overpass_settings), so one setting bounds both the socket and
+# the server-side query.
+ox.settings.requests_timeout = OSM_TIMEOUT_S
+ox.settings.http_user_agent = _USER_AGENT
+
 
 def _with_overpass_failover(call):
     """Run an osmnx call; on a network failure, fail over to the Overpass
     mirror once and retry. InsufficientResponseError (a genuinely-empty query
-    result) passes straight through — that is not a network problem."""
+    result) passes straight through — that is not a network problem.
+
+    Retries are decided by which endpoint THIS call used, not by whether some
+    other thread has already switched. Step 3 fetches layers concurrently, so
+    the old check ("has anyone failed over yet?") let the first failure switch
+    the URL and every sibling already in flight against the primary then
+    re-raised without ever trying the mirror — three layers died on the primary
+    in the same millisecond in the 2026-08-07 reproduction.
+    """
     global _failed_over
+    used = ox.settings.overpass_url
     try:
         return call()
     except InsufficientResponseError:
         raise
     except Exception as exc:
+        if used == _OVERPASS_MIRROR:
+            raise  # the mirror itself failed; a second attempt buys nothing
         with _failover_lock:
-            if _failed_over:
-                raise
-            logger.warning(
-                f"Overpass primary failed ({exc!r}) — retrying via mirror {_OVERPASS_MIRROR}"
-            )
+            if not _failed_over:
+                logger.warning(
+                    f"Overpass primary failed ({exc!r}) — failing over to {_OVERPASS_MIRROR}"
+                )
+                _failed_over = True
             ox.settings.overpass_url = _OVERPASS_MIRROR
-            _failed_over = True
         return call()
 
 

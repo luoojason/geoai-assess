@@ -71,6 +71,22 @@ def _query(**filters) -> tuple[dict[str, float], int | None]:
     return values, population
 
 
+def fetch_total_population(state_fips: str, county_fips: str) -> int | None:
+    """The county's total population, without the health measures.
+
+    PLACES carries `totalpopulation` on every row, so one small query answers
+    "how many people live here" at step 1 — which the Census ACS API can no
+    longer do without a key. Returns None if the request fails; the caller
+    reports it as unavailable rather than guessing (Prof. Shi 2026-08-07 #10).
+    """
+    try:
+        _values, population = _query(locationid=f"{state_fips}{county_fips}")
+        return population
+    except Exception as exc:
+        logger.warning(f"fetch_total_population failed: {exc!r}")
+        return None
+
+
 def fetch_health_outcomes(state_fips: str, county_fips: str) -> dict:
     """County prevalence vs US benchmark for the registered PLACES measures.
 

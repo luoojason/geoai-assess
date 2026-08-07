@@ -59,8 +59,26 @@ def _mock_llm_and_fetchers(monkeypatch):
     # and deterministic (the county-boundary path is covered separately, with a
     # mocked geometry, in TestCountyStudyArea).
     monkeypatch.setattr(hcas, "_county_geometry", lambda s, c: None)
+    # Step 1's Census profile and step 3's areal-unit search are live Census
+    # lookups; canned here so no test in this file touches the network.
+    from backend.gis import profile as gis_profile
+
+    monkeypatch.setattr(
+        gis_profile, "county_profile",
+        lambda s, c, population=None, census_api_key=None: {
+            "fips": f"{s}{c}", "name": "Test County", "land_area_km2": 1000.0,
+            "total_area_km2": 1100.0, "population": 50000,
+            "source_population": "test", "unavailable": {},
+        },
+    )
+    monkeypatch.setattr(
+        gis_profile, "areal_unit_availability",
+        lambda s, c, unit: {"unit": unit, "label": unit, "available": True,
+                            "count": 7, "source": "test", "note": "7 found."},
+    )
     from backend.assess import places
 
+    monkeypatch.setattr(places, "fetch_total_population", lambda s, c: 1_300_000)
     monkeypatch.setattr(
         places,
         "fetch_health_outcomes",
@@ -238,14 +256,18 @@ class TestStep3:
         draft = hcas.run_step(pid, 3, db=db)
         assert called == ["greenspace"]
         assert draft["kind"] == "layer_inventory"
-        assert draft["layers"] == [{
+        (layer,) = draft["layers"]
+        # fetch_seconds is a diagnostic added 2026-08-07 (how long each source
+        # actually took), so compare the descriptive fields explicitly.
+        assert isinstance(layer.pop("fetch_seconds"), float)
+        assert layer == {
             "layer": "greenspace",
             "name": "Parks & green space",
             "feature_count": 3,
             "crs": "EPSG:5070",
             "source": "OpenStreetMap · Overpass API",
             "geom_type": "polygon",
-        }]
+        }
         # study area recorded as a first-class layer of record (disc fallback here)
         assert draft["study_area"]["kind"] == "disc"
         assert len(draft["bbox"]) == 4
@@ -745,6 +767,10 @@ class TestFetchErrorSurfacing:
 
         monkeypatch.setattr(ol, "_failed_over", False)
         old_url = ox.settings.overpass_url
+        # Pin the primary: the retry decision is made from the URL THIS call
+        # used, and an earlier test in the same process can leave the
+        # process-wide setting pointing at the mirror.
+        ox.settings.overpass_url = "https://overpass-api.de/api"
         calls = {"n": 0}
 
         def flaky():
@@ -760,6 +786,61 @@ class TestFetchErrorSurfacing:
             ox.settings.overpass_url = old_url
             ol._failed_over = False
         assert calls["n"] == 2
+
+    def test_overpass_failover_retries_even_after_a_sibling_switched(self, monkeypatch):
+        """A layer that failed against the PRIMARY still gets its mirror attempt.
+
+        Step 3 fetches layers concurrently. The old rule — retry only if nobody
+        had failed over yet — meant the first failure flipped the flag and every
+        sibling already in flight against the primary re-raised without ever
+        trying the mirror. Three layers died that way in the same millisecond in
+        the 2026-08-07 step-3 reproduction.
+        """
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_failed_over", True)  # a sibling already switched
+        old_url = ox.settings.overpass_url
+        ox.settings.overpass_url = "https://overpass-api.de/api"
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("[WinError 10065] unreachable host")
+            return "ok"
+
+        try:
+            assert ol._with_overpass_failover(flaky) == "ok"
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._failed_over = False
+        assert calls["n"] == 2
+
+    def test_overpass_mirror_failure_is_not_retried(self, monkeypatch):
+        """A call that already ran against the mirror is not repeated — a second
+        attempt would only double the user's wait for the same failure."""
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_failed_over", True)
+        old_url = ox.settings.overpass_url
+        ox.settings.overpass_url = ol._OVERPASS_MIRROR
+        calls = {"n": 0}
+
+        def dead():
+            calls["n"] += 1
+            raise OSError("[WinError 10065] unreachable host")
+
+        try:
+            with pytest.raises(OSError):
+                ol._with_overpass_failover(dead)
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._failed_over = False
+        assert calls["n"] == 1
 
     def test_overpass_empty_result_is_not_failover(self, monkeypatch):
         from osmnx._errors import InsufficientResponseError

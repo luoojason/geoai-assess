@@ -17,6 +17,14 @@ Note for testing from mainland China: the Anthropic API and OpenStreetMap server
 
 - Python 3.9+
 - An API key, used only by assessment steps 2 and 4 — either Anthropic (console.anthropic.com) or OpenRouter (openrouter.ai, key starts with `sk-or-`). Paste either into the same `ANTHROPIC_API_KEY=` slot; the app detects which it is.
+- **Optional — `CENSUS_API_KEY`.** The US Census API now rejects keyless requests, so median household income, median home value and median age are blank on step 1 until a (free, instant) key from https://api.census.gov/data/key_signup.html is added to `.env` as `CENSUS_API_KEY=...`. County area and total population need no key.
+
+### Optional tuning
+
+| Variable | Default | What it does |
+|---|---|---|
+| `HCAS_LAYER_BUDGET_S` | `420` | Wall-clock ceiling for a step's map-layer fetch. Layers still running when it expires are reported as timed out, so steps 3 and 7 always finish and can be confirmed. Raise it for a very large county on a slow link. |
+| `OSM_TIMEOUT_S` | `90` | Per-request timeout for OpenStreetMap/Overpass queries (socket and server-side alike). |
 
 ## Setup
 

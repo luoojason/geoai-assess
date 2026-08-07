@@ -368,6 +368,19 @@ class HcasProjectRequest(BaseModel):
     state_fips: str
     county_fips: str
     gate_mode: str = "gated"
+    areal_unit: Optional[str] = None
+    location_query: str = ""
+    notes: str = ""
+
+
+class HcasScopeRequest(BaseModel):
+    """Re-definition of an existing project (step-1 Back button)."""
+    title: Optional[str] = None
+    state_fips: Optional[str] = None
+    county_fips: Optional[str] = None
+    areal_unit: Optional[str] = None
+    location_query: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class HcasConfirmRequest(BaseModel):
@@ -381,13 +394,97 @@ class HcasChatRequest(BaseModel):
     history: list[dict] = []
 
 
+class HcasIntakeChatRequest(BaseModel):
+    message: str
+    history: list[dict] = []
+
+
+class HcasAreaRequest(BaseModel):
+    text: str
+
+
+class HcasReviseRequest(BaseModel):
+    artifact: dict
+    instruction: str
+    place: str = "the study area"
+
+
+@app.get("/hcas/areal-units")
+async def hcas_areal_units():
+    """The reporting units a project may choose (Prof. Shi 2026-08-07 #5)."""
+    from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
+
+    return {
+        "default": DEFAULT_AREAL_UNIT,
+        "units": [{"id": k, "label": v["label"]} for k, v in AREAL_UNITS.items()],
+    }
+
+
 @app.post("/hcas/projects", dependencies=_assess_deps)
 async def hcas_create_project(body: HcasProjectRequest):
     try:
-        pid = hcas.create_project(body.title, body.state_fips, body.county_fips, body.gate_mode)
+        pid = hcas.create_project(
+            body.title, body.state_fips, body.county_fips, body.gate_mode,
+            areal_unit=body.areal_unit, location_query=body.location_query,
+            notes=body.notes,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"project_id": pid}
+
+
+@app.patch("/hcas/projects/{pid}", dependencies=_assess_deps)
+async def hcas_update_project(pid: str, body: HcasScopeRequest):
+    """Re-define a project's scope in place. Marks every drafted step stale."""
+    try:
+        return hcas.update_project_scope(
+            pid, title=body.title, state_fips=body.state_fips,
+            county_fips=body.county_fips, areal_unit=body.areal_unit,
+            location_query=body.location_query, notes=body.notes,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/hcas/resolve-area", dependencies=_assess_deps)
+async def hcas_resolve_area(body: HcasAreaRequest):
+    """Free-text location -> study-area county (Prof. Shi 2026-08-07 #4)."""
+    try:
+        return await asyncio.to_thread(hcas.resolve_area, body.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/hcas/chat", dependencies=_assess_deps)
+async def hcas_intake_chat(body: HcasIntakeChatRequest):
+    """Assistant before a project exists (Prof. Shi 2026-08-07 #3)."""
+    try:
+        return await asyncio.to_thread(hcas.chat_intake, body.message, body.history)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        logger.exception("intake chat failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"The assistant hit an unexpected error ({type(exc).__name__}).",
+        )
+
+
+@app.post("/hcas/revise-factors", dependencies=_assess_deps)
+async def hcas_revise_factors(body: HcasReviseRequest):
+    """Incremental edit of the step-2 factor list (Prof. Shi 2026-08-07 #11)."""
+    try:
+        return await asyncio.to_thread(
+            hcas.revise_factors, body.artifact, body.instruction, body.place
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/hcas/projects/{pid}", dependencies=_assess_deps)
