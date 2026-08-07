@@ -694,7 +694,7 @@ function viewIntake(a){
     ["Place", esc(a.place_name||"—")],
     ["Total area", p.total_area_km2!=null?`${num(p.total_area_km2)} km² (land ${num(p.land_area_km2)} km²)`:null],
     ["Total population", num(p.population)],
-    ["Population density", p.population_density_per_km2!=null?`${num(p.population_density_per_km2,1)} / km²`:null],
+    ["Population density", p.population_density_per_km2_of_land!=null?`${num(p.population_density_per_km2_of_land,1)} / km² of land`:null],
     ["Median household income", p.median_household_income_usd!=null?`$${num(p.median_household_income_usd)}`:null],
     ["Median home value", p.median_home_value_usd!=null?`$${num(p.median_home_value_usd)}`:null],
     ["Median age", num(p.median_age,1)],

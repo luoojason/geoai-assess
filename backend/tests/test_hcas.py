@@ -818,9 +818,16 @@ class TestFetchErrorSurfacing:
             ol._failed_over = False
         assert calls["n"] == 2
 
-    def test_overpass_mirror_failure_is_not_retried(self, monkeypatch):
-        """A call that already ran against the mirror is not repeated — a second
-        attempt would only double the user's wait for the same failure."""
+    def test_mirror_failure_points_the_next_request_back_at_the_primary(self, monkeypatch):
+        """The failed call is not retried — that would only repeat a wait we have
+        already paid — but the endpoint flips back, so a run is never stranded on
+        whichever host happens to be the bad one.
+
+        Measured within ten minutes on one link (2026-08-07): primary 8.0 s /
+        mirror timeout, then primary timeout / mirror 3.1 s, then primary 22 s /
+        mirror timeout. Neither host is reliably better, so a one-way switch is a
+        trap rather than a safety net.
+        """
         import osmnx as ox
 
         from backend.assess import osm_layers as ol
@@ -837,10 +844,12 @@ class TestFetchErrorSurfacing:
         try:
             with pytest.raises(OSError):
                 ol._with_overpass_failover(dead)
+            assert calls["n"] == 1                                    # not retried here
+            assert ox.settings.overpass_url == ol._OVERPASS_PRIMARY   # but flipped back
+            assert ol._failed_over is False
         finally:
             ox.settings.overpass_url = old_url
             ol._failed_over = False
-        assert calls["n"] == 1
 
     def test_overpass_empty_result_is_not_failover(self, monkeypatch):
         from osmnx._errors import InsufficientResponseError

@@ -814,7 +814,11 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
     results: dict[str, Any] = {}
     errors: dict[str, str] = {}
     started = time.time()
-    ex = ThreadPoolExecutor(max_workers=4)
+    # Overpass hands out ~2 query slots per client, and each layer may now issue
+    # several tiled requests of its own (osm_layers._tiled), so four layers in
+    # flight just queues behind the rate limiter. Two keeps the pipe full without
+    # fighting it. OSM_LAYER_WORKERS raises it for a self-hosted endpoint.
+    ex = ThreadPoolExecutor(max_workers=int(_os.environ.get("OSM_LAYER_WORKERS", "2")))
     try:
         futures = {ex.submit(fetchers[n], tuple(bbox)): n for n in names}
         done = 0

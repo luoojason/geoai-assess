@@ -94,6 +94,185 @@ class TestStep3CannotHangForever:
         assert hcas.LAYER_FETCH_BUDGET_S >= 60
 
 
+class TestOverpassTiling:
+    """A whole-county Overpass query is often too big to answer at all, which is
+    the half of Prof. Shi's step-3 report that a timeout alone does not fix — a
+    bounded wait just fails faster.
+
+    Measured 2026-08-07 against overpass.kumi.systems for Grand Isle County VT
+    (212 km² of land, one of the smallest counties in the US): the whole-county
+    buildings query FAILED after 103 s, while the same area as four quadrants
+    returned 6,086 buildings in 16 s total.
+    """
+
+    def _gdf(self, ids):
+        """One row per id, indexed by it (ids stand in for OSM element ids, so
+        they may be strings; geometry is positional and carries no meaning)."""
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        ids = list(ids)
+        return gpd.GeoDataFrame(
+            {"geometry": [Point(n, n) for n, _ in enumerate(ids)]},
+            index=ids, crs="EPSG:4326")
+
+    def test_a_failing_bbox_is_split_and_the_parts_are_merged(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        seen = []
+
+        def call_one(bbox):
+            seen.append(bbox)
+            if bbox == (0.0, 0.0, 0.125, 0.125):       # the whole area: too big
+                raise OSError("timed out")
+            return self._gdf([len(seen)])
+
+        out = ol._tiled((0.0, 0.0, 0.125, 0.125), call_one)
+        assert len(seen) == 5                      # 1 failed attempt + 4 quadrants
+        assert seen[1:] == [(0.0, 0.0, 0.0625, 0.0625), (0.0625, 0.0, 0.125, 0.0625),
+                            (0.0, 0.0625, 0.0625, 0.125), (0.0625, 0.0625, 0.125, 0.125)]
+        assert len(ol._combine(out)) == 4
+
+    def test_a_bbox_that_answers_is_never_split(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        calls = []
+        out = ol._tiled((0.0, 0.0, 0.125, 0.125),
+                        lambda b: (calls.append(b), self._gdf([1, 2]))[1])
+        assert calls == [(0.0, 0.0, 0.125, 0.125)]     # one request for a sparse county
+        assert len(ol._combine(out)) == 2
+
+    def test_features_on_a_tile_edge_are_not_double_counted(self, monkeypatch):
+        """Anything crossing a tile boundary comes back from both tiles."""
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+
+        def call_one(bbox):
+            if bbox == (0.0, 0.0, 0.125, 0.125):
+                raise OSError("timed out")
+            return self._gdf([1, 2])               # every tile returns the same ids
+
+        merged = ol._combine(ol._tiled((0.0, 0.0, 0.125, 0.125), call_one))
+        assert list(merged.index) == [1, 2]
+
+    def test_an_empty_tile_is_an_answer_not_a_failure(self, monkeypatch):
+        from osmnx._errors import InsufficientResponseError
+
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        calls = []
+
+        def call_one(bbox):
+            calls.append(bbox)
+            raise InsufficientResponseError("no features here")
+
+        assert ol._tiled((0.0, 0.0, 0.125, 0.125), call_one) == []
+        assert len(calls) == 1                     # not split: empty is a real answer
+
+    def test_splitting_stops_at_the_depth_limit(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        monkeypatch.setattr(ol, "OSM_TILE_MAX_DEPTH", 1)
+        calls = []
+
+        def always_fail(bbox):
+            calls.append(bbox)
+            raise OSError("timed out")
+
+        with pytest.raises(OSError):
+            ol._tiled((0.0, 0.0, 0.125, 0.125), always_fail)
+        assert len(calls) == 5                     # 1 + 4, then it gives up
+
+    def test_partial_tile_failure_keeps_the_data_that_did_arrive(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        monkeypatch.setattr(ol, "OSM_TILE_MAX_DEPTH", 1)
+
+        def call_one(bbox):
+            if bbox == (0.0, 0.0, 0.125, 0.125):
+                raise OSError("timed out")
+            if bbox[0] == 0.0 and bbox[1] == 0.0:  # one quadrant stays broken
+                raise OSError("timed out")
+            # distinct ids per quadrant, so the count measures coverage not dedup
+            return self._gdf([f"{bbox[0]}:{bbox[1]}"])
+
+        merged = ol._combine(ol._tiled((0.0, 0.0, 0.125, 0.125), call_one))
+        assert len(merged) == 3                    # 3 of 4 quadrants answered
+
+    def test_a_county_sized_bbox_is_pre_split_without_a_doomed_first_try(self, monkeypatch):
+        """Waiting for the timeout to learn "too big" costs OSM_TIMEOUT_S per
+        layer, and a county is reliably too big — so the split happens up front.
+        """
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        seen = []
+        grand_isle = (-73.390, 44.564, -73.191, 45.013)   # the real failing bbox
+        ol._tiled(grand_isle, lambda b: (seen.append(b), self._gdf([len(seen)]))[1])
+        assert grand_isle not in seen                     # never attempted whole
+        assert len(seen) == 3                             # 0.199 x 0.449 deg -> 1 x 3
+        # the tiles tile the original exactly
+        assert min(t[0] for t in seen) == grand_isle[0]
+        assert max(t[2] for t in seen) == grand_isle[2]
+        assert min(t[1] for t in seen) == grand_isle[1]
+        assert max(t[3] for t in seen) == grand_isle[3]
+
+    def test_a_small_bbox_is_one_request(self):
+        from backend.assess import osm_layers as ol
+
+        assert ol._start_tiles((0.0, 0.0, 0.1, 0.1)) == [(0.0, 0.0, 0.1, 0.1)]
+
+    def test_probe_switches_to_the_mirror_when_the_primary_is_unreachable(self, monkeypatch):
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        old_url = ox.settings.overpass_url
+        ox.settings.overpass_url = "https://overpass-api.de/api"
+        monkeypatch.setattr(ol, "_probed", False)
+        monkeypatch.setattr(ol, "_failed_over", False)
+
+        def dead(url, data=None, headers=None, timeout=None):
+            raise OSError("connect timeout")
+
+        monkeypatch.setattr("requests.post", dead)
+        try:
+            ol._probe_overpass_once()
+            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._failed_over = False
+            ol._probed = False
+
+    def test_probe_accepts_a_406_from_the_primary(self, monkeypatch):
+        """Any HTTP answer from /interpreter proves the query path is live."""
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        old_url = ox.settings.overpass_url
+        ox.settings.overpass_url = "https://overpass-api.de/api"
+        monkeypatch.setattr(ol, "_probed", False)
+        monkeypatch.setattr(ol, "_failed_over", False)
+
+        class _R:
+            status_code = 200
+
+        monkeypatch.setattr("requests.post", lambda url, data=None, headers=None, timeout=None: _R())
+        try:
+            ol._probe_overpass_once()
+            assert ox.settings.overpass_url == "https://overpass-api.de/api"
+        finally:
+            ox.settings.overpass_url = old_url
+            ol._probed = False
+
+
 class TestProjectRedefinition:
     """#8 — "Activate the Back button, allowing the user to go back to
     re-define the project"."""

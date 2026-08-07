@@ -184,7 +184,10 @@ def county_profile(
         )
 
     if out.get("population") and out.get("land_area_km2"):
-        out["population_density_per_km2"] = round(
+        # Named for its denominator: the assistant reads this dict verbatim, and
+        # on a county that is half water it described a land-area density as
+        # "land + water combined" because the key did not say (seen 2026-08-07).
+        out["population_density_per_km2_of_land"] = round(
             out["population"] / out["land_area_km2"], 1
         )
     return out
