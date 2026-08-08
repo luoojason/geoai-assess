@@ -205,6 +205,59 @@ class TestOverpassTiling:
         merged = ol._combine(ol._tiled((0.0, 0.0, 0.125, 0.125), call_one))
         assert len(merged) == 3                    # 3 of 4 quadrants answered
 
+    def test_combine_dedupes_on_osmnx_real_index_shape(self):
+        """The merge must work on what osmnx ACTUALLY returns, not a toy frame.
+
+        `features_from_bbox` returns a MultiIndex of (element_type, osmid) and a
+        wide, sparse tag table whose columns differ per tile. De-duplication runs
+        on that index, so this pins the real shape: a way crossing a tile edge is
+        returned by both tiles under the SAME (element_type, osmid) and must
+        survive exactly once, with geometry, CRS and tag columns intact.
+        """
+        import geopandas as gpd
+        import pandas as pd
+        from shapely.geometry import Point
+
+        from backend.assess import osm_layers as ol
+
+        def frame(ids, **cols):
+            idx = pd.MultiIndex.from_tuples(
+                [("way", i) for i in ids], names=["element_type", "osmid"])
+            data = {"geometry": [Point(n, n) for n, _ in enumerate(ids)]}
+            data.update({k: [v] * len(ids) for k, v in cols.items()})
+            return gpd.GeoDataFrame(data, index=idx, crs="EPSG:4326")
+
+        # tile A and tile B share way 1002 (it straddles the boundary) and carry
+        # different tag columns, as adjacent Overpass responses genuinely do
+        a = frame([1001, 1002], building="yes")
+        b = frame([1002, 1003], building="yes", **{"building:levels": "3"})
+
+        merged = ol._combine([a, b])
+
+        assert len(merged) == 3                       # 4 rows in, one shared way
+        assert merged.index.nlevels == 2
+        assert list(merged.index.get_level_values("osmid")) == [1001, 1002, 1003]
+        assert merged.index.is_unique
+        assert merged.crs == a.crs
+        assert merged.geometry.notna().all()
+        assert "building:levels" in merged.columns    # column union preserved
+        assert isinstance(merged, gpd.GeoDataFrame)
+
+    def test_combine_of_one_tile_is_returned_untouched(self):
+        """A sparse county is a single tile; it must not pay a concat."""
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        from backend.assess import osm_layers as ol
+
+        only = gpd.GeoDataFrame({"geometry": [Point(0, 0)]}, crs="EPSG:4326")
+        assert ol._combine([only]) is only
+
+    def test_combine_of_all_empty_tiles_is_none(self):
+        from backend.assess import osm_layers as ol
+
+        assert ol._combine([]) is None
+
     def test_a_county_sized_bbox_is_pre_split_without_a_doomed_first_try(self, monkeypatch):
         """Waiting for the timeout to learn "too big" costs OSM_TIMEOUT_S per
         layer, and a county is reliably too big — so the split happens up front.
