@@ -193,6 +193,49 @@ def county_profile(
     return out
 
 
+def _unit_where(state_fips: str, county_fips: str, spec: dict) -> dict:
+    """Query params selecting one areal unit's features inside a county."""
+    geoid = f"{state_fips}{county_fips}"
+    if spec.get("prefix"):
+        return {"where": f"GEOID LIKE '{geoid}%'"}
+    xmin, ymin, xmax, ymax = _county_extent(state_fips, county_fips)
+    return {
+        "geometry": f"{xmin},{ymin},{xmax},{ymax}",
+        "geometryType": "esriGeometryEnvelope",
+        "inSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+    }
+
+
+def fetch_areal_unit_geometries(state_fips: str, county_fips: str, unit: str):
+    """The chosen reporting unit's polygons for this county, as a GeoDataFrame
+    (EPSG:4326) with GEOID and NAME. Returns None when the unit is the county
+    itself or nothing can be fetched — the caller reports that rather than
+    silently falling back to a different geography.
+    """
+    import geopandas as gpd
+
+    spec = AREAL_UNITS.get(unit)
+    if spec is None or spec["layer"] is None:
+        return None
+    params = {
+        "outFields": "GEOID,NAME,BASENAME",
+        "returnGeometry": "true",
+        "outSR": "4326",
+        "f": "geojson",
+        **_unit_where(state_fips, county_fips, spec),
+    }
+    r = requests.get(f"{_TIGER}/{spec['layer']}/query", params=params, timeout=60)
+    r.raise_for_status()
+    gdf = gpd.read_file(r.text)
+    if gdf.empty:
+        return None
+    if "GEOID" not in gdf.columns:
+        raise LookupError(f"TIGERweb returned no GEOID for {unit}")
+    keep = [c for c in ("GEOID", "NAME", "BASENAME", "geometry") if c in gdf.columns]
+    return gdf[keep].to_crs("EPSG:4326")
+
+
 def areal_unit_availability(state_fips: str, county_fips: str, unit: str) -> dict:
     """Search Census for the requested areal unit inside the county.
 

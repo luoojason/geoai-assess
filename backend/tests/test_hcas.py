@@ -76,6 +76,10 @@ def _mock_llm_and_fetchers(monkeypatch):
         lambda s, c, unit: {"unit": unit, "label": unit, "available": True,
                             "count": 7, "source": "test", "note": "7 found."},
     )
+    # Per-unit tabulation fetches unit polygons from TIGERweb; off by default so
+    # no test in this file can reach the network. Tests that want the table
+    # override this with a local GeoDataFrame.
+    monkeypatch.setattr(gis_profile, "fetch_areal_unit_geometries", lambda s, c, unit: None)
     from backend.assess import places
 
     monkeypatch.setattr(places, "fetch_total_population", lambda s, c: 1_300_000)

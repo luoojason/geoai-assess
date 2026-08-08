@@ -1026,8 +1026,35 @@ function viewExecution(a){
       <div id="layerinfo"></div>
       <div class="panel"><div class="ph">Metrics</div>
         <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div></div>
+      ${byUnitPanel(a.by_unit)}
       <div class="panel"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div>
     </div></div>`;
+}
+
+/* Per-unit table (Prof. Shi 2026-08-07 #5). Always renders something: either the
+   rows or the stated reason there are none, so an absent table never has to be
+   guessed at. */
+function byUnitPanel(bu){
+  if(!bu) return "";
+  const rows = bu.rows||[];
+  const head = `<div class="ph">By ${esc((bu.label||bu.unit||"unit").toLowerCase())}${
+    rows.length?` · ${rows.length} ${rows.length===1?"area":"areas"}`:""}</div>`;
+  if(!rows.length)
+    return `<div class="panel">${head}<div class="empty" style="padding:14px;">${esc(bu.note||"Not tabulated.")}</div></div>`;
+  // Column set = union of the metric keys actually present, in first-row order.
+  const cols = [];
+  rows.forEach(r=>Object.keys(r.metrics||{}).forEach(k=>{ if(!cols.includes(k)) cols.push(k); }));
+  const fmt = v => v==null ? '<span style="color:var(--faint)">—</span>'
+    : (typeof v==="number" ? (+v).toLocaleString(undefined,{maximumFractionDigits:3}) : esc(v));
+  const body = rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${(+r.area_km2).toLocaleString(undefined,{maximumFractionDigits:2})}</td>${
+    cols.map(c=>`<td>${fmt((r.metrics||{})[c])}</td>`).join("")}</tr>`).join("");
+  return `<div class="panel">${head}
+    ${bu.note?`<div class="subnote" style="margin-bottom:8px;">${esc(bu.note)}</div>`:""}
+    <div style="overflow-x:auto;max-height:340px;overflow-y:auto;">
+      <table class="data"><thead><tr><th>${esc(bu.label||"Unit")}</th><th>km²</th>${
+        cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>
+    <div class="subnote">Computed with the same metric code as the county figures, clipped to each
+      boundary. Source: ${esc(bu.source||"US Census TIGERweb")}.</div></div>`;
 }
 
 /* The embedded map is same-origin, so we can see inside it: if its document

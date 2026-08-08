@@ -1154,6 +1154,80 @@ def _run_step_6(project: dict) -> tuple[dict, str | None, dict | None]:
     return {"kind": "workflow", "steps": steps}, None, None
 
 
+def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, describe) -> dict:
+    """Metrics per reporting unit, or a stated reason there are none.
+
+    Always returns a dict carrying `unit` and either `rows` or `note`, so the
+    wizard and report never have to guess whether an absent table means "the
+    county is the unit", "the data was not published", or "it failed".
+    """
+    from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
+
+    meta = project["meta"]
+    unit = meta.get("areal_unit", DEFAULT_AREAL_UNIT)
+    label = (AREAL_UNITS.get(unit) or {}).get("label", unit)
+    pid = project["id"]
+
+    if unit == "county":
+        return {"unit": unit, "label": label, "rows": [],
+                "note": "The county is the reporting unit, so the figures above are the result."}
+    if describe.get("kind") != "county":
+        return {"unit": unit, "label": label, "rows": [],
+                "note": "The county boundary was unavailable on this run, so the study area is a "
+                        "centroid buffer and does not align with any Census unit. Re-run with the "
+                        "boundary service reachable to get a per-unit table."}
+
+    # Metrics whose source layer failed are not measurements anywhere, least of
+    # all per unit.
+    failed_layers = set(fetch_errors)
+    usable = [m for m in metrics_wanted if not failed_layers.intersection(METRIC_LAYERS[m])]
+    if not usable:
+        return {"unit": unit, "label": label, "rows": [],
+                "note": "None of the map layers could be fetched on this run, so there is nothing "
+                        "to tabulate per unit."}
+
+    set_progress(pid, 7, 86, f"computing metrics per {label.lower()}…")
+    try:
+        from backend.assess.by_unit import tabulate_by_unit
+        from backend.gis.profile import fetch_areal_unit_geometries
+
+        units = fetch_areal_unit_geometries(meta["state_fips"], meta["county_fips"], unit)
+        if units is None or units.empty:
+            return {"unit": unit, "label": label, "rows": [],
+                    "note": f"Census publishes no {label} boundaries for this county, so results "
+                            f"stay at the county level."}
+
+        def _tick(done, total):
+            set_progress(pid, 7, 86 + 6 * done / max(total, 1),
+                         f"{label} {done}/{total}…")
+
+        out = tabulate_by_unit(units, layers, computers, usable, progress=_tick)
+    except Exception as exc:
+        logger.warning(f"per-unit tabulation failed: {exc!r}")
+        return {"unit": unit, "label": label, "rows": [],
+                "note": f"The per-unit table could not be built this run ({type(exc).__name__}). "
+                        f"The county-level figures above are unaffected."}
+
+    result = {
+        "unit": unit,
+        "label": label,
+        "rows": out["rows"],
+        "metrics": usable,
+        "source": "US Census TIGERweb boundaries; same metric code as the county figures",
+    }
+    skipped = [m for m in metrics_wanted if m not in usable]
+    if skipped:
+        result["omitted_metrics"] = skipped
+        result["note"] = ("Omitted from the per-unit table because their data source failed this "
+                          "run: " + ", ".join(skipped))
+    if out["truncated"]:
+        result["truncated"] = True
+        result["unit_count"] = out["unit_count"]
+        result["note"] = (f"This county has {out['unit_count']} {label.lower()}s; the first "
+                          f"{len(out['rows'])} are tabulated.")
+    return result
+
+
 def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     from backend.assess import generate_interventions
 
@@ -1202,6 +1276,16 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         artifact["fetch_errors"] = fetch_errors
     if unmeasured:
         artifact["unmeasured_metrics"] = unmeasured
+
+    # Per-unit tabulation (Prof. Shi 2026-08-07 #5). Choosing a reporting unit
+    # that changed nothing about the output would be a control that does nothing
+    # — his objection to Re-run in the very next item — so the metrics are
+    # computed for each unit, using the same computers as the county figure.
+    # Only from layers that actually arrived: a per-tract table built from a
+    # failed fetch would spread one silent zero across 28 rows.
+    artifact["by_unit"] = _tabulate_units(
+        project, layers, computers, metrics_wanted, fetch_errors, describe
+    )
     if layers and all(g.empty for g in layers.values()):
         artifact["map_note"] = (
             "Every data layer came back empty, so the map has no features to "
@@ -1453,6 +1537,37 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         ]
     elif outcomes.get("note"):
         lines += ["\n## Health outcomes (county-level)", f"_{outcomes['note']}_"]
+    # Per-unit table (Prof. Shi 2026-08-07 #5). Included in the academic
+    # deliverable, not only on screen — and when there is no table, the reason
+    # is printed rather than the section silently vanishing.
+    by_unit = results.get("by_unit") or {}
+    if by_unit:
+        unit_label = by_unit.get("label", by_unit.get("unit", "unit"))
+        lines.append(f"\n## Results by {unit_label.lower()}")
+        rows = by_unit.get("rows") or []
+        if not rows:
+            lines.append(f"_{by_unit.get('note', 'Not tabulated for this run.')}_")
+        else:
+            if by_unit.get("note"):
+                lines.append(f"_{by_unit['note']}_\n")
+            cols: list[str] = []
+            for r in rows:
+                for k in (r.get("metrics") or {}):
+                    if k not in cols:
+                        cols.append(k)
+            lines.append("| " + " | ".join([unit_label, "km²", *cols]) + " |")
+            lines.append("|" + "---|" * (len(cols) + 2))
+            for r in rows:
+                cells = [str(r.get("name", "")), f"{r.get('area_km2', 0):g}"]
+                for c in cols:
+                    v = (r.get("metrics") or {}).get(c)
+                    cells.append("not measured" if v is None else f"{v:g}" if isinstance(v, float) else str(v))
+                lines.append("| " + " | ".join(cells) + " |")
+            lines.append(
+                f"\n_Computed with the same metric code as the county figures, clipped to each "
+                f"boundary. Source: {by_unit.get('source', 'US Census TIGERweb')}._"
+            )
+
     lines += [
         "\n## Recommended interventions",
     ]

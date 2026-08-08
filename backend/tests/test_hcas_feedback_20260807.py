@@ -617,3 +617,155 @@ class TestCensusProfileHonesty:
         out = _real_unit_availability("33", "009", "tract")
         assert seen["params"]["where"] == "GEOID LIKE '33009%'"
         assert "in this county" in out["note"]
+
+
+class TestPerUnitTabulation:
+    """#5 completed: choosing a reporting unit now changes the output.
+
+    A selector that changed nothing would be a control that does nothing —
+    exactly what Prof. Shi objected to about Re-run in his very next item.
+    """
+
+    def _units(self):
+        """Two 1 km squares side by side, in the projected CRS the metrics use."""
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        return gpd.GeoDataFrame(
+            {"GEOID": ["33009000100", "33009000200"], "NAME": ["Tract 1", "Tract 2"]},
+            geometry=[box(0, 0, 1000, 1000), box(1000, 0, 2000, 1000)],
+            crs="EPSG:5070",
+        )
+
+    def _greenspace(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        # 250,000 m2 of park in tract 1 only; tract 2 has none
+        return gpd.GeoDataFrame(geometry=[box(0, 0, 500, 500)], crs="EPSG:5070")
+
+    def test_each_unit_gets_its_own_numbers(self):
+        from backend.assess.by_unit import tabulate_by_unit
+
+        out = tabulate_by_unit(
+            self._units(), {"greenspace": self._greenspace()},
+            hcas._metric_computers(), ["greenspace_coverage"])
+        rows = {r["name"]: r for r in out["rows"]}
+        assert rows["Tract 1"]["metrics"]["greenspace_coverage_ratio"] == pytest.approx(0.25)
+        assert rows["Tract 2"]["metrics"]["greenspace_coverage_ratio"] == 0.0
+        assert rows["Tract 1"]["area_km2"] == pytest.approx(1.0)
+
+    def test_units_sum_to_the_county_figure(self):
+        """The per-unit table and the headline number must not disagree — they
+        are the same computation over a partition of the same area."""
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        from backend.assess.by_unit import tabulate_by_unit
+
+        units = self._units()
+        county = gpd.GeoDataFrame(geometry=[box(0, 0, 2000, 1000)], crs="EPSG:5070")
+        green = self._greenspace()
+        computers = hcas._metric_computers()
+
+        county_area = computers["greenspace_coverage"]({"greenspace": green}, county)[
+            "greenspace_area_m2"]
+        out = tabulate_by_unit(units, {"greenspace": green}, computers, ["greenspace_coverage"])
+        summed = sum(r["metrics"]["greenspace_area_m2"] for r in out["rows"])
+        assert summed == pytest.approx(county_area)
+
+    def test_a_feature_straddling_a_boundary_is_split_not_double_counted(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        from backend.assess.by_unit import tabulate_by_unit
+
+        # park spans both tracts: 500 m either side of the x=1000 boundary
+        park = gpd.GeoDataFrame(geometry=[box(500, 0, 1500, 500)], crs="EPSG:5070")
+        out = tabulate_by_unit(self._units(), {"greenspace": park},
+                               hcas._metric_computers(), ["greenspace_coverage"])
+        areas = [r["metrics"]["greenspace_area_m2"] for r in out["rows"]]
+        assert areas == [pytest.approx(250_000), pytest.approx(250_000)]
+        assert sum(areas) == pytest.approx(park.geometry.area.sum())
+
+    def test_large_counties_are_capped_and_say_so(self, monkeypatch):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        from backend.assess import by_unit as bu
+
+        monkeypatch.setattr(bu, "MAX_UNITS", 3)
+        many = gpd.GeoDataFrame(
+            {"GEOID": [str(i) for i in range(10)], "NAME": [f"T{i}" for i in range(10)]},
+            geometry=[box(i * 100, 0, i * 100 + 100, 100) for i in range(10)],
+            crs="EPSG:5070")
+        out = bu.tabulate_by_unit(many, {"greenspace": self._greenspace()},
+                                  hcas._metric_computers(), ["greenspace_coverage"])
+        assert len(out["rows"]) == 3
+        assert out["truncated"] is True and out["unit_count"] == 10
+
+
+class TestPerUnitDegradesHonestly:
+    """When there is no table, the artifact says why — never an empty section
+    the reader has to interpret."""
+
+    def _note(self, project, **kw):
+        return hcas._tabulate_units(
+            project, kw.get("layers", {}), hcas._metric_computers(),
+            kw.get("metrics", ["greenspace_coverage"]),
+            kw.get("fetch_errors", {}), kw.get("describe", {"kind": "county"}))
+
+    def test_county_unit_states_that_the_county_is_the_answer(self, tmp_path):
+        pid, db = _project(tmp_path, areal_unit="county")
+        out = self._note(hcas.get_project(pid, db=db))
+        assert out["rows"] == [] and "county is the reporting unit" in out["note"]
+
+    def test_disc_fallback_is_named_as_the_reason(self, tmp_path):
+        pid, db = _project(tmp_path)
+        out = self._note(hcas.get_project(pid, db=db), describe={"kind": "disc"})
+        assert out["rows"] == []
+        assert "does not align with any Census unit" in out["note"]
+
+    def test_a_failed_layer_is_excluded_rather_than_tabulated_as_zero(self, tmp_path):
+        """28 rows of silent zeros would be far worse than one honest county zero."""
+        pid, db = _project(tmp_path)
+        out = self._note(hcas.get_project(pid, db=db),
+                         fetch_errors={"greenspace": "DNS lookup failed"})
+        assert out["rows"] == []
+        assert "None of the map layers could be fetched" in out["note"]
+
+    def test_step7_artifact_always_carries_a_by_unit_block(self, tmp_path):
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=6)
+        draft = hcas.run_step(pid, 7, db=db)
+        assert "by_unit" in draft
+        assert draft["by_unit"]["rows"] == []      # disc fallback in these tests
+        assert draft["by_unit"]["note"]
+
+    def test_report_prints_the_reason_when_there_is_no_table(self, tmp_path):
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        md = hcas.get_project(pid, db=db)["steps"][7]["ai_draft"]["markdown"]
+        assert "## Results by" in md
+        assert "does not align with any Census unit" in md
+
+    def test_report_renders_the_table_when_there_is_one(self, tmp_path, monkeypatch):
+        import geopandas as gpd
+        from shapely.geometry import box
+
+        from backend.gis import profile as gis_profile
+
+        units = gpd.GeoDataFrame(
+            {"GEOID": ["33009000100"], "NAME": ["Tract 1"]},
+            geometry=[box(-73.30, 44.62, -73.29, 44.63)], crs="EPSG:4326")
+        monkeypatch.setattr(gis_profile, "fetch_areal_unit_geometries",
+                            lambda s, c, unit: units)
+        monkeypatch.setattr(hcas, "_county_geometry",
+                            lambda s, c: units[["geometry"]].to_crs("EPSG:5070"))
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        steps = hcas.get_project(pid, db=db)["steps"]
+        by_unit = steps[6]["ai_draft"]["by_unit"]
+        assert [r["name"] for r in by_unit["rows"]] == ["Tract 1"]
+        md = steps[7]["ai_draft"]["markdown"]
+        assert "## Results by" in md and "| Tract 1 |" in md
