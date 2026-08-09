@@ -77,6 +77,10 @@ import os as _os
 
 LAYER_FETCH_BUDGET_S = float(_os.environ.get("HCAS_LAYER_BUDGET_S", "420"))
 
+# Extra passes over the layers that failed, inside the same budget. Cheap,
+# because osmnx caches every tile that already arrived.
+OSM_RETRY_PASSES = int(_os.environ.get("OSM_RETRY_PASSES", "2"))
+
 # (step, phase, title, runner kind)
 STEPS = [
     (1, "scope", "Study area intake", "deterministic"),
@@ -814,6 +818,50 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
     results: dict[str, Any] = {}
     errors: dict[str, str] = {}
     started = time.time()
+    deadline = started + budget_s
+    pending = list(names)
+
+    # Automatic retry of the layers that failed. Overpass queues rather than
+    # refuses when busy, so a layer that timed out is usually just unlucky — and
+    # retrying is nearly free, because osmnx caches every tile that already
+    # arrived (measured 2026-08-08: 0.1 s against 7.2 s cold, 70x). Without this
+    # the user had to notice the warning and click Re-run themselves; the machine
+    # can do the obvious thing first.
+    for attempt in range(1 + OSM_RETRY_PASSES):
+        if not pending:
+            break
+        remaining = deadline - time.time()
+        # Only a RETRY needs headroom to be worth starting. The first pass always
+        # runs with whatever budget it was given, however small — gating it here
+        # meant a short budget fetched nothing at all.
+        if attempt and remaining <= 5:
+            break
+        if attempt:
+            logger.info(f"step {step}: retrying {len(pending)} layer(s) "
+                        f"({attempt}/{OSM_RETRY_PASSES}), {remaining:.0f}s left")
+            for n in pending:
+                slot = next(d for d in detail if d["layer"] == n)
+                slot["status"] = "fetching"
+                slot["note"] = "retrying — anything already fetched is cached"
+                slot.pop("count", None)
+            set_progress_detail(pid, step, detail)
+            time.sleep(min(3.0, max(remaining - 5, 0)))
+        _fetch_pass(pid, step, pending, bbox, deadline, fetchers, detail,
+                    results, errors, names, pct_span, started)
+        pending = [n for n in pending if n in errors]
+
+    return results, errors, detail
+
+
+def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
+                results, errors, all_names, pct_span, started) -> None:
+    """One concurrent pass over `names`, updating results/errors/detail in place."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout, as_completed
+
+    from backend.assess.netdiag import pop_fetch_error
+
+    lo, hi = pct_span
+    budget_s = max(deadline - time.time(), 1)
     # Overpass hands out ~2 query slots per client, and each layer may now issue
     # several tiled requests of its own (osm_layers._tiled), so four layers in
     # flight just queues behind the rate limiter. Two keeps the pipe full without
@@ -821,7 +869,7 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
     ex = ThreadPoolExecutor(max_workers=int(_os.environ.get("OSM_LAYER_WORKERS", "2")))
     try:
         futures = {ex.submit(fetchers[n], tuple(bbox)): n for n in names}
-        done = 0
+        done = len([n for n in all_names if n in results and n not in errors])
         try:
             for fut in as_completed(futures, timeout=budget_s):
                 n = futures[fut]
@@ -834,6 +882,8 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
                 err = pop_fetch_error(getattr(fetchers[n], "__name__", ""))
                 if err:
                     errors[n] = err
+                else:
+                    errors.pop(n, None)   # succeeded on a retry: clear the old failure
                 results[n] = g
                 done += 1
                 slot = next(d for d in detail if d["layer"] == n)
@@ -845,8 +895,8 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
                     slot["status"] = "done"
                     slot["count"] = int(len(g))
                 set_progress_detail(pid, step, detail)
-                set_progress(pid, step, lo + (hi - lo) * done / len(names),
-                             f"map layers {done}/{len(names)} · {_layer_meta(n)[0]} "
+                set_progress(pid, step, lo + (hi - lo) * done / max(len(all_names), 1),
+                             f"map layers {done}/{len(all_names)} · {_layer_meta(n)[0]} "
                              + (f"({len(g):,} features)" if n not in errors else "— unavailable"))
         except FutTimeout:
             for fut, n in futures.items():
@@ -874,7 +924,6 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
         # Do NOT join abandoned worker threads: a hung Overpass socket would
         # put the block back exactly where it was removed from.
         ex.shutdown(wait=False, cancel_futures=True)
-    return results, errors, detail
 
 
 def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
@@ -1716,6 +1765,55 @@ def update_project_scope(
                 "UPDATE artifacts SET status = 'stale' WHERE project_id = ?", (pid,)
             ).rowcount
     return {"project_id": pid, "scope_changed": scope_changed, "stale_steps": stale}
+
+
+def list_projects(db: Path | None = None, limit: int = 50) -> list[dict]:
+    """Every saved project, newest first, with enough to recognise it.
+
+    Work has always been persisted step by step, but the only way back in was to
+    type the 12-character project id — so closing the tab without writing it down
+    lost the project in practice, even though nothing was lost on disk. This is
+    what the Open dialog lists.
+    """
+    db = db or DB_PATH
+    with _conn(db) as conn:
+        rows = conn.execute("SELECT id, meta_json FROM projects").fetchall()
+        arts = conn.execute(
+            "SELECT project_id, step, status, data_json, confirmed_at"
+            " FROM artifacts ORDER BY project_id, step"
+        ).fetchall()
+
+    by_pid: dict[str, list] = {}
+    for a in arts:
+        by_pid.setdefault(a["project_id"], []).append(a)
+
+    out = []
+    for r in rows:
+        meta = json.loads(r["meta_json"])
+        steps = by_pid.get(r["id"], [])
+        confirmed = [s for s in steps if s["status"] == "confirmed"]
+        place = None
+        for s in steps:
+            if s["step"] == 1:
+                data = json.loads(s["data_json"])
+                art = data.get("human_final") or data.get("ai_draft") or {}
+                place = art.get("place_name")
+                break
+        touched = max(
+            [meta.get("created_at") or 0]
+            + [s["confirmed_at"] or 0 for s in steps]
+        )
+        out.append({
+            "project_id": r["id"],
+            "title": meta.get("title") or "Untitled assessment",
+            "place_name": place,
+            "created_at": meta.get("created_at"),
+            "last_activity": touched,
+            "confirmed_steps": len(confirmed),
+            "furthest_step": max([s["step"] for s in steps], default=0),
+        })
+    out.sort(key=lambda p: p["last_activity"] or 0, reverse=True)
+    return out[:limit]
 
 
 def get_project(pid: str, db: Path | None = None) -> dict:

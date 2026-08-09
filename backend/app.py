@@ -487,6 +487,17 @@ async def hcas_revise_factors(body: HcasReviseRequest):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.get("/hcas/projects", dependencies=_assess_deps)
+async def hcas_list_projects():
+    """Saved projects, newest first — what the Open dialog lists.
+
+    Work was always persisted step by step, but reopening required typing the
+    12-character project id, so closing the tab without noting it lost the
+    project in practice even though nothing was lost on disk.
+    """
+    return {"projects": hcas.list_projects()}
+
+
 @app.get("/hcas/projects/{pid}", dependencies=_assess_deps)
 async def hcas_get_project(pid: str):
     try:

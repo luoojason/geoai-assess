@@ -1186,6 +1186,7 @@ async function ensureProject(){
   // research ablation through the API, not through the wizard.
   S.pid=(await api("/hcas/projects",{method:"POST",
         body:JSON.stringify({...form, gate_mode:"gated"})})).project_id;
+  try{ localStorage.setItem("hcas_last_project", S.pid); }catch(_){}
 }
 async function refresh(keep){
   S.project=await api(`/hcas/projects/${S.pid}`);
@@ -1289,16 +1290,49 @@ function newProject(){
   S.redefining=false;
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd(); setMsg("");
 }
-function openProject(){
-  modal(`<h3>Open project</h3><p>Enter a project id (12 characters).</p>
-    <input id="m_pid" placeholder="e.g. a1b2c3d4e5f6" autofocus>
+/* Open dialog lists saved projects. Work was always persisted step by step, but
+   reopening used to require typing the 12-character id — so closing the tab
+   without noting it lost the project in practice, though nothing was lost on
+   disk. The id box stays as a fallback. */
+async function openProject(){
+  modal(`<h3>Open project</h3>
+    <p>Your work is saved automatically as you confirm each step. Pick up where you left off:</p>
+    <div id="m_list" style="max-height:260px;overflow:auto;margin-top:6px;">
+      <div class="subnote"><span class="spin"></span>Loading saved projects…</div></div>
+    <details style="margin-top:12px;"><summary style="cursor:pointer;font:400 var(--fs-sm) var(--sans);color:var(--faint);">Open by project id instead</summary>
+      <input id="m_pid" placeholder="e.g. a1b2c3d4e5f6" style="margin-top:8px;"></details>
     <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
       <button class="cbtn next" onclick="doOpen()">Open</button></div>`);
+  try{
+    const {projects} = await api("/hcas/projects");
+    const box = $("m_list"); if(!box) return;
+    if(!projects.length){ box.innerHTML = `<div class="subnote">No saved projects yet.</div>`; return; }
+    box.innerHTML = projects.map(p=>{
+      const when = p.last_activity ? new Date(p.last_activity*1000)
+        .toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
+      return `<div class="lrow" style="padding:8px 6px;cursor:pointer;" onclick="doOpen('${esc(p.project_id)}')">
+        <span class="lname"><b>${esc(p.title)}</b>
+          <span class="lmeta"><span class="lsrc">${esc(p.place_name||"not yet located")}</span>
+          <span class="lsrc">· ${p.confirmed_steps}/8 steps · ${esc(when)}</span></span></span></div>`;
+    }).join("");
+  }catch(e){ const b=$("m_list"); if(b) b.innerHTML = `<div class="subnote" style="color:var(--red)">${esc(e.message)}</div>`; }
 }
-async function doOpen(){
-  const id=$("m_pid").value.trim(); if(!id) return;
-  try{ S.pid=id; await refresh(); S.current=1; selectStep(1); closeModal(); }
-  catch(e){ S.pid=null; $("m_pid").insertAdjacentHTML("afterend",`<p style="color:var(--red)">${esc(e.message)}</p>`); }
+async function doOpen(id){
+  id = (typeof id === "string" && id) ? id : ($("m_pid")?.value||"").trim();
+  if(!id) return;
+  try{
+    S.pid=id; S.redefining=false; await refresh();
+    localStorage.setItem("hcas_last_project", id);
+    // Land on the furthest step that exists, not back at step 1.
+    const steps=(S.project?.steps||[]).map(s=>s.step);
+    selectStep(steps.length?Math.max(...steps):1);
+    closeModal();
+  }
+  catch(e){
+    S.pid=null;
+    const box=$("m_list")||$("m_pid");
+    if(box) box.insertAdjacentHTML("afterend",`<p style="color:var(--red)">${esc(e.message)}</p>`);
+  }
 }
 async function saveProject(){
   if(!S.pid){ setMsg("Nothing to save yet."); return; }
@@ -1396,6 +1430,30 @@ newProject();
 // Unit labels are needed by the step-1 view too (e.g. after Open project), not
 // only by the create form, so fetch the list once at start.
 loadUnits();
+
+/* Offer to pick up the last project. Closing the tab never lost work — every
+   confirmed step is on disk — but you had to know the 12-character id to get
+   back in, so in practice an accidental close did lose it. */
+(async function offerResume(){
+  let last;
+  try{ last = localStorage.getItem("hcas_last_project"); }catch(_){ return; }
+  if(!last) return;
+  try{
+    const p = await api(`/hcas/projects/${last}`);
+    const done = (p.steps||[]).filter(s=>s.status==="confirmed").length;
+    const bar = document.createElement("div");
+    bar.id = "resumebar";
+    bar.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px var(--sp-5);"
+      + "background:var(--teal-tint);border-bottom:1px solid var(--line);font-size:var(--fs-sm);";
+    bar.innerHTML = `<span>Pick up where you left off — <b>${esc(p.meta.title||"your last project")}</b>`
+      + ` (${done}/8 steps confirmed)</span>`
+      + `<button class="cbtn next" style="padding:4px 12px;" id="resumebtn">Resume</button>`
+      + `<button class="cbtn" style="padding:4px 10px;" id="dismissresume">Not now</button>`;
+    $("pbar").insertAdjacentElement("afterend", bar);
+    $("resumebtn").onclick = ()=>{ bar.remove(); doOpen(last); };
+    $("dismissresume").onclick = ()=>{ bar.remove(); try{ localStorage.removeItem("hcas_last_project"); }catch(_){} };
+  }catch(_){ /* project deleted or server restarted with a fresh db: stay quiet */ }
+})();
 </script>
 </body>
 </html>

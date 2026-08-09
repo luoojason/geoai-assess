@@ -14,8 +14,11 @@ import pytest
 from backend import hcas
 from backend.gis.profile import areal_unit_availability as _real_unit_availability
 from backend.gis.profile import county_profile as _real_county_profile
+from fastapi.testclient import TestClient
+
 from backend.tests.test_hcas import (  # shared canned fixtures
     _CANNED_USAGE,
+    FRANKLIN,
     _fake_gdf,
     _mock_llm_and_fetchers,  # noqa: F401 — autouse fixture, imported for reuse
     _project,
@@ -769,3 +772,84 @@ class TestPerUnitDegradesHonestly:
         assert [r["name"] for r in by_unit["rows"]] == ["Tract 1"]
         md = steps[7]["ai_draft"]["markdown"]
         assert "## Results by" in md and "| Tract 1 |" in md
+
+
+class TestAutoRetryAndResume:
+    """Two follow-ups: the machine retries a failed layer itself, and a closed
+    tab can be recovered without knowing the project id."""
+
+    def test_a_failed_layer_is_retried_and_its_error_cleared_on_success(
+            self, tmp_path, monkeypatch):
+        """Overpass queues rather than refuses, so a timed-out layer is usually
+        just unlucky — and retrying is nearly free because tiles that already
+        arrived are cached. The machine should try before the user has to."""
+        calls = {"n": 0}
+
+        def fetch_greenspace(bbox):
+            from backend.assess.netdiag import record_fetch_error
+            calls["n"] += 1
+            if calls["n"] == 1:
+                record_fetch_error("fetch_greenspace", OSError("timed out"))
+                return _fake_gdf()
+            return _fake_gdf(4)                      # the retry gets through
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"greenspace": fetch_greenspace})
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        draft = hcas.run_step(pid, 3, db=db)
+
+        assert calls["n"] == 2                       # retried once
+        (layer,) = draft["layers"]
+        assert layer["feature_count"] == 4
+        assert "error" not in layer                  # stale failure cleared
+
+    def test_retries_are_bounded_and_still_reported_honestly(self, tmp_path, monkeypatch):
+        calls = {"n": 0}
+
+        def fetch_greenspace(bbox):
+            from backend.assess.netdiag import record_fetch_error
+            calls["n"] += 1
+            record_fetch_error("fetch_greenspace", OSError("still down"))
+            return _fake_gdf()
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"greenspace": fetch_greenspace})
+        monkeypatch.setattr(hcas, "OSM_RETRY_PASSES", 2)
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        draft = hcas.run_step(pid, 3, db=db)
+
+        assert calls["n"] == 3                       # first pass + 2 retries, no more
+        assert "error" in draft["layers"][0]         # and the failure still surfaces
+
+    def test_saved_projects_are_listable_without_knowing_the_id(self, tmp_path):
+        """The work was always on disk; what was missing was a way back in."""
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=3)
+        (row,) = hcas.list_projects(db=db)
+        assert row["project_id"] == pid
+        assert row["title"] == "test"
+        assert "Franklin" in (row["place_name"] or "")
+        assert row["confirmed_steps"] == 3
+        assert row["last_activity"]
+
+    def test_projects_are_listed_newest_first(self, tmp_path):
+        db = tmp_path / "hcas.db"
+        older = hcas.create_project("older", *FRANKLIN, db=db)
+        newer = hcas.create_project("newer", *FRANKLIN, db=db)
+        hcas.confirm_step(newer, 1, hcas.run_step(newer, 1, db=db), db=db)
+        listed = hcas.list_projects(db=db)
+        assert listed[0]["title"] == "newer"
+        assert older in [p["project_id"] for p in listed]
+
+    def test_list_endpoint_is_served(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        from backend.app import app
+
+        client = TestClient(app)
+        hdrs = {"X-Requested-With": "geoai"}
+        assert client.post("/hcas/projects",
+                           json={"title": "listed", "state_fips": "39", "county_fips": "049"},
+                           headers=hdrs).status_code == 200
+        r = client.get("/hcas/projects", headers=hdrs)
+        assert r.status_code == 200
+        assert [p["title"] for p in r.json()["projects"]] == ["listed"]
