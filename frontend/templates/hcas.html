@@ -915,7 +915,7 @@ function viewData(a){
   const warn = errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> —
     the flagged layers are empty. Any metric that needs one is reported as <i>not measured</i> rather than as zero,
     and no recommendation is derived from it. ${esc(errs[0].error)}
-    <br>You can confirm and continue, or re-run this step once the connection is back.</div></div>`:"";
+    <br><b>Re-running is cheap</b> — every layer that already arrived is cached and returns instantly, so each attempt gets further. You can also confirm and continue with what you have.</div></div>`:"";
   const rows = (ho.measures||[]).map(m=>{
     const flag = m.county_pct>m.us_pct ? '<span class="above">above US</span>' : '<span class="below">below US</span>';
     return `<tr><td>${esc(m.label)}</td><td>${m.county_pct}% ${flag}</td><td>${m.us_pct}%</td></tr>`;

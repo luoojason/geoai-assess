@@ -856,8 +856,10 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
                 results[n] = _empty_layer()
                 errors[n] = (
                     f"gave up after {int(budget_s)}s — the OpenStreetMap server did "
-                    "not answer for this area in time. A whole county is a large "
-                    "query; try again, or use CHECK-NETWORK to test the connection."
+                    "not answer for this area in time. Those servers queue requests "
+                    "when busy, so this is usually waiting rather than a fault. "
+                    "Re-run the step: every piece that already arrived is cached and "
+                    "returns instantly, so each attempt gets further."
                 )
                 slot = next(d for d in detail if d["layer"] == n)
                 slot["status"] = "error"
