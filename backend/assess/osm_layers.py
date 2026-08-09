@@ -79,6 +79,29 @@ ox.settings.requests_timeout = (OSM_CONNECT_TIMEOUT_S, OSM_TIMEOUT_S)
 ox.settings.overpass_settings = f"[out:json][timeout:{OSM_TIMEOUT_S}]"
 ox.settings.http_user_agent = _USER_AGENT
 
+# osmnx's own rate limiter is OFF, and this is the single most important line in
+# the file. With it on (its default) osmnx calls /api/status before EVERY query
+# and sleeps for the pause it computes — but it parses that status by hard-coded
+# line index (`response_text.split("\\n")[4]`), and only overpass-api.de's format
+# puts the slot count there. Measured 2026-08-08:
+#
+#   overpass-api.de     -> pause 0.0 s   (line 4 is "2 slots available now.")
+#   overpass.kumi...    -> the pause probe itself BLOCKS (line 4 is the header of
+#                          the running-queries table), falling into a 5 s
+#                          recursion / 60 s default
+#
+# Per query. With two workers over ~36 tiles x 8 layers that is hours of the
+# CLIENT sleeping, indistinguishable from a server timeout — and it is exactly
+# what looked like a two-day Overpass outage. Raw requests to the same hosts in
+# the same minute answered in 0.8-15 s, which is how the contradiction showed up.
+# With this off, a transit fetch that had never completed returned in 6.1 s.
+#
+# Politeness is preserved where it actually counts: layer concurrency is capped
+# at 2 (OSM_LAYER_WORKERS in hcas.py), matching overpass-api.de's advertised
+# 2 slots, and tiles are small. A server that wants us to wait can still say so
+# with 429/504, which the rotation treats as a failure and moves on from.
+ox.settings.overpass_rate_limit = False
+
 
 # 12 s, not 6: measured on a flaky link 2026-08-07, overpass-api.de answered a
 # one-node probe in 8.0 s while the mirror timed out at 10.4 s — and ten minutes
