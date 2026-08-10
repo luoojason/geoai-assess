@@ -5,6 +5,31 @@ import geopandas as gpd
 import folium
 
 
+def _clip_to_study_area(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame):
+    """Only the part of each feature that lies inside the study area.
+
+    OSM layers are fetched by BOUNDING BOX, so a county-shaped study area comes
+    back with features in the bbox corners that are not in the county at all.
+    The metrics have always excluded them (they clip); the map drew them, so a
+    reader saw green blobs sitting outside the boundary and reasonably concluded
+    either the outline or the number was wrong. Reported from a live Adams
+    County run, 2026-08-09. The map must show the ground the metrics describe.
+    """
+    if gdf is None or gdf.empty:
+        return gdf
+    try:
+        sa = study_area.to_crs(gdf.crs).geometry.union_all()
+        out = gdf.copy()
+        out["geometry"] = out.geometry.intersection(sa)
+        # Empties first, THEN notna: geopandas warns about notna() on a series
+        # that still contains empty geometries. A feature wholly outside the
+        # study area clips to empty and is dropped, not drawn at zero size.
+        out = out[~out.geometry.is_empty]
+        return out[out.geometry.notna()]
+    except Exception:  # a drawing aid must never fail the step
+        return gdf
+
+
 def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
     """A lightweight locator map: the study-area (county) boundary drawn over
     CartoDB base tiles, fit to the boundary's extent. Shown from step 1 so the
@@ -34,9 +59,11 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
     folium.LayerControl(collapsed=False).add_to(m)
 
     if place_name:
+        # left:56px, not 10px: Leaflet's zoom buttons occupy the top-left corner,
+        # and a fixed-position div at 10px sits directly on top of them.
         label_html = f"""
         <div style="
-            position: fixed; top: 10px; left: 10px; z-index: 1000;
+            position: fixed; top: 10px; left: 56px; z-index: 1000;
             background: white; padding: 7px 12px; border-radius: 6px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 13px;
             font-family: sans-serif;
@@ -74,6 +101,15 @@ def render_assessment_map(
     study_4326 = study_area.to_crs("EPSG:4326")
     centroid = study_4326.geometry.union_all().centroid
     m = folium.Map(location=[centroid.y, centroid.x], zoom_start=13, tiles="CartoDB positron")
+
+    # Draw only what was measured (see _clip_to_study_area).
+    buildings = _clip_to_study_area(buildings, study_area)
+    greenspace = _clip_to_study_area(greenspace, study_area)
+    roads = _clip_to_study_area(roads, study_area)
+    parking = _clip_to_study_area(parking, study_area)
+    sidewalks = _clip_to_study_area(sidewalks, study_area)
+    transit_stops = _clip_to_study_area(transit_stops, study_area)
+    facilities = _clip_to_study_area(facilities, study_area)
 
     # Study area boundary
     fg_area = folium.FeatureGroup(name="Study Area", show=True)
@@ -178,17 +214,37 @@ def render_assessment_map(
         ).add_to(fg_f)
         fg_f.add_to(m)
 
-    folium.LayerControl(collapsed=False).add_to(m)
+    # Top-LEFT, stacking under the zoom buttons. Leaflet puts the layer control
+    # in the top-right corner by default, which is where the metrics panel below
+    # is pinned — the two overlapped and neither could be read (reported from a
+    # live run, 2026-08-09). Leaflet stacks controls within a corner, so sharing
+    # top-left with the zoom is safe; sharing a corner with a fixed-position div
+    # is not.
+    folium.LayerControl(collapsed=False, position="topleft").add_to(m)
 
-    # A metric that is absent or explicitly None was not measured (its source
-    # layer failed to fetch). Printing the old 0.0 default drew a confident
-    # "Greenspace Coverage: 0.0%" over a map of a county whose park data never
-    # arrived, so say so instead.
-    _MISSING = "not measured"
+    # Three different states, and they are NOT the same claim:
+    #   value present   -> measured
+    #   key present, None -> requested, but its source layer failed this run
+    #   key absent      -> never requested (step 2 did not select this factor)
+    # These last two both used to print "not measured", which reads as a failure
+    # for a metric nobody asked for — the question "why are there no buildings?"
+    # on the 2026-08-09 Adams County map, where buildings were simply not part of
+    # the confirmed factor list while five other layers really had failed.
+    _FAILED = "not measured"
+    _UNSELECTED = "not selected"
 
     def _fmt(key, spec, suffix=""):
+        if key not in metrics:
+            return _UNSELECTED
         v = metrics.get(key)
-        return _MISSING if v is None else f"{v:{spec}}{suffix}"
+        if v is None:
+            return _FAILED
+        try:
+            return f"{v:{spec}}{suffix}"
+        except (ValueError, TypeError):
+            # A count arriving as a float would raise on "d" and take the whole
+            # map with it. The map is an aid, not the record — print the value.
+            return f"{v}{suffix}"
 
     bldg_pct = _fmt("building_coverage_ratio", ".1%")
     green_pct = _fmt("greenspace_coverage_ratio", ".1%")
@@ -197,6 +253,24 @@ def render_assessment_map(
     ped_den = _fmt("pedestrian_density_km_per_km2", ".1f", " km/km&sup2;")
     transit_ct = _fmt("transit_stop_count", "d")
     facility_ct = _fmt("facility_count", "d")
+
+    # Spell out what the two absence words mean, but only when one is on screen —
+    # a reader should not have to guess whether a blank map means "this county
+    # has none of it", "the data source failed", or "nobody asked for it".
+    shown = (bldg_pct, green_pct, road_den, park_pct, ped_den, transit_ct, facility_ct)
+    keys = []
+    if _FAILED in shown:
+        keys.append("<b>not measured</b> = its data source could not be reached this "
+                    "run, so nothing is drawn and no finding was derived from it")
+    if _UNSELECTED in shown:
+        keys.append("<b>not selected</b> = this factor is not in the confirmed list "
+                    "for this assessment, so it was never fetched")
+    legend_html = (
+        '<div style="margin-top:8px;padding-top:7px;border-top:1px solid #e5e5e5;'
+        'font-size:11px;color:#555;max-width:250px;line-height:1.45;">'
+        + "<br>".join(keys) + "</div>"
+    ) if keys else ""
+
     panel_html = f"""
     <div style="
         position: fixed; top: 10px; right: 10px; z-index: 1000;
@@ -212,8 +286,17 @@ def render_assessment_map(
         Pedestrian Density: <b>{ped_den}</b><br>
         Transit Stops: <b>{transit_ct}</b><br>
         Facilities: <b>{facility_ct}</b>
+        {legend_html}
     </div>
     """
     m.get_root().html.add_child(folium.Element(panel_html))
+
+    # Fit to the study area, as the step-1 locator map already did. A fixed
+    # zoom_start=13 centred on the centroid opens a county-wide assessment
+    # showing a few km of its middle, so the analyst has to zoom out before the
+    # map means anything — and the study-area outline, the one thing every layer
+    # is relative to, is off screen.
+    west, south, east, north = study_4326.geometry.total_bounds
+    m.fit_bounds([[south, west], [north, east]])
 
     return m._repr_html_()
