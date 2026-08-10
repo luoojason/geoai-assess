@@ -508,8 +508,12 @@ function loadingBody(n){
        <div class="lmsg" id="plabel">${esc(RUN_HINTS[n]||"Working…")}</div>
        <div class="pchecklist" id="pdetail"></div></div>`;
 }
-function renderCanvasLoading(){
-  const n = S.current;
+/* `n` is the step being RUN, which is not necessarily the one on screen: the
+   caller awaits before painting, and the user can click another step in that
+   gap. Passing it explicitly keeps the loading body from being drawn under a
+   heading it does not belong to. */
+function renderCanvasLoading(n){
+  n = n || S.current;
   $("canvas").innerHTML = canvasHead(n) + loadingBody(n);
 }
 /* Live per-layer checklist (Prof. Shi 2026-07-27: show what is being fetched
@@ -535,15 +539,23 @@ function renderChecklist(detail){
 let PROG = null;
 const STEP_ETA = {1:6, 2:60, 3:180, 4:60, 5:3, 6:3, 7:240, 8:4};  // seconds, typical
 function mmss(s){ return Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"); }
-function startProgress(){
+function startProgress(step){
   stopProgress();
-  const step = S.current, t0 = Date.now();
+  step = step || S.current;   // the step being run — see renderCanvasLoading
+  const t0 = Date.now();
   PROG = setInterval(async ()=>{
     let b = {pct:0, label:""};
     try{ b = await api(`/hcas/projects/${S.pid}/steps/${step}/progress`); }catch(_){}
     const secs = (Date.now()-t0)/1000;
+    // Steps 3 and 7 report REAL per-layer progress; steps 2 and 4 are one
+    // blocking model call and can report none, which is what the time estimate
+    // is for. Blending the two let the estimate overtake the truth: measured
+    // 2026-08-09 on a slow Overpass, the bar sat at 90% while the backend had
+    // finished 1 of 6 layers — contradicting the checklist directly beneath it.
+    // Where there is a real number, use it alone.
+    const measured = Array.isArray(b.detail) && b.detail.length > 0;
     const est = Math.min(90, secs / (STEP_ETA[step]||10) * 90);
-    const pct = Math.min(97, Math.max(b.pct||0, est));
+    const pct = Math.min(97, measured ? (b.pct||0) : Math.max(b.pct||0, est));
     const f = $("pfill");
     if(!f) return;
     f.style.width = pct+"%";
@@ -1144,8 +1156,13 @@ async function downloadHtmlReport(btn){
     try{ const r=await fetch(`/hcas/projects/${S.pid}/map`,{headers:HDRS}); if(r.ok) mapHtml=await r.text(); }
     catch(_){}
   }
+  // & MUST be escaped before " — otherwise every literal ampersand in the map
+  // HTML (tile URLs carry them, and so does its attribution text) is read back
+  // as the start of an entity when the browser parses the srcdoc attribute, and
+  // the escaped quotes we just wrote get mangled along with it.
   const mapBlock = mapHtml
-    ? `<h2>Study area map</h2><iframe style="width:100%;height:520px;border:1px solid #ccc;border-radius:8px" srcdoc="${mapHtml.replace(/"/g,"&quot;")}"></iframe>`
+    ? `<h2>Study area map</h2><iframe style="width:100%;height:520px;border:1px solid #ccc;border-radius:8px" srcdoc="${
+        mapHtml.replace(/&/g,"&amp;").replace(/"/g,"&quot;")}"></iframe>`
     : "";
   const title = esc(S.project?.meta.title||"HCAS report");
   const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
@@ -1239,11 +1256,12 @@ async function runStep(){
   const step = S.current;
   S.running = step;
   setBusy(true); setMsg(""); statusRun("Running…");
+  let failed = null;
   try{
     if(step===1 && (!S.pid || S.redefining))
       await ensureProject();  // reads the definition form — before it is replaced
-    renderCanvasLoading();                     // now safe to swap the canvas for the loading state
-    startProgress();
+    if(S.current===step) renderCanvasLoading(step);  // only if that step is still on screen
+    startProgress(step);
     const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${step}/run`,{method:"POST"});
     S.running=null;                          // the run is over; re-renders show the result now
     upsertLocalDraft(step, ai_draft);        // survive a failed refresh so nav restores it
@@ -1253,8 +1271,19 @@ async function runStep(){
     }
     try{ await refresh(true); }
     catch(_){ renderRail(); renderBar(); renderCanvas(); renderCmd(); }
-  }catch(e){ setMsg(e.message); renderCanvas(); }
-  finally{ S.running=null; stopProgress(); setBusy(false); statusRun(""); }
+  }catch(e){ failed = e; }
+  finally{
+    // Order matters. The failure path used to re-render while S.running was
+    // still set, so renderCanvas drew the loading body again — and nothing
+    // re-rendered after the flag was cleared, leaving the spinner turning
+    // forever on a run that had already failed. And statusRun("") writes to the
+    // same element as setMsg, so clearing the "Running…" indicator here erased
+    // the only report of what went wrong. Clear the flag first, then render,
+    // and never clear the line on a failure.
+    S.running=null; stopProgress(); setBusy(false);
+    if(failed){ setMsg(failed.message); renderCanvas(); }
+    else statusRun("");
+  }
 }
 async function confirmStep(){
   const row=stepRow(S.current);
