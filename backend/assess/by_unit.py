@@ -41,7 +41,7 @@ def _subset(layer, geom):
 
 
 def tabulate_by_unit(units, layers, computers, metrics_wanted, crs="EPSG:5070",
-                     progress=None) -> dict:
+                     progress=None, clip_to=None) -> dict:
     """Compute `metrics_wanted` for every polygon in `units`.
 
     units     GeoDataFrame with GEOID/NAME and geometry (any CRS)
@@ -49,11 +49,20 @@ def tabulate_by_unit(units, layers, computers, metrics_wanted, crs="EPSG:5070",
     computers {metric_name: fn(layers_dict, study_area_gdf) -> {key: value}},
               passed in rather than imported so this module stays free of the
               step machine
+    clip_to   study-area GeoDataFrame. Units that extend beyond it are cut to the
+              part inside. Required for any unit that does NOT nest in the county
+              — a ZCTA can lie half outside, and the map layers were only fetched
+              for the county's bounding box, so the outside half contributes its
+              full area to the denominator and zero features to the numerator.
+              That reads as a real, low number rather than as missing data.
     Returns {"rows": [...], "truncated": bool, "unit_count": int}.
     """
     import geopandas as gpd
 
     units = units.to_crs(crs)
+    clip_geom = None
+    if clip_to is not None and len(clip_to):
+        clip_geom = clip_to.to_crs(crs).geometry.union_all()
     total = len(units)
     truncated = total > MAX_UNITS
     if truncated:
@@ -70,6 +79,12 @@ def tabulate_by_unit(units, layers, computers, metrics_wanted, crs="EPSG:5070",
         geom = u.geometry
         if geom is None or geom.is_empty:
             continue
+        if clip_geom is not None:
+            geom = geom.intersection(clip_geom)
+            # A unit that only touched the county envelope can clip away to
+            # nothing. It is not a zero-coverage area; it is not in the county.
+            if geom.is_empty:
+                continue
         cell = gpd.GeoDataFrame(geometry=[geom], crs=crs)
         near = {n: _subset(g, geom) for n, g in projected.items()}
         values: dict = {}

@@ -51,6 +51,37 @@ def _clipped_area(geoms: gpd.GeoSeries, study_area: gpd.GeoDataFrame) -> gpd.Geo
     return geoms.intersection(sa).area
 
 
+def _clipped_length(geoms: gpd.GeoSeries, study_area: gpd.GeoDataFrame) -> gpd.GeoSeries:
+    """Per-feature length (m) clipped to the study-area polygon.
+
+    The line counterpart of _clipped_area, and it was missing. Every density
+    below divides by the study area, so an unclipped length is a numerator from
+    one region over a denominator from another. Measured 2026-08-09 on a 2 km
+    road crossing a 2 km² county with 1 km of it running outside: the county
+    reported 1.5 km/km² against a true 1.0, and — because per-unit tabulation
+    hands each unit every feature that touches it, at full length — a 1 km²
+    tract holding 1 km of that road reported 3.0 km/km², three times the truth,
+    in every tract at once.
+    """
+    sa = study_area.geometry.union_all()
+    return geoms.intersection(sa).length
+
+
+def _inside(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """The features that actually fall in the study area.
+
+    Counts (transit stops, facilities) had no equivalent of the clipping the
+    area metrics do, so they counted every point in the fetched bounding box.
+    Per unit that was worse than approximate: each unit was handed every point
+    near it and counted all of them, so a tract with one bus stop could report
+    the county's four.
+    """
+    if gdf.empty:
+        return gdf
+    sa = study_area.geometry.union_all()
+    return gdf[gdf.geometry.intersects(sa)]
+
+
 def compute_building_coverage(
     buildings: gpd.GeoDataFrame,
     study_area: gpd.GeoDataFrame,
@@ -93,7 +124,10 @@ def compute_road_density(
     roads: gpd.GeoDataFrame,
     study_area: gpd.GeoDataFrame,
 ) -> float:
-    """Return total road length in km per study_area area in km²."""
+    """Return road length in km per study_area area in km².
+
+    Length is clipped to the study area, so the numerator and the denominator
+    describe the same ground (see _clipped_length)."""
     if roads.empty:
         return 0.0
     if roads.crs != study_area.crs:
@@ -101,7 +135,7 @@ def compute_road_density(
     area_km2 = study_area.geometry.area.sum() / 1_000_000
     if area_km2 == 0:
         return 0.0
-    length_km = roads.geometry.length.sum() / 1_000
+    length_km = _clipped_length(roads.geometry, study_area).sum() / 1_000
     return float(length_km / area_km2)
 
 
@@ -174,9 +208,10 @@ def compute_pedestrian_density(
     sidewalks: gpd.GeoDataFrame,
     study_area: gpd.GeoDataFrame,
 ) -> float:
-    """Return total sidewalk length in km per study_area area in km².
+    """Return sidewalk length in km per study_area area in km².
 
-    Returns 0.0 when sidewalks is empty. Handles CRS mismatch.
+    Length is clipped to the study area (see _clipped_length). Returns 0.0 when
+    sidewalks is empty. Handles CRS mismatch.
     """
     if sidewalks.empty:
         return 0.0
@@ -185,7 +220,7 @@ def compute_pedestrian_density(
     area_km2 = study_area.geometry.area.sum() / 1_000_000
     if area_km2 == 0:
         return 0.0
-    return float(sidewalks.geometry.length.sum() / 1_000 / area_km2)
+    return float(_clipped_length(sidewalks.geometry, study_area).sum() / 1_000 / area_km2)
 
 
 def compute_transit_access(
@@ -194,14 +229,15 @@ def compute_transit_access(
 ) -> dict[str, float | int]:
     """Return {'stop_count': int, 'stop_density_per_km2': float}.
 
-    Returns zeros when transit_stops is empty. Handles CRS mismatch.
+    Only stops inside the study area are counted (see _inside). Returns zeros
+    when transit_stops is empty. Handles CRS mismatch.
     """
     if transit_stops.empty:
         return {"stop_count": 0, "stop_density_per_km2": 0.0}
     if transit_stops.crs != study_area.crs:
         transit_stops = transit_stops.to_crs(study_area.crs)
     area_km2 = study_area.geometry.area.sum() / 1_000_000
-    count = len(transit_stops)
+    count = len(_inside(transit_stops, study_area))
     density = float(count / area_km2) if area_km2 > 0 else 0.0
     return {"stop_count": count, "stop_density_per_km2": density}
 
@@ -222,7 +258,10 @@ def compute_land_use_mix(
         return {"land_use_mix": 0.0, "land_use_categories": 0}
     if landuse.crs != study_area.crs:
         landuse = landuse.to_crs(study_area.crs)
-    areas = landuse.assign(_a=landuse.geometry.area).groupby("landuse")["_a"].sum()
+    # Clipped, like every other area here: the mix is a property of the study
+    # area, and unclipped polygons weight it by land outside the boundary.
+    areas = (landuse.assign(_a=_clipped_area(landuse.geometry, study_area))
+                    .groupby("landuse")["_a"].sum())
     areas = areas[areas > 0]
     k = len(areas)
     if k <= 1:
@@ -238,13 +277,14 @@ def compute_facility_access(
 ) -> dict[str, float | int]:
     """Return {'facility_count': int, 'facility_density_per_km2': float}.
 
-    Returns zeros when facilities is empty. Handles CRS mismatch.
+    Only facilities inside the study area are counted (see _inside). Returns
+    zeros when facilities is empty. Handles CRS mismatch.
     """
     if facilities.empty:
         return {"facility_count": 0, "facility_density_per_km2": 0.0}
     if facilities.crs != study_area.crs:
         facilities = facilities.to_crs(study_area.crs)
     area_km2 = study_area.geometry.area.sum() / 1_000_000
-    count = len(facilities)
+    count = len(_inside(facilities, study_area))
     density = float(count / area_km2) if area_km2 > 0 else 0.0
     return {"facility_count": count, "facility_density_per_km2": density}
