@@ -491,7 +491,12 @@ class TestStudyAreaProfileAndUnit:
         _walk(pid, db, through=2)
         draft = hcas.run_step(pid, 3, db=db)
         assert draft["areal_unit"]["available"] is True
-        assert "not implemented yet" in draft["areal_unit"]["note"]
+        # This note promises what step 7 delivers. It used to say per-unit
+        # tabulation was "not implemented yet" and this assertion pinned that —
+        # so the claim outlived the feature by three commits and the suite
+        # defended it. Assert the promise the app actually keeps.
+        assert "step 7" in draft["areal_unit"]["note"]
+        assert "not implemented" not in draft["areal_unit"]["note"]
 
     def test_unknown_areal_unit_is_rejected(self, tmp_path):
         with pytest.raises(ValueError):
