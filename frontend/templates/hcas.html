@@ -409,7 +409,7 @@ const RUN_HINTS = {
 const DEFAULT_SYS = "Focus on spatial analysis for community-health assessment. Be concise and specific.";
 
 const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
-            chats:{}, sys:DEFAULT_SYS, busy:false, redefining:false };
+            chats:{}, sys:DEFAULT_SYS, busy:false, redefining:false, running:null };
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -468,6 +468,8 @@ function selectStep(n){
   if(n<1||n>8) return;
   S.current = n;
   const row = stepRow(n);
+  // A step that is mid-run has no row yet; keep its working copy null rather
+  // than inheriting the previous step's, and let renderCanvas draw progress.
   S.edited = row ? JSON.parse(JSON.stringify(row.human_final ?? row.ai_draft)) : null;
   S.draftShownAt = row && row.status==="drafted" ? Date.now() : null;
   renderRail(); renderCanvas(); renderChat(); renderCmd();
@@ -499,14 +501,16 @@ function canvasHead(n){
     <div class="chd"><h2>${esc(STEP_TITLES[n-1])}</h2>${stepTag(n)}</div>
     <div class="csub">${esc(SUBTITLE[n-1])}</div></div>`;
 }
-function renderCanvasLoading(){
-  const n = S.current;
-  $("canvas").innerHTML = canvasHead(n) +
-    `<div class="loading"><div class="spin-lg"></div>
+function loadingBody(n){
+  return `<div class="loading"><div class="spin-lg"></div>
        <div class="pbar"><div class="fill" id="pfill"></div></div>
        <div class="ppct" id="ppct">0%</div>
        <div class="lmsg" id="plabel">${esc(RUN_HINTS[n]||"Working…")}</div>
        <div class="pchecklist" id="pdetail"></div></div>`;
+}
+function renderCanvasLoading(){
+  const n = S.current;
+  $("canvas").innerHTML = canvasHead(n) + loadingBody(n);
 }
 /* Live per-layer checklist (Prof. Shi 2026-07-27: show what is being fetched
    from where, rather than a bar that sits still then jumps). */
@@ -559,6 +563,10 @@ function renderCanvas(){
   let body;
   const defining = n===1 && (!S.pid || S.redefining);
   if(defining) body = defineForm();
+  // Coming back to a step that is still running shows its progress again. This
+  // covers a re-run too, where an artifact row already exists — you pressed Run,
+  // so you should see the run, not the previous result.
+  else if(S.running === n) body = loadingBody(n);
   else if(!row) body = `<div class="empty"><div class="big">Nothing here yet</div>
       <div>Run this step to generate it.</div></div>`;
   else body = ({1:viewIntake,2:viewFactors,3:viewData,4:viewSolution,5:viewDatabase,
@@ -1205,6 +1213,10 @@ async function ensureProject(){
 }
 async function refresh(keep){
   S.project=await api(`/hcas/projects/${S.pid}`);
+  // `keep` means a run just finished; if the user has since moved to a different
+  // step, adopt THAT step's artifact rather than leaving the finished one in the
+  // editor under the wrong heading.
+  if(keep && !S.edited){ const r=stepRow(S.current); if(r) S.edited=JSON.parse(JSON.stringify(r.human_final??r.ai_draft)); }
   if(!keep){ const row=stepRow(S.current); S.edited=row?JSON.parse(JSON.stringify(row.human_final??row.ai_draft)):null; }
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd();
 }
@@ -1220,20 +1232,29 @@ function upsertLocalDraft(n, draft){
 }
 async function runStep(){
   if(S.busy) return;
+  // Pin the step being run. Everything after the await used to read S.current,
+  // which the user can change by clicking another step mid-run — so a finished
+  // draft could be written onto whatever step they had navigated to, and then
+  // confirmed as that step's artifact.
+  const step = S.current;
+  S.running = step;
   setBusy(true); setMsg(""); statusRun("Running…");
   try{
-    if(S.current===1 && (!S.pid || S.redefining))
+    if(step===1 && (!S.pid || S.redefining))
       await ensureProject();  // reads the definition form — before it is replaced
     renderCanvasLoading();                     // now safe to swap the canvas for the loading state
     startProgress();
-    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${S.current}/run`,{method:"POST"});
-    S.edited=JSON.parse(JSON.stringify(ai_draft));
-    S.draftShownAt=Date.now();
-    upsertLocalDraft(S.current, ai_draft);   // survive a failed refresh so nav restores it
+    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${step}/run`,{method:"POST"});
+    S.running=null;                          // the run is over; re-renders show the result now
+    upsertLocalDraft(step, ai_draft);        // survive a failed refresh so nav restores it
+    if(S.current===step){                    // only touch the editor if it is still on screen
+      S.edited=JSON.parse(JSON.stringify(ai_draft));
+      S.draftShownAt=Date.now();
+    }
     try{ await refresh(true); }
     catch(_){ renderRail(); renderBar(); renderCanvas(); renderCmd(); }
   }catch(e){ setMsg(e.message); renderCanvas(); }
-  finally{ stopProgress(); setBusy(false); statusRun(""); }
+  finally{ S.running=null; stopProgress(); setBusy(false); statusRun(""); }
 }
 async function confirmStep(){
   const row=stepRow(S.current);
