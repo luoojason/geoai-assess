@@ -383,9 +383,19 @@ def _post_openrouter(payload: dict, api_key: str, timeout: int) -> dict:
 
 
 class _CliProcessError(RuntimeError):
-    """The `claude` process itself exited non-zero, as opposed to returning
-    something unparseable. Retried once, because it has been seen to be
-    transient; a schema failure is a different thing and is handled below."""
+    """The `claude` invocation failed as a PROCESS: a non-zero exit, or an exit
+    of 0 with an envelope that is not the documented JSON. Both are transient in
+    practice and both are retried once.
+
+    Distinct from the model returning a well-formed reply whose CONTENT is wrong
+    (bad JSON payload, or valid JSON that fails the schema) — that is answered by
+    telling the model what was wrong and asking again, which is useless here.
+    """
+
+
+class _CliReplyError(RuntimeError):
+    """The process was fine but the model's reply was not JSON. Retried by
+    correcting the model, not by re-running the command."""
 
 
 def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> tuple[dict, dict]:
@@ -420,8 +430,20 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
             raise _CliProcessError(
                 f"claude CLI failed (rc={proc.returncode}): {proc.stderr[-800:]} | {proc.stdout[-400:]}"
             )
-        out = json.loads(proc.stdout)
-        text = out["result"].strip()
+        # The ENVELOPE (the CLI's own --output-format json wrapper), not the
+        # model's answer. rc=0 with an unreadable envelope was seen live on
+        # 2026-08-09 while the identical command succeeded from a shell seconds
+        # later, so it is the same transient class as a non-zero exit — and it
+        # used to escape as a bare JSONDecodeError, which the route reported as a
+        # 400 "Expecting value: line 1 column 1", blaming the analyst.
+        try:
+            out = json.loads(proc.stdout)
+            text = out["result"].strip()
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+            raise _CliProcessError(
+                f"claude CLI exited 0 but returned an unreadable envelope "
+                f"({type(exc).__name__}); stdout began: {proc.stdout[:400]!r}"
+            ) from exc
         if text.startswith("```"):
             text = text.strip("`").removeprefix("json").strip()
         usage = {
@@ -429,24 +451,58 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
             for k in ("input_tokens", "output_tokens", "cache_read_input_tokens")
         }
         usage["via"] = "claude-cli"
-        return json.loads(text), usage
+        # The model's own answer. Wrong content, not a broken process — so this
+        # is fixed by telling the model, below, rather than by re-running.
+        try:
+            return json.loads(text), usage
+        except json.JSONDecodeError as exc:
+            raise _CliReplyError(f"the reply was not JSON ({exc}); it began: {text[:200]!r}")
 
+    def call_retrying(extra: str) -> tuple[dict, dict]:
+        """One logical call, with the process retried once underneath it."""
+        try:
+            return call(extra)
+        except _CliProcessError as exc:
+            logger.warning(f"claude CLI failed, retrying once: {exc}")
+            time.sleep(2)
+            try:
+                return call(extra)
+            except _CliProcessError as exc2:
+                logger.error(f"claude CLI failed twice: {exc2}")
+                raise RuntimeError(
+                    "The Claude CLI did not return a usable reply, twice in a row. "
+                    "Run the step again; if it keeps happening, check that `claude` "
+                    "works in a terminal — this terminal window has the raw output."
+                ) from exc2
+
+    # A reply the model got wrong is corrected by telling it what was wrong and
+    # asking once more — but only once, and whatever it does on that second turn
+    # must come back as plain language rather than as a parser's exception text.
     try:
-        parsed, usage = call("")
-    except _CliProcessError as exc:
-        # Transient process failure — retry once before failing the step. Seen
-        # in the 2026-08-09 sweep: rc=1 with model-config JSON on stdout, while
-        # the identical call succeeded seconds later.
-        logger.warning(f"claude CLI failed, retrying once: {exc}")
-        time.sleep(2)
-        parsed, usage = call("")
-    try:
-        jsonschema.validate(parsed, schema)
-    except jsonschema.ValidationError as exc:
-        parsed, usage = call(
-            f"\n\nYour previous attempt failed schema validation: {exc.message}. Fix it."
-        )
-        jsonschema.validate(parsed, schema)
+        try:
+            parsed, usage = call_retrying("")
+        except _CliReplyError as exc:
+            # The answer was not JSON at all (prose, or a half-written object).
+            # This used to raise straight out and fail the step, bypassing the
+            # correction path that a schema failure already had.
+            logger.warning(f"claude CLI reply unparseable, correcting: {exc}")
+            parsed, usage = call_retrying(
+                "\n\nYour previous attempt was not valid JSON. Return the JSON object "
+                "alone, with no prose before or after it."
+            )
+        try:
+            jsonschema.validate(parsed, schema)
+        except jsonschema.ValidationError as exc:
+            parsed, usage = call_retrying(
+                f"\n\nYour previous attempt failed schema validation: {exc.message}. Fix it."
+            )
+            jsonschema.validate(parsed, schema)
+    except (_CliReplyError, jsonschema.ValidationError) as exc:
+        logger.error(f"claude CLI returned an unusable reply twice: {exc}")
+        raise RuntimeError(
+            "The AI model's reply could not be used, twice in a row. Run the step "
+            "again — this is usually transient."
+        ) from exc
     return parsed, usage
 
 
@@ -1011,8 +1067,8 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     areal = areal_unit_availability(meta["state_fips"], meta["county_fips"], unit)
     if areal.get("available") and unit != "county":
         areal["note"] += (
-            " Metrics in this version are still computed over the whole study "
-            "area; per-unit tabulation is not implemented yet."
+            " The metrics are reported for the whole county AND tabulated for each "
+            "of these units at step 7."
         )
 
     artifact = {
@@ -1079,8 +1135,10 @@ _STEP4_SYSTEM = (
     "from the reference database below (by exact title). Be honest in assumptions and "
     "limitations: OSM completeness varies, FAR carries a levels_tagged_pct honesty flag, "
     "the metric registry measures the built environment, and any county health outcomes "
-    "provided are model-based county-wide estimates — coarser than the 5km study area, "
-    "so treat environment-outcome links as ecological association, not causation.\n\n"
+    "provided are model-based county-level estimates. Those outcomes cover the same "
+    "extent as the county study area, but they are modelled rather than measured and "
+    "carry no variation within the county — so they cannot be attributed to any part of "
+    "it, and environment-outcome links are ecological association, not causation.\n\n"
     "THEORIES (the knowledgebase):\n"
     + "\n".join(f"- {t['name']}: {t['summary']} [{t['source']}]" for t in KG_THEORIES)
     + "\n\nREFERENCE DATABASE:\n"
@@ -1126,8 +1184,8 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
     inventory = step3["layers"]
     outcome_rows = (step3.get("health_outcomes") or {}).get("measures") or []
     outcomes_block = (
-        "\n\nCounty health outcomes (CDC PLACES, age-adjusted prevalence — "
-        "county-wide, coarser than the study area):\n"
+        "\n\nCounty health outcomes (CDC PLACES, age-adjusted prevalence — modelled at "
+        "county level, with no variation within the county):\n"
         + "\n".join(
             f"- {m['label']}: {m['county_pct']}% (US: {m['us_pct']}%)"
             for m in outcome_rows
@@ -1219,7 +1277,8 @@ def _run_step_6(project: dict) -> tuple[dict, str | None, dict | None]:
     return {"kind": "workflow", "steps": steps}, None, None
 
 
-def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, describe) -> dict:
+def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, describe,
+                    study_area=None) -> dict:
     """Metrics per reporting unit, or a stated reason there are none.
 
     Always returns a dict carrying `unit` and either `rows` or `note`, so the
@@ -1251,6 +1310,13 @@ def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, de
                 "note": "None of the map layers could be fetched on this run, so there is nothing "
                         "to tabulate per unit."}
 
+    # Units that nest in the county (tract, block group, county subdivision) are
+    # already inside the fetched extent. A ZCTA is not: it is selected by overlap
+    # with the county's bounding box and can lie mostly outside, where no OSM data
+    # was fetched — so its full area would go into the denominator against features
+    # from only the part we covered. Clip those, and disclose it in the note.
+    nests = bool((AREAL_UNITS.get(unit) or {}).get("prefix"))
+
     set_progress(pid, 7, 86, f"computing metrics per {label.lower()}…")
     try:
         from backend.assess.by_unit import tabulate_by_unit
@@ -1266,7 +1332,8 @@ def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, de
             set_progress(pid, 7, 86 + 6 * done / max(total, 1),
                          f"{label} {done}/{total}…")
 
-        out = tabulate_by_unit(units, layers, computers, usable, progress=_tick)
+        out = tabulate_by_unit(units, layers, computers, usable, progress=_tick,
+                               clip_to=None if nests else study_area)
     except Exception as exc:
         logger.warning(f"per-unit tabulation failed: {exc!r}")
         return {"unit": unit, "label": label, "rows": [],
@@ -1280,16 +1347,27 @@ def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, de
         "metrics": usable,
         "source": "US Census TIGERweb boundaries; same metric code as the county figures",
     }
+    # Notes ACCUMULATE. Each caveat used to assign result["note"], so a run that
+    # was both truncated and missing a layer reported only the truncation — the
+    # omitted metrics vanished from the one place that would have disclosed them.
+    notes: list[str] = []
     skipped = [m for m in metrics_wanted if m not in usable]
     if skipped:
         result["omitted_metrics"] = skipped
-        result["note"] = ("Omitted from the per-unit table because their data source failed this "
-                          "run: " + ", ".join(skipped))
+        notes.append("Omitted from the per-unit table because their data source failed this "
+                     "run: " + ", ".join(skipped) + ".")
+    if not nests:
+        result["clipped_to_study_area"] = True
+        notes.append(f"{label}s cross county lines, so each row covers only the part of it "
+                     f"inside this county — the area outside was never surveyed for this "
+                     f"assessment and counting it would understate every ratio.")
     if out["truncated"]:
         result["truncated"] = True
         result["unit_count"] = out["unit_count"]
-        result["note"] = (f"This county has {out['unit_count']} {label.lower()}s; the first "
-                          f"{len(out['rows'])} are tabulated.")
+        notes.append(f"This county has {out['unit_count']} {label.lower()}s; the first "
+                     f"{len(out['rows'])} are tabulated.")
+    if notes:
+        result["note"] = " ".join(notes)
     return result
 
 
@@ -1349,7 +1427,8 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     # Only from layers that actually arrived: a per-tract table built from a
     # failed fetch would spread one silent zero across 28 rows.
     artifact["by_unit"] = _tabulate_units(
-        project, layers, computers, metrics_wanted, fetch_errors, describe
+        project, layers, computers, metrics_wanted, fetch_errors, describe,
+        study_area=study_area,
     )
     if layers and all(g.empty for g in layers.values()):
         artifact["map_note"] = (
@@ -1451,6 +1530,25 @@ def export_audit_csv(db: Path | None = None) -> str:
             data.get("model"), usage.get("input_tokens"), usage.get("output_tokens"),
         ])
     return out.getvalue()
+
+
+def _fmt_report_num(v: float) -> str:
+    """A number a planner can read at a glance, for the report's tables.
+
+    `:g` switches to scientific notation above six digits, so a tract's
+    greenspace printed as "2.28373e+07" — correct, and unreadable in a document
+    meant to be skimmed. Thousands separators for magnitudes, full precision for
+    the ratios (which are all well below 1).
+    """
+    try:
+        a = abs(float(v))
+    except (TypeError, ValueError):
+        return str(v)
+    if a >= 1000:
+        return f"{v:,.0f}"
+    if a >= 1:
+        return f"{v:,.2f}".rstrip("0").rstrip(".")
+    return f"{v:.6g}"
 
 
 def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
@@ -1590,7 +1688,9 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     if outcomes.get("measures"):
         lines += [
             "\n## Health outcomes (county-level)",
-            f"_{outcomes['source']}. County-wide estimates — coarser than the study area._\n",
+            f"_{outcomes['source']}. Model-based county-level estimates: they carry no "
+            "variation within the county, so they describe the study area as a whole "
+            "and cannot be attributed to any part of it._\n",
             "| Measure | County | US |",
             "|---|---|---|",
             *[
@@ -1623,10 +1723,11 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
             lines.append("| " + " | ".join([unit_label, "km²", *cols]) + " |")
             lines.append("|" + "---|" * (len(cols) + 2))
             for r in rows:
-                cells = [str(r.get("name", "")), f"{r.get('area_km2', 0):g}"]
+                cells = [str(r.get("name", "")), _fmt_report_num(r.get("area_km2", 0))]
                 for c in cols:
                     v = (r.get("metrics") or {}).get(c)
-                    cells.append("not measured" if v is None else f"{v:g}" if isinstance(v, float) else str(v))
+                    cells.append("not measured" if v is None
+                                 else _fmt_report_num(v) if isinstance(v, float) else str(v))
                 lines.append("| " + " | ".join(cells) + " |")
             lines.append(
                 f"\n_Computed with the same metric code as the county figures, clipped to each "
@@ -1636,6 +1737,20 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     lines += [
         "\n## Recommended interventions",
     ]
+    # The thresholds behind these findings are URBAN-NEIGHBOURHOOD standards
+    # (APA, EPA Smart Growth, FTA, ULI), and they were written for the 5 km disc
+    # this system originally assessed. Since 2026-07-27 the study area is an
+    # entire county, so a rural one trips several of them by construction — its
+    # road, sidewalk and transit densities are low because most of it is farmland,
+    # not because of a planning failure. Say so once, here, rather than let a
+    # column of "high severity" rows imply a verdict the thresholds cannot support.
+    if sa.get("kind") == "county":
+        lines.append(
+            "_These thresholds are urban-neighborhood planning standards, applied here "
+            "to an entire county. A largely rural county will fall below the density "
+            "thresholds because most of its land is not settled — read a finding below "
+            "as a prompt to look at the settled parts, not as a county-wide verdict._\n"
+        )
     for iv in results["interventions"]:
         lines += [
             f"### {iv['category']} ({iv['severity']})",
@@ -2144,6 +2259,28 @@ def revise_factors(current: dict, instruction: str, place: str = "the study area
     }
 
 
+def _clip_json(obj: Any, limit: int) -> str:
+    """JSON for the assistant's prompt, with any truncation ANNOUNCED.
+
+    A silently cut blob reads to the model as the complete artifact, so it
+    answers "that is not in the data" about a table that was merely chopped off.
+    That is exactly the failure Prof. Shi reported in 2026-08-07 #10 — the
+    assistant denying a figure it had never been shown — and step 7 reintroduces
+    the risk on its own: a per-unit table of up to 400 rows dwarfs this budget,
+    and `by_unit` sits near the end of the artifact, so it is the first thing to
+    be cut.
+    """
+    text = json.dumps(obj, indent=1)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + (
+        f"\n… [TRUNCATED: this artifact is {len(text):,} characters and only the first "
+        f"{limit:,} are shown here. If the analyst asks about something that would "
+        "appear further down — a per-unit table, a specific tract or ZIP area — say "
+        "the value is in the step's table on screen rather than that it does not exist.]"
+    )
+
+
 def chat(
     pid: str,
     step: int,
@@ -2168,12 +2305,9 @@ def chat(
     s1 = next((s for s in project["steps"] if s["step"] == 1), None)
     area = (s1.get("human_final") or s1.get("ai_draft")) if s1 else None
     if area and step != 1:
-        ctx.append(
-            "Study area and Census profile (JSON):\n"
-            + json.dumps(area, indent=1)[:2500]
-        )
+        ctx.append("Study area and Census profile (JSON):\n" + _clip_json(area, 2500))
     if artifact is not None:
-        ctx.append("Current step artifact (JSON):\n" + json.dumps(artifact, indent=1)[:6000])
+        ctx.append("Current step artifact (JSON):\n" + _clip_json(artifact, 6000))
     else:
         ctx.append("The current step has not been run yet (no artifact drafted).")
 

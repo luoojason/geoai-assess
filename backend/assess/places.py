@@ -1,8 +1,10 @@
 """CDC PLACES county-level health outcomes (BRFSS model-based estimates).
 
 One SODA query for the county, one for the US benchmark. Age-adjusted
-prevalence only. These are county-wide estimates — coarser than the 5km
-study area the OSM metrics describe; the report says so.
+prevalence only. These are modelled county-level estimates: since 2026-07-27 the
+study area is the whole county, so they match its extent — but they are modelled
+rather than measured and carry no variation within the county, so nothing here
+may be attributed to a tract or a neighborhood. The report says so.
 """
 
 # Defers annotation evaluation so the PEP 604 union in _query's return type

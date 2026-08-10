@@ -1,6 +1,7 @@
 """GeoAssess — FastAPI application entry point."""
 
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
@@ -513,10 +514,34 @@ async def hcas_run_step(pid: str, step: int):
         return {"ai_draft": await asyncio.to_thread(hcas.run_step, pid, step)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except json.JSONDecodeError as exc:
+        # A JSONDecodeError IS a ValueError, so without this it became a 400
+        # reading "Expecting value: line 1 column 1 (char 0)" — the AI provider
+        # returning something unparseable, reported as if the analyst had sent a
+        # bad request. Caught before ValueError, which is a real 400 here.
+        logger.error("step %s: unparseable AI response: %s", step, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The AI provider returned a reply that could not be read. "
+                   "Run the step again; if it keeps happening, the terminal "
+                   "window has the raw response.",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        # The chat route already had this guard, added because an unhandled
+        # exception reached Prof. Shi as a bare ASGI 500 with no message. The run
+        # route is the one that matters more and did not have it: a schema
+        # validation failure on the CLI path raises jsonschema.ValidationError,
+        # which is none of the types above.
+        logger.exception("step %s run failed with an unexpected error", step)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Step {step} hit an unexpected error ({type(exc).__name__}). "
+                   "The terminal window has the full traceback.",
+        )
 
 
 @app.get("/hcas/projects/{pid}/steps/{step}/progress", dependencies=_hcas_poll_deps)
