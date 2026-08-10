@@ -382,6 +382,12 @@ def _post_openrouter(payload: dict, api_key: str, timeout: int) -> dict:
     return out
 
 
+class _CliProcessError(RuntimeError):
+    """The `claude` process itself exited non-zero, as opposed to returning
+    something unparseable. Retried once, because it has been seen to be
+    transient; a schema failure is a different thing and is handled below."""
+
+
 def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> tuple[dict, dict]:
     """ponytail: subscription fallback — shells out to `claude -p` (Claude Code CLI,
     Max plan) when no API key is configured. The schema is not server-enforced on
@@ -411,7 +417,7 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
             encoding="utf-8", errors="replace",
         )
         if proc.returncode != 0:
-            raise RuntimeError(
+            raise _CliProcessError(
                 f"claude CLI failed (rc={proc.returncode}): {proc.stderr[-800:]} | {proc.stdout[-400:]}"
             )
         out = json.loads(proc.stdout)
@@ -425,7 +431,15 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
         usage["via"] = "claude-cli"
         return json.loads(text), usage
 
-    parsed, usage = call("")
+    try:
+        parsed, usage = call("")
+    except _CliProcessError as exc:
+        # Transient process failure — retry once before failing the step. Seen
+        # in the 2026-08-09 sweep: rc=1 with model-config JSON on stdout, while
+        # the identical call succeeded seconds later.
+        logger.warning(f"claude CLI failed, retrying once: {exc}")
+        time.sleep(2)
+        parsed, usage = call("")
     try:
         jsonschema.validate(parsed, schema)
     except jsonschema.ValidationError as exc:

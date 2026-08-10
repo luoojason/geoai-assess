@@ -632,6 +632,7 @@ async function resolveArea(){
   try{
     const r=await api("/hcas/resolve-area",{method:"POST",body:JSON.stringify({text})});
     if(r.resolved){
+      const wb=document.getElementById('f_where'); if(wb) wb.style.borderColor="";
       $("f_state").value=r.state_fips;
       await loadCounties();
       $("f_county").value=r.county_fips;
@@ -640,12 +641,26 @@ async function resolveArea(){
         + (r.caveat?` <span style="color:var(--amber)">${esc(r.caveat)}</span>`:"")
         + `<br>Not right? Change the State and County boxes below.`;
     }else{
-      hint.innerHTML=`<span style="color:var(--amber)">${esc(r.caveat||"Could not place that.")}</span>`
-        + ` Choose the state and county manually.`;
+      resolveFailed(hint, r.caveat||"Could not place that.");
     }
-  }catch(e){ hint.innerHTML=`<span style="color:var(--red)">${esc(e.message)}</span>`; }
+  }catch(e){ resolveFailed(hint, e.message); }
   finally{ btn.disabled=false; btn.textContent="Find with AI"; }
 }
+/* A failed lookup must never be quiet. The State/County boxes keep whatever they
+   were showing — which is a default nobody chose — so saying only "could not
+   place that" in small grey text let a run start against the wrong county. Seen
+   in the 2026-08-09 sweep: the resolver errored, the form stayed on Ohio/Adams,
+   and the project was created there. */
+function resolveFailed(hint, why){
+  hint.innerHTML = `<span style="color:var(--red);font-weight:600;">Could not place that location.</span>`
+    + ` ${esc(why)}<br><b>The State and County boxes below were not changed</b> —`
+    + ` they still show <b>${esc(document.getElementById('f_state')?.selectedOptions[0]?.textContent||'')},`
+    + ` ${esc(document.getElementById('f_county')?.selectedOptions[0]?.textContent||'')}</b>.`
+    + ` Set them yourself, or try describing the location differently.`;
+  const box = document.getElementById('f_where');
+  if(box) box.style.borderColor = "var(--red)";
+}
+
 async function loadUnits(sel){
   try{
     const {units, default:def} = await api("/hcas/areal-units");
