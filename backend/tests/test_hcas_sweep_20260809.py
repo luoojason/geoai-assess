@@ -441,6 +441,60 @@ class TestTheMapShowsTheGroundTheMetricsDescribe:
         assert "not selected" not in html and "not measured" not in html
 
 
+class TestAnInFlightStepIsVisibleToANewBrowser:
+    """A run continues on the server even if the browser goes away, but the
+    wizard tracked "is a step running" purely in browser state — so reopening a
+    project mid-run showed "Nothing here yet" over work that was actively
+    happening, and landed on the finished step BEFORE the running one (a step in
+    flight has no artifact row yet, so it is not in the project's step list).
+
+    The fix re-attaches by asking the progress endpoint. These pin the server
+    contract that depends on."""
+
+    def test_progress_reports_a_running_step_that_has_no_artifact_yet(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        from backend.app import app
+
+        client = TestClient(app)
+        hdrs = {"X-Requested-With": "geoai"}
+        pid = client.post("/hcas/projects",
+                          json={"title": "t", "state_fips": FRANKLIN[0],
+                                "county_fips": FRANKLIN[1]},
+                          headers=hdrs).json()["project_id"]
+        hcas.set_progress(pid, 3, 40, "fetching 6 map layers…")
+        hcas.set_progress_detail(pid, 3, [{"name": "Roads", "layer": "roads",
+                                           "source": "OSM", "status": "fetching"}])
+        try:
+            # No artifact row for step 3 — this is exactly the state a reopening
+            # browser sees, and the only way it can tell work is happening.
+            assert 3 not in {s["step"] for s in hcas.get_project(pid)["steps"]}
+            body = client.get(f"/hcas/projects/{pid}/steps/3/progress",
+                              headers=hdrs).json()
+            assert body["pct"] == 40
+            assert body["detail"] and body["detail"][0]["status"] == "fetching"
+        finally:
+            hcas.clear_progress(pid, 3)
+
+    def test_a_finished_run_reports_idle_so_the_watcher_stops(
+            self, tmp_path, monkeypatch):
+        """clear_progress at the end of a run is the completion signal the
+        re-attach loop waits for."""
+        monkeypatch.setattr(hcas, "DB_PATH", tmp_path / "hcas.db")
+        from backend.app import app
+
+        client = TestClient(app)
+        hdrs = {"X-Requested-With": "geoai"}
+        pid = client.post("/hcas/projects",
+                          json={"title": "t", "state_fips": FRANKLIN[0],
+                                "county_fips": FRANKLIN[1]},
+                          headers=hdrs).json()["project_id"]
+        hcas.set_progress(pid, 3, 40, "working")
+        hcas.clear_progress(pid, 3)
+        body = client.get(f"/hcas/projects/{pid}/steps/3/progress", headers=hdrs).json()
+        assert body == {"pct": 0, "label": ""}
+
+
 class TestEveryCaveatSurvives:
     """Each caveat used to assign result["note"], so the last one written won and
     the earlier ones vanished — a run that was both truncated and missing a layer
@@ -561,6 +615,25 @@ class TestTheSubscriptionPathSurvivesATransientCli:
         ])
         assert parsed == {"ok": True}
         assert n == 2
+
+    def test_the_cli_gets_a_turn_budget_not_a_single_turn(self):
+        """--max-turns 1 fails outright whenever the model spends its one turn on
+        anything but the final answer. That is what broke step 4 on the shipping
+        build twice in a row (2026-08-10), on a machine where `claude` worked
+        fine from a terminal — and it is the real cause of the rc=1 recorded as
+        "transient" the day before."""
+        assert int(hcas.CLI_MAX_TURNS) >= 4
+
+    def test_running_out_of_turns_is_named_not_blamed_on_the_install(self, monkeypatch):
+        envelope = json.dumps({"subtype": "error_max_turns",
+                               "errors": ["Reached maximum number of turns (1)"]})
+        with pytest.raises(RuntimeError) as exc:
+            self._run(monkeypatch, [self._proc(1, envelope)])
+        msg = str(exc.value)
+        assert "turn budget" in msg
+        assert "HCAS_CLI_MAX_TURNS" in msg
+        # the misleading advice from before: `claude` was working perfectly
+        assert "works in a terminal" not in msg
 
     def test_failing_twice_is_reported_in_plain_language(self, monkeypatch):
         with pytest.raises(RuntimeError) as exc:

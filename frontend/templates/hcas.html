@@ -1382,6 +1382,34 @@ async function openProject(){
     }).join("");
   }catch(e){ const b=$("m_list"); if(b) b.innerHTML = `<div class="subnote" style="color:var(--red)">${esc(e.message)}</div>`; }
 }
+/* A run keeps going on the SERVER even if the browser goes away — but S.running
+   is browser state, so reopening a project mid-run used to show "Nothing here
+   yet" over work that was actively happening, and the step only appeared once
+   you happened to reload again after it finished. Ask the server whether the
+   step is in flight and, if so, re-attach: draw its live progress and pick the
+   result up when it lands. */
+async function isStepRunning(n){
+  try{
+    const b = await api(`/hcas/projects/${S.pid}/steps/${n}/progress`);
+    return (b.pct||0) > 0 || (Array.isArray(b.detail) && b.detail.length > 0);
+  }catch(_){ return false; }
+}
+async function adoptRunningStep(n){
+  if(stepRow(n) || S.running !== null) return false;
+  if(!await isStepRunning(n)) return false;
+  S.running = n; setBusy(true); statusRun("Running…");
+  if(S.current === n) renderCanvasLoading(n);
+  startProgress(n);
+  // The server clears a step's progress when the run ends — that is the signal.
+  const watch = setInterval(async ()=>{
+    if(S.running !== n){ clearInterval(watch); return; }
+    if(await isStepRunning(n)) return;
+    clearInterval(watch);
+    S.running = null; stopProgress(); setBusy(false); statusRun("");
+    try{ await refresh(); }catch(_){ renderCanvas(); }
+  }, 2000);
+  return true;
+}
 async function doOpen(id){
   id = (typeof id === "string" && id) ? id : ($("m_pid")?.value||"").trim();
   if(!id) return;
@@ -1390,8 +1418,13 @@ async function doOpen(id){
     localStorage.setItem("hcas_last_project", id);
     // Land on the furthest step that exists, not back at step 1.
     const steps=(S.project?.steps||[]).map(s=>s.step);
-    selectStep(steps.length?Math.max(...steps):1);
+    const furthest = steps.length?Math.max(...steps):1;
+    // A step that is mid-run has no artifact row yet, so it is not in `steps` —
+    // land on IT rather than on the finished step before it.
+    const running = (furthest < 8 && await isStepRunning(furthest+1)) ? furthest+1 : furthest;
+    selectStep(running);
     closeModal();
+    adoptRunningStep(running);
   }
   catch(e){
     S.pid=null;

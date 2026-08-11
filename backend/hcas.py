@@ -382,6 +382,22 @@ def _post_openrouter(payload: dict, api_key: str, timeout: int) -> dict:
     return out
 
 
+# `claude -p` gets a turn BUDGET, not a single turn. With --max-turns 1 the run
+# fails outright whenever the model spends its one turn on anything but the final
+# answer, and it exits non-zero with terminal_reason "max_turns". That is what
+# actually broke step 4 on the shipping build (2026-08-10): twice in a row, on a
+# machine where `claude` was working perfectly from a terminal.
+#
+# It also corrects an earlier diagnosis. On 2026-08-09 the same rc=1 was recorded
+# as "a transient process failure" and answered with a retry, because the next
+# attempt happened to succeed — but it is not transient, it is a budget that is
+# too small for the larger prompts, and its likelihood rises with prompt size
+# (step 4 carries the theory set and the whole reference database). The retry is
+# kept, since the failure is probabilistic rather than certain, but the budget is
+# what makes it rare.
+CLI_MAX_TURNS = _os.environ.get("HCAS_CLI_MAX_TURNS", "6")
+
+
 class _CliProcessError(RuntimeError):
     """The `claude` invocation failed as a PROCESS: a non-zero exit, or an exit
     of 0 with an envelope that is not the documented JSON. Both are transient in
@@ -419,7 +435,7 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
         )
         proc = subprocess.run(
             ["claude", "-p", full, "--output-format", "json",
-             "--model", model, "--append-system-prompt", system, "--max-turns", "1"],
+             "--model", model, "--append-system-prompt", system, "--max-turns", CLI_MAX_TURNS],
             capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL,
             # text=True alone decodes with the locale codepage — cp1252 on a
             # Windows install — which turned every em dash and curly quote in a
@@ -427,8 +443,18 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
             encoding="utf-8", errors="replace",
         )
         if proc.returncode != 0:
+            # A non-zero exit still carries the JSON envelope, and its `subtype`
+            # names the cause. Naming it here is what turned "transient, retry
+            # it" into "the turn budget was too small" — see CLI_MAX_TURNS.
+            subtype = ""
+            try:
+                subtype = (json.loads(proc.stdout) or {}).get("subtype", "")
+            except Exception:
+                pass
             raise _CliProcessError(
-                f"claude CLI failed (rc={proc.returncode}): {proc.stderr[-800:]} | {proc.stdout[-400:]}"
+                f"claude CLI failed (rc={proc.returncode}"
+                + (f", {subtype}" if subtype else "")
+                + f"): {proc.stderr[-800:]} | {proc.stdout[-400:]}"
             )
         # The ENVELOPE (the CLI's own --output-format json wrapper), not the
         # model's answer. rc=0 with an unreadable envelope was seen live on
@@ -469,6 +495,15 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
                 return call(extra)
             except _CliProcessError as exc2:
                 logger.error(f"claude CLI failed twice: {exc2}")
+                # Don't send the analyst to check whether `claude` works: when
+                # this fired on 2026-08-10 it worked perfectly from a terminal,
+                # and the real cause was the turn budget. Name what happened.
+                if "max_turns" in str(exc2):
+                    raise RuntimeError(
+                        f"The AI model ran out of its {CLI_MAX_TURNS}-turn budget on "
+                        "this step, twice. Run the step again — or raise "
+                        "HCAS_CLI_MAX_TURNS if it keeps happening."
+                    ) from exc2
                 raise RuntimeError(
                     "The Claude CLI did not return a usable reply, twice in a row. "
                     "Run the step again; if it keeps happening, check that `claude` "
@@ -663,7 +698,7 @@ def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple
             raise RuntimeError(_NO_KEY_MSG)
         proc = subprocess.run(
             ["claude", "-p", prompt, "--output-format", "json", "--model", model,
-             "--append-system-prompt", system, "--max-turns", "1"],
+             "--append-system-prompt", system, "--max-turns", CLI_MAX_TURNS],
             capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
             encoding="utf-8", errors="replace",  # see _llm_via_claude_cli
         )
