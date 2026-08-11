@@ -1,0 +1,23 @@
+.git
+.gitignore
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+
+# Never bake secrets or a developer's local state into the image.
+.env
+*.env
+backend/hcas.db
+backend/*.db
+cache/
+server.log
+
+# Not part of the running app.
+backend/tests/
+README-local-run.md
+DEPLOY.md
+START-HCAS.bat
+START-HCAS.command
+CHECK-NETWORK.bat

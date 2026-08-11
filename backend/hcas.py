@@ -67,13 +67,17 @@ def clear_progress(pid: str, step: int) -> None:
 from backend.assess.references import REFERENCES
 from backend.gis.counties import build_place_name, centroid_of_county, lookup_county
 
-DB_PATH = Path(__file__).with_name("hcas.db")
+import os as _os
+
+# Beside the code, which is what a laptop install wants. A hosted container
+# replaces its image on every deploy, so there the database has to sit on a
+# mounted volume instead — HCAS_DB points at it. See DEPLOY.md.
+DB_PATH = Path(_os.environ.get("HCAS_DB") or Path(__file__).with_name("hcas.db"))
 
 # Wall-clock ceiling for the whole per-step layer fetch. Layers still running
 # when it expires are abandoned and reported as timed out, so a step ALWAYS
 # returns a confirmable artifact (see _fetch_layers). Raise it with
 # HCAS_LAYER_BUDGET_S for a very large county on a slow link.
-import os as _os
 
 LAYER_FETCH_BUDGET_S = float(_os.environ.get("HCAS_LAYER_BUDGET_S", "420"))
 

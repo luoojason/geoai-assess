@@ -86,6 +86,18 @@ async def favicon():
     return FileResponse("frontend/static/favicon.ico", media_type="image/x-icon")
 
 
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Liveness probe for a hosted deploy (see DEPLOY.md).
+
+    Deliberately dependency-free: a platform health check cannot send the
+    X-Requested-With header or Basic credentials, and locking it behind them
+    would make every deploy look dead. It reports nothing but that the process
+    is up — no project data, no configuration, no key state.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/states")
 async def get_states():
     return {"states": list_states()}

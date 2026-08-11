@@ -583,6 +583,15 @@ function renderCanvas(){
       <div>Run this step to generate it.</div></div>`;
   else body = ({1:viewIntake,2:viewFactors,3:viewData,4:viewSolution,5:viewDatabase,
                 6:viewWorkflow,7:viewExecution,8:viewReport}[n] || viewRaw)(a);
+  // A stale artifact was drafted from an earlier version of an upstream step.
+  // The confirm flow re-drafts it automatically, but you can also reach one by
+  // clicking the rail — and on screen it is indistinguishable from a current
+  // result. Say so, and offer the re-run rather than doing it behind your back
+  // (any edit you made to this step is still here until you press it).
+  if(row && row.status==="stale" && !defining && S.running!==n)
+    body = `<div class="warnbar" style="background:var(--amber-tint);color:var(--amber)">⚠<div>
+      <b>Out of date.</b> This was prepared before an earlier step changed, so it does not
+      reflect the current study area. Re-run this step to bring it up to date.</div></div>` + body;
   $("canvas").innerHTML = head + body + (row && !defining && n!==8 ? rawEditor() : "");
   if(defining) loadStates();
   if(n===2 && row) wireFactors();
@@ -1305,7 +1314,13 @@ async function confirmStep(){
     // Prof. Shi: confirming should flow straight into drafting the next step,
     // not land on an empty canvas waiting for a Run click. The human still
     // confirms every step, so the gate is intact.
-    autorun = !stepRow(S.current);
+    // A *stale* row counts as nothing to show. Confirming this step just
+    // invalidated every step below it (the backend flags them), so whatever is
+    // sitting on the next canvas was computed from a scope that no longer
+    // holds — landing on it is worse than landing on an empty page, because it
+    // looks like a current result. Draft it again instead.
+    const nextRow = stepRow(S.current);
+    autorun = !nextRow || nextRow.status === "stale";
   }catch(e){ setMsg("Confirm failed: "+e.message); }
   finally{ setBusy(false); }
   if(autorun) await runStep();
