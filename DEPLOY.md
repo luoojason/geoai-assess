@@ -143,11 +143,40 @@ In `fly.toml`, mount the volume and keep one machine:
   min_machines_running = 0
 ```
 
-### Render
+### Render — the path this repo is set up for
 
-New → Web Service → point at the repo → Runtime **Docker**. Add a disk mounted
-at `/data`, add the environment variables above, deploy. Health check path
-`/healthz`.
+`render.yaml` at the root is a Blueprint: it declares the service, the region,
+the 1 GB disk at `/data`, the health check, and which environment variables to
+prompt for. Nothing has to be configured by hand in the dashboard, and no secret
+is ever written into the repo (`sync: false` means Render asks you for the value
+and stores it encrypted).
+
+1. Sign in to render.com with GitHub and grant access to `geoai-assess`
+   (it is a private repo, so Render's GitHub app has to be authorised for it).
+2. **New → Blueprint**, pick the repo, pick the branch, **Apply**.
+3. Render prompts for `ANTHROPIC_API_KEY`, `DEMO_PASSWORD` and
+   `CENSUS_API_KEY`. Paste them there — they go straight from you to Render.
+4. First build takes a while (the geospatial wheel set is large). Subsequent
+   deploys reuse the layer cache.
+
+The blueprint asks for the **Standard** instance (2 GB). Starter is 512 MB and
+$18/mo cheaper, but a county-sized GeoDataFrame plus a Folium render is exactly
+what dies at 512 MB — and an out-of-memory kill mid-demo is the failure class
+that has already cost this project weeks. Change the plan in the dashboard once
+there is a real memory measurement.
+
+### One risk to watch on the first real run
+
+A step is a single HTTP request that can run for minutes, and a hosted platform
+puts a proxy in front of it. If that proxy has an idle-connection limit shorter
+than a big county's fetch, the browser sees the connection drop.
+
+The app now survives that: the run continues server-side, and when the request
+fails the wizard asks the server whether the step is still going and re-attaches
+to its live progress instead of reporting an error. That is tested, but the
+proxy limit itself is not — **watch the first county-sized step 3 and confirm the
+progress bar keeps moving.** If it drops and recovers, that is this mechanism
+working, not a bug.
 
 ### Checking it worked
 

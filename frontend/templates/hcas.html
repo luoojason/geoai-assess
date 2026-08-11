@@ -1298,6 +1298,12 @@ async function runStep(){
     if(failed){ setMsg(failed.message); renderCanvas(); }
     else statusRun("");
   }
+  // Hosted, there is a proxy between this browser and a request that can
+  // legitimately take minutes, and a cut connection looks exactly like a failed
+  // run from here — while on the server the step is still going. Ask before
+  // reporting: if it is still running, re-attach to it and keep the progress
+  // bar, instead of showing an error the user can do nothing with.
+  if(failed && await adoptRunningStep(step, true)) setMsg("");
 }
 async function confirmStep(){
   const row=stepRow(S.current);
@@ -1414,8 +1420,13 @@ async function isStepRunning(n){
     return (b.pct||0) > 0 || (Array.isArray(b.detail) && b.detail.length > 0);
   }catch(_){ return false; }
 }
-async function adoptRunningStep(n){
-  if(stepRow(n) || S.running !== null) return false;
+// `force` is for the re-attach after a dropped connection: that step may well
+// already have an artifact row from an earlier run (you pressed Re-run), and
+// the row is exactly what the open-a-project caller uses to decide there is
+// nothing in flight. The server is asked either way, so forcing only skips a
+// guard that would be wrong here, never invents a run.
+async function adoptRunningStep(n, force){
+  if((!force && stepRow(n)) || S.running !== null) return false;
   if(!await isStepRunning(n)) return false;
   S.running = n; setBusy(true); statusRun("Running…");
   if(S.current === n) renderCanvasLoading(n);
