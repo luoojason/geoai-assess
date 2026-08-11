@@ -49,6 +49,18 @@ def _fake_gdf(n=0):
 def _mock_llm_and_fetchers(monkeypatch):
     """No test in this file talks to the real API or Overpass; override as needed."""
     monkeypatch.setattr(hcas, "_llm_structured", _canned_llm)
+    # The Overpass freshness gate keeps PROCESS-WIDE state: once a probe finds a
+    # mirror serving old data, _next_endpoint skips it for the life of the
+    # process. That is right for a running app and poison for a test suite —
+    # rotation assertions started passing or failing depending on whether
+    # overpass.private.coffee happened to answer a live probe in an earlier test
+    # file (seen 2026-08-11: two tests failed on one clean-install run and
+    # passed on the next, with no code change). Start every test with the gate
+    # empty; a test that wants a stale endpoint patches it itself.
+    from backend.assess import osm_layers as _osm_layers
+
+    monkeypatch.setattr(_osm_layers, "_stale_endpoints", {})
+    monkeypatch.setattr(_osm_layers, "_stale_warning", None)
     all_layers = {layer for layers in hcas.METRIC_LAYERS.values() for layer in layers}
     monkeypatch.setattr(
         hcas,
