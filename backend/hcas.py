@@ -1114,6 +1114,15 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
         "layers": inventory,
         "health_outcomes": outcomes,
     }
+    # If the run was forced onto an out-of-date Overpass mirror, the features
+    # are old and every number derived from them is old with them. Carry that
+    # onto the artifact so it reaches the screen and the report — a stale
+    # measurement that looks current is worse than a missing one.
+    from backend.assess.osm_layers import stale_data_warning
+
+    stale = stale_data_warning()
+    if stale:
+        artifact["data_freshness_warning"] = stale
     if describe["kind"] == "disc":
         artifact["radius_m"] = 5000  # back-compat for the disc-fallback path
     return artifact, None, None
@@ -1768,6 +1777,12 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
                 f"\n_Computed with the same metric code as the county figures, clipped to each "
                 f"boundary. Source: {by_unit.get('source', 'US Census TIGERweb')}._"
             )
+
+    # Age of the map data, if the run was pushed onto an out-of-date mirror.
+    # Sits with Data quality, above the numbers it qualifies.
+    stale = (step3.get("data_freshness_warning") if isinstance(step3, dict) else None)
+    if stale:
+        lines.insert(1, f"\n> **Out-of-date map data.** {stale}\n")
 
     lines += [
         "\n## Recommended interventions",

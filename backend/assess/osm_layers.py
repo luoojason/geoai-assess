@@ -40,11 +40,20 @@ _OVERPASS_ENDPOINTS = [_OVERPASS_PRIMARY, _OVERPASS_MIRROR, _OVERPASS_MIRROR2]
 
 
 def _next_endpoint(used: str) -> str:
+    """The next endpoint to try, skipping any the probe found out of date.
+
+    Rotation on failure has to honour the freshness gate too: without this, the
+    probe could correctly refuse a stale mirror and the very first timeout would
+    hand the run straight back to it.
+    """
+    usable = [e for e in _OVERPASS_ENDPOINTS if e not in _stale_endpoints] or _OVERPASS_ENDPOINTS
     try:
-        i = _OVERPASS_ENDPOINTS.index(used)
+        i = usable.index(used)
     except ValueError:
-        return _OVERPASS_ENDPOINTS[0]
-    return _OVERPASS_ENDPOINTS[(i + 1) % len(_OVERPASS_ENDPOINTS)]
+        # `used` was itself excluded (or unknown) — start at the top of the
+        # usable list rather than rotating relative to a host we will not reuse.
+        return usable[0]
+    return usable[(i + 1) % len(usable)]
 _failover_lock = threading.Lock()
 _failed_over = False
 # --- request budget ---------------------------------------------------------
@@ -111,6 +120,56 @@ ox.settings.overpass_rate_limit = False
 _PROBE_TIMEOUT_S = float(os.environ.get("OSM_PROBE_TIMEOUT_S", "12"))
 _probed = False
 
+# --- data freshness ---------------------------------------------------------
+# An Overpass mirror can be fast and WRONG. Measured 2026-08-11 against
+# overpass.private.coffee, one of our own rotation entries:
+#
+#   attempt 1  504 after 37 s
+#   attempt 2  read timeout after 45 s
+#   attempt 3  200 in 1.6 s   -> timestamp_osm_base 2026-05-06  (three months old)
+#   attempt 4  504 after 36 s
+#
+# and an earlier call the same hour returned 2026-07-07, so it is a cluster
+# whose backends sit at different vintages. The probe below picks whichever
+# endpoint answers FASTEST, and a stale backend answers a one-node probe in
+# 1.6 s — so it wins the probe it should lose, and a run can take May features
+# for one tile and August features for the next inside a single layer, with
+# nothing on screen saying so.
+#
+# That is the same failure the osm.ch note above describes ("wrong server"
+# reading as "this county has no buildings"), on a host we had already adopted.
+# Every Overpass response carries osm3s.timestamp_osm_base, so the age is
+# knowable before we commit a run to a host — check it and refuse.
+#
+# Unknown age is ALLOWED: a response we cannot parse for a timestamp is not
+# evidence of staleness, and refusing on it would reject working endpoints on a
+# format change. Only a KNOWN-too-old endpoint is rejected.
+OSM_MAX_DATA_AGE_DAYS = float(os.environ.get("OSM_MAX_DATA_AGE_DAYS", "7"))
+
+# Endpoints the probe found reachable but out of date, and the age it saw.
+# Rotation skips these; the step surfaces the warning if we are forced onto one.
+_stale_endpoints: dict[str, float] = {}
+_stale_warning: str | None = None
+
+
+def _data_age_days(resp) -> float | None:
+    """Age of the endpoint's OSM data in days, or None if it cannot be read."""
+    from datetime import datetime, timezone
+
+    try:
+        ts = resp.json()["osm3s"]["timestamp_osm_base"]
+        base = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - base).total_seconds() / 86400.0
+    except Exception:
+        return None
+
+
+def stale_data_warning() -> str | None:
+    """Plain-language warning when the run is using out-of-date OSM data, else
+    None. The step runners put this on the artifact so a number computed from
+    three-month-old features can never look like a current measurement."""
+    return _stale_warning
+
 
 def _probe_overpass_once() -> None:
     """Settle on a working Overpass endpoint before the first real query.
@@ -126,7 +185,7 @@ def _probe_overpass_once() -> None:
     answered inside the probe window on a link where /interpreter still timed
     out, so the cheap endpoint proves nothing about the one that matters.
     """
-    global _probed, _failed_over
+    global _probed, _failed_over, _stale_warning
     with _failover_lock:
         if _probed:
             return
@@ -136,6 +195,14 @@ def _probe_overpass_once() -> None:
     start = ox.settings.overpass_url
     order = [start] + [e for e in _OVERPASS_ENDPOINTS if e != start]
     reasons = []
+    stale: list[tuple[str, float]] = []   # reachable, but serving old data
+
+    def _select(url: str) -> None:
+        global _failed_over
+        with _failover_lock:
+            ox.settings.overpass_url = url
+            _failed_over = url != _OVERPASS_PRIMARY
+
     for url in order:
         try:
             r = requests.post(
@@ -144,19 +211,45 @@ def _probe_overpass_once() -> None:
                 headers={"User-Agent": _USER_AGENT},
                 timeout=_PROBE_TIMEOUT_S,
             )
-            if r.status_code < 500:
-                if url != start:
-                    logger.warning(
-                        f"Overpass: starting on {url} — earlier endpoints unavailable "
-                        f"({'; '.join(reasons)})"
-                    )
-                with _failover_lock:
-                    ox.settings.overpass_url = url
-                    _failed_over = url != _OVERPASS_PRIMARY
-                return
-            reasons.append(f"{url} HTTP {r.status_code}")
+            if r.status_code >= 500:
+                reasons.append(f"{url} HTTP {r.status_code}")
+                continue
+            age = _data_age_days(r)
+            if age is not None and age > OSM_MAX_DATA_AGE_DAYS:
+                # Fast is not the same as correct. Skip it and keep looking.
+                _stale_endpoints[url] = age
+                stale.append((url, age))
+                reasons.append(f"{url} data {age:.0f} days old")
+                logger.warning(
+                    f"Overpass: skipping {url} — its data is {age:.0f} days old "
+                    f"(limit {OSM_MAX_DATA_AGE_DAYS:.0f}); a fast mirror serving stale "
+                    "features would look exactly like a current measurement"
+                )
+                continue
+            if url != start:
+                logger.warning(
+                    f"Overpass: starting on {url} — earlier endpoints unavailable "
+                    f"({'; '.join(reasons)})"
+                )
+            _select(url)
+            return
         except Exception as exc:
             reasons.append(f"{url} {type(exc).__name__}")
+
+    if stale:
+        # Nothing current answered, but something answered. Use the freshest of
+        # the stale hosts rather than returning nothing — and SAY SO, loudly
+        # enough that the number reaches the report wearing its age.
+        url, age = min(stale, key=lambda p: p[1])
+        _select(url)
+        _stale_warning = (
+            f"The only OpenStreetMap server reachable on this run ({url}) is serving "
+            f"data about {age:.0f} days old, so the map features below are that old. "
+            "Census boundaries and health outcomes are unaffected. Re-run later for "
+            "current data."
+        )
+        logger.error(f"Overpass: all current endpoints unreachable; {_stale_warning}")
+        return
     # Every endpoint failed its probe. Leave the URL where it started and let the
     # real call report the failure — an outage is the fetchers' story to tell,
     # with a plain-language reason, not something to swallow here.

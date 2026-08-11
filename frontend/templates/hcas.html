@@ -957,12 +957,17 @@ function viewData(a){
   }).join("");
   // Prof. Shi 2026-08-07 #5: report the outcome of the reporting-unit search,
   // whether or not the data exists.
+  // Stale-mirror warning: the layers arrived, but they are old. Amber, above
+  // everything, because every figure downstream inherits the age.
+  const stale = a.data_freshness_warning
+    ? `<div class="warnbar" style="background:var(--amber-tint);color:var(--amber)">⚠<div>
+        <b>These map features are out of date.</b> ${esc(a.data_freshness_warning)}</div></div>` : "";
   const au = a.areal_unit;
   const unitbar = au ? `<div class="warnbar" style="${au.available
       ? "background:var(--ok-tint);color:var(--ok)" : "background:var(--amber-tint);color:var(--amber)"}">
       ${au.available?"✓":"⚠"}<div><b>Reporting unit — ${esc(au.label||au.unit)}:</b> ${esc(au.note||"")}</div></div>` : "";
   // Prof. Shi's layout: layers left · map upper-right · tables beneath the map
-  return `${warn}${unitbar}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+  return `${stale}${warn}${unitbar}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
     <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Data layers</div>${list}
       <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">

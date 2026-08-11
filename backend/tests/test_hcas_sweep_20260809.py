@@ -495,6 +495,117 @@ class TestAnInFlightStepIsVisibleToANewBrowser:
         assert body == {"pct": 0, "label": ""}
 
 
+class TestAFastMirrorCannotServeStaleData:
+    """Measured 2026-08-11 against overpass.private.coffee, one of our own
+    rotation entries: 504, then a read timeout, then 200 in 1.6 s carrying
+    timestamp_osm_base 2026-05-06 — three months old — then 504 again. An
+    earlier call the same hour returned 2026-07-07, so its backends sit at
+    different vintages.
+
+    The probe picks whichever endpoint answers FASTEST, and a stale backend
+    answers a one-node probe in 1.6 s, so it wins the probe it should lose. A
+    run could then take May features for one tile and August for the next inside
+    one layer, and nothing on screen would say so."""
+
+    def _resp(self, code=200, ts=None):
+        from types import SimpleNamespace
+
+        body = {"osm3s": {"timestamp_osm_base": ts}} if ts else {}
+        return SimpleNamespace(status_code=code, json=lambda: body)
+
+    def _fresh_ts(self, days_ago):
+        from datetime import datetime, timedelta, timezone
+
+        return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+
+    def _probe_with(self, monkeypatch, responder):
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        old = ox.settings.overpass_url
+        ox.settings.overpass_url = ol._OVERPASS_PRIMARY
+        monkeypatch.setattr(ol, "_probed", False)
+        monkeypatch.setattr(ol, "_failed_over", False)
+        monkeypatch.setattr(ol, "_stale_endpoints", {})
+        monkeypatch.setattr(ol, "_stale_warning", None)
+        monkeypatch.setattr("requests.post", responder)
+        try:
+            ol._probe_overpass_once()
+            return ox.settings.overpass_url, ol.stale_data_warning(), dict(ol._stale_endpoints)
+        finally:
+            ox.settings.overpass_url = old
+            ol._probed = False
+
+    def test_a_stale_mirror_is_skipped_even_when_it_answers_fastest(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        def responder(url, data=None, headers=None, timeout=None):
+            if url.startswith(ol._OVERPASS_PRIMARY):
+                raise OSError("connect timeout")
+            if url.startswith(ol._OVERPASS_MIRROR):
+                return self._resp(200, self._fresh_ts(0.2))     # current
+            return self._resp(200, "2026-05-06T03:25:00Z")      # three months old
+        chosen, warning, stale = self._probe_with(monkeypatch, responder)
+        assert chosen == ol._OVERPASS_MIRROR, "picked the current endpoint"
+        assert warning is None
+        assert ol._OVERPASS_MIRROR2 not in stale or stale[ol._OVERPASS_MIRROR2] > 30
+
+    def test_an_endpoint_with_unreadable_age_is_still_allowed(self, monkeypatch):
+        """A response we cannot parse for a timestamp is not evidence of
+        staleness; refusing on it would reject working hosts on a format change.
+        Fail open on unknown, closed on known-too-old."""
+        from backend.assess import osm_layers as ol
+
+        chosen, warning, _ = self._probe_with(
+            monkeypatch, lambda url, **k: self._resp(200))   # no osm3s block
+        assert chosen == ol._OVERPASS_PRIMARY
+        assert warning is None
+
+    def test_when_only_a_stale_mirror_answers_it_is_used_AND_announced(self, monkeypatch):
+        """Old data beats no data — but it must arrive wearing its age."""
+        from backend.assess import osm_layers as ol
+
+        def responder(url, data=None, headers=None, timeout=None):
+            if url.startswith(ol._OVERPASS_MIRROR2):
+                return self._resp(200, "2026-05-06T03:25:00Z")
+            raise OSError("connect timeout")
+        chosen, warning, _ = self._probe_with(monkeypatch, responder)
+        assert chosen == ol._OVERPASS_MIRROR2
+        assert warning and "days old" in warning
+
+    def test_rotation_does_not_hand_the_run_back_to_a_stale_host(self, monkeypatch):
+        """Without this, the probe could correctly refuse a stale mirror and the
+        very first timeout would rotate straight back onto it."""
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_stale_endpoints", {ol._OVERPASS_MIRROR2: 96.0})
+        for _ in range(len(ol._OVERPASS_ENDPOINTS) + 1):
+            assert ol._next_endpoint(ol._OVERPASS_PRIMARY) != ol._OVERPASS_MIRROR2
+            assert ol._next_endpoint(ol._OVERPASS_MIRROR) != ol._OVERPASS_MIRROR2
+
+    def test_the_warning_reaches_the_step3_artifact(self, tmp_path, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_stale_warning",
+                            "serving data about 96 days old, so the map features "
+                            "below are that old.")
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=2)
+        draft = hcas.run_step(pid, 3, db=db)
+        assert "96 days old" in draft["data_freshness_warning"]
+
+    def test_and_the_report_carries_it_too(self, tmp_path, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_stale_warning", "serving data about 96 days old.")
+        pid, db = _project(tmp_path)
+        _walk(pid, db, through=8)
+        md = hcas.get_project(pid, db=db)["steps"][7]["ai_draft"]["markdown"]
+        assert "Out-of-date map data" in md and "96 days old" in md
+
+
 class TestEveryCaveatSurvives:
     """Each caveat used to assign result["note"], so the last one written won and
     the earlier ones vanished — a run that was both truncated and missing a layer
