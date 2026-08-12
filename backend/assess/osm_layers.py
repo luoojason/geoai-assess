@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import math
 import os
+import socket
 import threading
+import time
 
 import geopandas as gpd
 import osmnx as ox
@@ -37,6 +39,204 @@ _OVERPASS_MIRROR2 = "https://overpass.private.coffee/api"
 # adding it would turn "wrong server" into "this county has no buildings" —
 # silently, which is the exact failure class this file exists to prevent.
 _OVERPASS_ENDPOINTS = [_OVERPASS_PRIMARY, _OVERPASS_MIRROR, _OVERPASS_MIRROR2]
+
+# --- addresses that will not accept a connection ----------------------------
+# An endpoint hostname publishes several addresses and they are not equally
+# usable. Measured 2026-08-11, five TCP handshakes each:
+#
+#   overpass-api.de -> 162.55.144.139   connected 5/5 in 0.1 s
+#   overpass-api.de ->  65.109.112.52   timed out  5/5 at 8.0 s
+#
+# DNS round-robins between them, so about half of all connections hung for the
+# full connect timeout and were counted as network failures — whatever the
+# query, the tile size, or the server's load. That is the whole of the
+# "accepted a one-node probe seconds earlier, then refused to complete the TCP
+# handshake for the real query" report above: it was never the query, it was
+# which address that particular connection happened to get. The probe cannot
+# see it either, because the probe opens ONE connection and may well get the
+# good one. Pinned to the reachable address, the whole-county buildings query
+# answered in 1.8 s (51,461 elements) and landuse in 2.3 s (69,863); unpinned,
+# the same queries failed 14 times out of 14 minutes earlier.
+#
+# The verdict EXPIRES, and that matters more than it looks. Half an hour later
+# the same measurement put 162.55.144.139 in the dead column and 65.109.112.52
+# back in service — the roles had swapped. So this is not a permanently broken
+# route: it is a backend refusing connections from a client that has spent its
+# allowance, and it moves as load moves. A verdict cached for the life of the
+# process would eventually pin the app to an address that has since died, which
+# is the very failure this code exists to prevent.
+#
+# requests/urllib3 resolve through socket.getaddrinfo, so that is the only seam
+# that can steer them without reimplementing the transport.
+_ADDR_PROBE_TIMEOUT_S = float(os.environ.get("OSM_ADDR_PROBE_TIMEOUT_S", "3"))
+_ADDR_RECHECK_S = float(os.environ.get("OSM_ADDR_RECHECK_S", "300"))
+
+_dead_addresses: set[str] = set()
+_addr_checked: dict[str, float] = {}      # host -> when its verdict goes stale
+_addr_lock = threading.Lock()
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _overpass_hostnames() -> set[str]:
+    """Just the hostnames of our own endpoints — nothing else may be filtered."""
+    from urllib.parse import urlsplit
+
+    return {urlsplit(e).hostname for e in _OVERPASS_ENDPOINTS}
+
+
+def _address_is_reachable(ip: str, port: int = 443,
+                          timeout: float | None = None) -> bool:
+    """Can we complete a TCP handshake with this address? No TLS, no query — a
+    host that is merely busy still completes a handshake, so this separates
+    'unreachable' from 'slow', which is exactly the distinction the fetchers
+    could not make."""
+    s = socket.socket()
+    s.settimeout(_ADDR_PROBE_TIMEOUT_S if timeout is None else timeout)
+    try:
+        s.connect((ip, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
+
+
+def _unreachable_addresses(host: str, resolve=None, reachable=None) -> set[str]:
+    """Which of `host`'s addresses never answer. Injectable for tests.
+
+    Fails OPEN: if NOTHING answers the host is simply down, and dropping every
+    address would turn a transient outage into a permanent one for the life of
+    the process. Only a host with both working and dead addresses is filtered —
+    which is the case this exists for.
+    """
+    resolve = resolve or (lambda h: sorted({
+        info[4][0] for info in _real_getaddrinfo(h, 443, socket.AF_INET)
+    }))
+    reachable = reachable or _address_is_reachable
+    try:
+        addresses = list(resolve(host))
+    except Exception:
+        return set()
+    if len(addresses) < 2:
+        return set()          # nothing to choose between
+    dead = {ip for ip in addresses if not reachable(ip)}
+    return set() if len(dead) == len(addresses) else dead
+
+
+def _overpass_getaddrinfo(host, port, *args, **kwargs):
+    """socket.getaddrinfo, minus the addresses we have proven do not connect.
+
+    Process-wide, so it is inert for every hostname that is not one of ours,
+    and it fails open if the filter would leave nothing.
+    """
+    infos = _real_getaddrinfo(host, port, *args, **kwargs)
+    if host not in _overpass_hostnames() or not _dead_addresses:
+        return infos
+    usable = [i for i in infos if i[4][0] not in _dead_addresses]
+    return usable or infos
+
+
+def _resolved_addresses(host: str) -> set[str]:
+    try:
+        return {info[4][0] for info in _real_getaddrinfo(host, 443, socket.AF_INET)}
+    except Exception:
+        return set()
+
+
+def _learn_dead_addresses(host: str | None) -> None:
+    """Re-check a host's addresses whenever its verdict has gone stale.
+
+    Re-checking, rather than deciding once, is what keeps this from becoming the
+    bug it fixes: the refusing backend changes over time (measured 2026-08-11 —
+    see above), so a permanent verdict would eventually route every request to
+    an address that has since stopped answering.
+    """
+    if not host:
+        return
+    now = time.time()
+    with _addr_lock:
+        if _addr_checked.get(host, 0.0) > now:
+            return
+        _addr_checked[host] = now + _ADDR_RECHECK_S
+    dead = _unreachable_addresses(host)
+    with _addr_lock:
+        # Retire this host's previous verdict before recording the new one, so a
+        # backend that has started taking traffic again is not shut out forever.
+        _dead_addresses.difference_update(_resolved_addresses(host))
+        _dead_addresses.update(dead)
+    if dead:
+        logger.warning(
+            f"Overpass: {host} publishes {len(dead)} address(es) that do not accept "
+            f"a connection ({', '.join(sorted(dead))}) — skipping them. Left in the "
+            "rotation, each one costs a full connect timeout on roughly every other "
+            "request, which reads as a server outage rather than a dead route."
+        )
+    if socket.getaddrinfo is not _overpass_getaddrinfo:
+        socket.getaddrinfo = _overpass_getaddrinfo
+
+
+# --- step budget ------------------------------------------------------------
+# The step abandons a layer's future when its wall-clock budget expires, but
+# abandoning a future does not stop the thread behind it: hcas._fetch_pass
+# deliberately does not join its workers (a hung socket would put the block back
+# exactly where it was removed from). Nothing below used to know the budget
+# existed, so an abandoned layer kept quartering and retrying indefinitely.
+#
+# Measured 2026-08-11: a server reporting no run in progress was still holding
+# 14 Overpass sockets and opening more. Overpass allows ~2 slots per IP, so
+# those zombies consumed the app's entire allowance and every RE-run started
+# starved — which is why the stall reproduced every time and never got further,
+# defeating the "each attempt gets further" retry design.
+#
+# The deadline is thread-local: layers run concurrently and each worker sets its
+# own, so one layer's budget can never leak into another thread.
+_budget = threading.local()
+
+
+class BudgetExpired(RuntimeError):
+    """The step's wall-clock budget ran out while this fetch was still running.
+
+    Nothing is waiting for the result any more, so the work stops here rather
+    than continuing to spend the process's Overpass allowance on it.
+    """
+
+
+def set_deadline(when: float | None) -> None:
+    """Bound the current thread's fetching to a `time.time()` deadline."""
+    _budget.deadline = when
+
+
+def clear_deadline() -> None:
+    set_deadline(None)
+
+
+def current_deadline() -> float | None:
+    return getattr(_budget, "deadline", None)
+
+
+def _budget_expired() -> bool:
+    deadline = current_deadline()
+    return deadline is not None and time.time() >= deadline
+
+
+def _stop_if_expired() -> None:
+    if _budget_expired():
+        raise BudgetExpired(
+            "the step's time budget ran out before this area could be fetched"
+        )
+
+
+# --- known outage -----------------------------------------------------------
+# Set when the pre-flight probe finds that NO endpoint answers. The retry and
+# splitting machinery exists to get around ONE sick server; when every server is
+# refusing, all it can do is multiply the wait before reporting the same
+# failure. Process-wide, like the rest of the probe's findings, and re-decided
+# whenever the probe runs again.
+_outage_suspected_flag = False
+
+
+def _outage_suspected() -> bool:
+    return _outage_suspected_flag
 
 
 def _next_endpoint(used: str) -> str:
@@ -185,11 +385,12 @@ def _probe_overpass_once() -> None:
     answered inside the probe window on a link where /interpreter still timed
     out, so the cheap endpoint proves nothing about the one that matters.
     """
-    global _probed, _failed_over, _stale_warning
+    global _probed, _failed_over, _stale_warning, _outage_suspected_flag
     with _failover_lock:
         if _probed:
             return
         _probed = True
+    _outage_suspected_flag = False    # this probe decides it afresh
     import requests
 
     start = ox.settings.overpass_url
@@ -205,6 +406,14 @@ def _probe_overpass_once() -> None:
 
     for url in order:
         try:
+            # Before spending a probe on this host, drop any address of its that
+            # cannot complete a handshake. Otherwise the probe may land on the
+            # good address, adopt the host, and leave every real query playing
+            # coin-flips with a black hole (measured 2026-08-11 — see the dead
+            # A-record note above).
+            from urllib.parse import urlsplit
+
+            _learn_dead_addresses(urlsplit(url).hostname)
             r = requests.post(
                 f"{url}/interpreter",
                 data={"data": "[out:json][timeout:5];node(0,0,0.001,0.001);out 1;"},
@@ -253,7 +462,20 @@ def _probe_overpass_once() -> None:
     # Every endpoint failed its probe. Leave the URL where it started and let the
     # real call report the failure — an outage is the fetchers' story to tell,
     # with a plain-language reason, not something to swallow here.
-    logger.warning(f"Overpass: no endpoint answered a probe ({'; '.join(reasons)})")
+    #
+    # But do not let each layer re-discover the outage the expensive way. Each
+    # one would otherwise pay failover across every endpoint, then its retries,
+    # then quarter itself and repeat the lot — measured 2026-08-11 during a real
+    # outage, that spent the ENTIRE 900 s budget to return nothing, when the
+    # probe had already said so at 40 s. One attempt per layer is enough to
+    # report the failure honestly, and still enough to recover if the probe was
+    # wrong, since the attempt is a real query against a real endpoint.
+    _outage_suspected_flag = True
+    logger.warning(
+        f"Overpass: no endpoint answered a probe ({'; '.join(reasons)}) — "
+        "treating this as an outage and giving each layer a single attempt "
+        "rather than a full retry cascade"
+    )
 
 
 def _with_overpass_failover(call):
@@ -274,7 +496,19 @@ def _with_overpass_failover(call):
         return call()
     except InsufficientResponseError:
         raise
+    except BudgetExpired:
+        raise                     # not a network problem; nothing to fail over to
     except Exception as exc:
+        # The retry below costs another full connect+read timeout. If the step
+        # has already given up on this layer there is nobody to hand it to, and
+        # spending it holds an Overpass slot the NEXT attempt needs.
+        if _budget_expired():
+            raise
+        # Same reasoning when the probe already found every endpoint refusing:
+        # rotating to the next one is rotating to another host we just watched
+        # fail, at the cost of a second full timeout.
+        if _outage_suspected():
+            raise
         # Rotate to the next endpoint and give this call ONE more attempt there.
         # Rotating (rather than switching one way to a designated mirror) is what
         # keeps a run off whichever host is sick today: measured 2026-08-07 with
@@ -320,12 +554,56 @@ def _with_overpass_failover(call):
 # county pays for its density and nothing else does.
 OSM_TILE_MAX_DEPTH = int(os.environ.get("OSM_TILE_MAX_DEPTH", "3"))  # <= 64 tiles per start tile
 
-# Discovering "too big" by waiting for a timeout costs a full OSM_TIMEOUT_S per
-# layer before any splitting starts, and a county is reliably too big — so cut
-# the area to start tiles up front and only *adaptively* split from there. 0.2°
-# is ~16 x 22 km at 44°N; the quadrants that answered in 2-7 s during the
-# measurement above were 0.10 x 0.22°, so this is the same order.
-OSM_TILE_MAX_DEG = float(os.environ.get("OSM_TILE_MAX_DEG", "0.2"))
+# ...except a county is NOT reliably too big, and pre-splitting one was what
+# stopped step 3 finishing at all. Corrected 2026-08-11 against Adams County,
+# Ohio (39001), same layer, same hour, osmnx cache bypassed:
+#
+#   whole county, 1 request   :  19.3 s  ->  43,783 elements,  0/1 failed
+#   0.25 deg,     4 requests  :  88.0 s  ->  29,517 elements,  3/4 failed
+#   0.20 deg,     9 requests  : 168.5 s  ->  41,372 elements,  5/9 failed
+#
+# More requests was slower, LESS complete, and the failures included HTTP 429:
+# issuing them back to back made the app rate-limit itself. The reason is that
+# per-request cost barely depends on area — a query returning ZERO elements
+# still cost 12-19 s, and shrinking a tile to 1/36 of its area still cost
+# 19-57 s. That fixed floor means splitting can only ever add to the total.
+#
+# The 103 s whole-county failure recorded above was real, but it was measured
+# against overpass.kumi.systems — the host that 504'd on everything that day —
+# and generalised into policy for every layer on every endpoint. On a healthy
+# connection the whole-county query for the two heaviest layers answered in
+# 1.8 s (buildings, 51,461 elements) and 2.3 s (landuse, 69,863).
+#
+# So the cap is now a safety valve for areas far larger than a county, not the
+# normal path: 1.0° is ~85 x 111 km at 40°N, which puts essentially every US
+# county in a single request and still pre-splits something Alaska-sized. Areas
+# that genuinely are too big are found the way this function was always meant to
+# find them — adaptively, by failing once and quartering.
+OSM_TILE_MAX_DEG = float(os.environ.get("OSM_TILE_MAX_DEG", "1.0"))
+
+# Quartering is the answer to "too big for this server". It is the WRONG answer
+# to a refused connection, a 429 or a gateway 504 — there it turns one failed
+# request into four and makes the rate limiting worse. Every failure actually
+# measured on 2026-08-11 was of that second kind (whole-county queries answered
+# in 1.8-19.3 s, so almost nothing at county scale is genuinely oversized), so
+# retry the same area first and only split when retrying has not helped.
+OSM_TILE_RETRIES = int(os.environ.get("OSM_TILE_RETRIES", "1"))
+
+
+def _retry_pause(attempt: int) -> float:
+    """Backoff before retrying the same area. Bounded: a long sleep inside a
+    step that has a wall-clock budget is just a slower way to run out of it."""
+    return min(2.0 * (2 ** (attempt - 1)), 8.0)
+
+
+def _pause_for_retry(attempt: int) -> None:
+    """Sleep the backoff, but never past the step's deadline."""
+    pause = _retry_pause(attempt)
+    deadline = current_deadline()
+    if deadline is not None:
+        pause = min(pause, max(deadline - time.time(), 0.0))
+    if pause > 0:
+        time.sleep(pause)
 
 
 def _start_tiles(bbox):
@@ -344,11 +622,19 @@ def _start_tiles(bbox):
 
 
 def _tiled(bbox, call_one, depth: int = 0):
-    """Run `call_one(bbox)` and, if it fails, quarter the bbox and retry each
+    """Run `call_one(bbox)`; if it keeps failing, quarter the bbox and try each
     part. Returns a list of results (never raises unless depth is exhausted).
 
+    The area is RETRIED before it is split. Splitting answers "too big for this
+    server"; it is the wrong answer to a refused connection or a 429, where it
+    turns one failed request into four — and those were the failures actually
+    measured (2026-08-11), not oversized queries.
+
     InsufficientResponseError means the tile is genuinely empty — that is an
-    answer, not a failure, so it is not split further.
+    answer, not a failure, so it is neither retried nor split.
+
+    Every loop is deadline-aware: once the step's budget is gone this returns
+    what already arrived instead of continuing to fetch for nobody.
     """
     if depth == 0:
         _probe_overpass_once()
@@ -356,7 +642,15 @@ def _tiled(bbox, call_one, depth: int = 0):
         if len(tiles) > 1:
             logger.info(f"Overpass: {bbox} is large — starting at {len(tiles)} tiles")
             out, failures = [], []
-            for t in tiles:
+            for i, t in enumerate(tiles):
+                if _budget_expired():
+                    # Stop walking tiles nobody is waiting for, and keep what
+                    # already arrived — a partial layer beats a zombie thread.
+                    logger.warning(
+                        f"Overpass: budget expired after {i} of {len(tiles)} start "
+                        "tiles; abandoning the rest"
+                    )
+                    break
                 try:
                     out.extend(_tiled(t, call_one, depth))
                 except Exception as exc:
@@ -369,35 +663,59 @@ def _tiled(bbox, call_one, depth: int = 0):
                 )
             return out
     west, south, east, north = bbox
-    try:
-        return [call_one(bbox)]
-    except InsufficientResponseError:
-        return []
-    except Exception:
-        if depth >= OSM_TILE_MAX_DEPTH:
+    _stop_if_expired()
+    # Try this area a few times before deciding it is too big. A connection
+    # refused, a 429 or a gateway 504 says nothing about the size of the query,
+    # and splitting on one multiplies the requests that caused it.
+    last_failure = None
+    attempts = 1 if _outage_suspected() else 1 + OSM_TILE_RETRIES
+    for attempt in range(attempts):
+        if attempt:
+            _pause_for_retry(attempt)
+            _stop_if_expired()
+        try:
+            return [call_one(bbox)]
+        except InsufficientResponseError:
+            return []
+        except BudgetExpired:
             raise
-        mid_x, mid_y = (west + east) / 2, (south + north) / 2
-        quads = [
-            (west, south, mid_x, mid_y), (mid_x, south, east, mid_y),
-            (west, mid_y, mid_x, north), (mid_x, mid_y, east, north),
-        ]
-        logger.info(
-            f"Overpass query too large for {bbox} — splitting into 4 (depth {depth + 1})"
+        except Exception as exc:
+            last_failure = exc
+            _stop_if_expired()
+    if depth >= OSM_TILE_MAX_DEPTH:
+        raise last_failure
+    if _outage_suspected():
+        # Splitting asks "is this area too big?" of servers that are not
+        # answering anything. Report the outage instead of quadrupling it.
+        raise last_failure
+    # One failure fans out to as many as 85 sub-requests (1 + 4 + 16 + 64).
+    # If the budget died during the attempts, none of that may happen.
+    _stop_if_expired()
+    mid_x, mid_y = (west + east) / 2, (south + north) / 2
+    quads = [
+        (west, south, mid_x, mid_y), (mid_x, south, east, mid_y),
+        (west, mid_y, mid_x, north), (mid_x, mid_y, east, north),
+    ]
+    logger.info(
+        f"Overpass query still failing for {bbox} after {1 + OSM_TILE_RETRIES} "
+        f"attempts ({last_failure!r}) — splitting into 4 (depth {depth + 1})"
+    )
+    out = []
+    failures = []
+    for q in quads:
+        if _budget_expired():
+            break                 # keep what arrived; stop spending on this layer
+        try:
+            out.extend(_tiled(q, call_one, depth + 1))
+        except Exception as exc:  # keep the tiles that did answer
+            failures.append(exc)
+    if failures and not out:
+        raise failures[0]
+    if failures:
+        logger.warning(
+            f"{len(failures)} of 4 sub-tiles failed under {bbox}; keeping the rest"
         )
-        out = []
-        failures = []
-        for q in quads:
-            try:
-                out.extend(_tiled(q, call_one, depth + 1))
-            except Exception as exc:  # keep the tiles that did answer
-                failures.append(exc)
-        if failures and not out:
-            raise failures[0]
-        if failures:
-            logger.warning(
-                f"{len(failures)} of 4 sub-tiles failed under {bbox}; keeping the rest"
-            )
-        return out
+    return out
 
 
 def _combine(parts, crs_hint=None):

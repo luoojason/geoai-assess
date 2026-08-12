@@ -132,9 +132,15 @@ class TestOverpassTiling:
             return self._gdf([len(seen)])
 
         out = ol._tiled((0.0, 0.0, 0.125, 0.125), call_one)
-        assert len(seen) == 5                      # 1 failed attempt + 4 quadrants
-        assert seen[1:] == [(0.0, 0.0, 0.0625, 0.0625), (0.0625, 0.0, 0.125, 0.0625),
-                            (0.0, 0.0625, 0.0625, 0.125), (0.0625, 0.0625, 0.125, 0.125)]
+        # 2026-08-11: the failed area is now RETRIED before it is split, because
+        # a refused connection or a 429 says nothing about the size of a query
+        # and quartering one turns a single failed request into four.
+        retries = 1 + ol.OSM_TILE_RETRIES
+        assert len(seen) == retries + 4
+        assert seen[:retries] == [(0.0, 0.0, 0.125, 0.125)] * retries
+        assert seen[retries:] == [
+            (0.0, 0.0, 0.0625, 0.0625), (0.0625, 0.0, 0.125, 0.0625),
+            (0.0, 0.0625, 0.0625, 0.125), (0.0625, 0.0625, 0.125, 0.125)]
         assert len(ol._combine(out)) == 4
 
     def test_a_bbox_that_answers_is_never_split(self, monkeypatch):
@@ -189,7 +195,8 @@ class TestOverpassTiling:
 
         with pytest.raises(OSError):
             ol._tiled((0.0, 0.0, 0.125, 0.125), always_fail)
-        assert len(calls) == 5                     # 1 + 4, then it gives up
+        # 1 + 4 leaves as before, each now retried before it is given up on.
+        assert len(calls) == (1 + 4) * (1 + ol.OSM_TILE_RETRIES)
 
     def test_partial_tile_failure_keeps_the_data_that_did_arrive(self, monkeypatch):
         from backend.assess import osm_layers as ol
@@ -261,23 +268,45 @@ class TestOverpassTiling:
 
         assert ol._combine([]) is None
 
-    def test_a_county_sized_bbox_is_pre_split_without_a_doomed_first_try(self, monkeypatch):
-        """Waiting for the timeout to learn "too big" costs OSM_TIMEOUT_S per
-        layer, and a county is reliably too big — so the split happens up front.
+    def test_a_county_sized_bbox_is_tried_whole_first(self, monkeypatch):
+        """REVERSED 2026-08-11. This test used to assert the opposite — that a
+        county is "reliably too big" and must never be attempted whole.
+
+        That premise came from one measurement against overpass.kumi.systems,
+        the host that 504'd on everything that day, and it was generalised to
+        every layer on every endpoint. Re-measured on a healthy connection, the
+        whole-county query answered in 1.8 s for buildings (51,461 elements) and
+        2.3 s for landuse (69,863) — and pre-splitting was strictly worse:
+        19.3 s / 0 failures for one request against 168.5 s / 5 failures for the
+        nine the old default produced, on the same county and layer.
+
+        Pre-splitting a county is what stopped step 3 completing at all, so the
+        first attempt is now the whole area and splitting is the fallback.
         """
         from backend.assess import osm_layers as ol
 
         monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
         seen = []
-        grand_isle = (-73.390, 44.564, -73.191, 45.013)   # the real failing bbox
+        grand_isle = (-73.390, 44.564, -73.191, 45.013)
         ol._tiled(grand_isle, lambda b: (seen.append(b), self._gdf([len(seen)]))[1])
-        assert grand_isle not in seen                     # never attempted whole
-        assert len(seen) == 3                             # 0.199 x 0.449 deg -> 1 x 3
+        assert seen == [grand_isle], "a county still costs more than one request"
+
+    def test_an_area_far_larger_than_a_county_is_still_pre_split(self, monkeypatch):
+        """The cap did not go away, it moved. Something Alaska-sized is still
+        cut up before the first request rather than discovered by failing."""
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ol, "_probe_overpass_once", lambda: None)
+        seen = []
+        huge = (-120.0, 34.0, -116.0, 38.0)               # 4 x 4 degrees
+        ol._tiled(huge, lambda b: (seen.append(b), self._gdf([len(seen)]))[1])
+        assert huge not in seen
+        assert len(seen) == 16                            # 4 x 4 at the 1.0 deg cap
         # the tiles tile the original exactly
-        assert min(t[0] for t in seen) == grand_isle[0]
-        assert max(t[2] for t in seen) == grand_isle[2]
-        assert min(t[1] for t in seen) == grand_isle[1]
-        assert max(t[3] for t in seen) == grand_isle[3]
+        assert min(t[0] for t in seen) == huge[0]
+        assert max(t[2] for t in seen) == huge[2]
+        assert min(t[1] for t in seen) == huge[1]
+        assert max(t[3] for t in seen) == huge[3]
 
     def test_a_small_bbox_is_one_request(self):
         from backend.assess import osm_layers as ol

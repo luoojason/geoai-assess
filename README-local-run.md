@@ -23,8 +23,11 @@ Note for testing from mainland China: the Anthropic API and OpenStreetMap server
 
 | Variable | Default | What it does |
 |---|---|---|
-| `HCAS_LAYER_BUDGET_S` | `420` | Wall-clock ceiling for a step's map-layer fetch. Layers still running when it expires are reported as timed out, so steps 3 and 7 always finish and can be confirmed. Raise it for a very large county on a slow link. |
+| `HCAS_LAYER_BUDGET_S` | `900` | Wall-clock ceiling for a step's map-layer fetch. Layers still running when it expires are abandoned and reported as timed out, so steps 3 and 7 always finish and can be confirmed. A healthy run finishes in ~2 minutes and never approaches this; the ceiling exists to absorb a slow Overpass without dropping layers mid-request. |
 | `OSM_TIMEOUT_S` | `90` | Per-request timeout for OpenStreetMap/Overpass queries (socket and server-side alike). |
+| `OSM_TILE_MAX_DEG` | `1.0` | Largest area sent to Overpass in one request, in degrees. At this value essentially every US county is fetched in a **single** request; anything larger is cut up first, and an area that still fails is split adaptively. Lower it only if your endpoint rejects large queries — measured 2026-08-11, splitting one county into 9 requests was ~9× slower *and* returned less data, because per-request cost barely depends on the area covered. |
+| `OSM_TILE_RETRIES` | `1` | Extra attempts at the same area before falling back to splitting it. Splitting is the cure for "too big"; a refused connection or an HTTP 429 needs a retry instead, and splitting one of those turns a single failed request into four. |
+| `OSM_ADDR_RECHECK_S` | `300` | How long a "this address will not accept a connection" verdict is trusted before the endpoint's addresses are re-tested. Endpoints publish several addresses and which one refuses us changes over time, so the verdict has to expire. |
 
 ## Setup
 

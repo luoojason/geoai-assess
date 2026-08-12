@@ -78,8 +78,16 @@ DB_PATH = Path(_os.environ.get("HCAS_DB") or Path(__file__).with_name("hcas.db")
 # when it expires are abandoned and reported as timed out, so a step ALWAYS
 # returns a confirmable artifact (see _fetch_layers). Raise it with
 # HCAS_LAYER_BUDGET_S for a very large county on a slow link.
-
-LAYER_FETCH_BUDGET_S = float(_os.environ.get("HCAS_LAYER_BUDGET_S", "420"))
+#
+# 900, not 420, since 2026-08-11. A healthy run does not go near either number —
+# with one request per layer the whole fetch is ~2 min — but 420 was set when a
+# layer meant nine tiled requests, and it is not enough to absorb even one round
+# of Overpass being slow. Measured that day on a degraded network: 420 s got 3
+# of 8 layers, and the five that were dropped were mid-request, not idle. The
+# cost of the higher ceiling is bounded and visible: layers land on the
+# checklist one at a time as they arrive, so a slow run shows real progress
+# instead of a frozen bar, and nothing is left running when it does expire.
+LAYER_FETCH_BUDGET_S = float(_os.environ.get("HCAS_LAYER_BUDGET_S", "900"))
 
 # Extra passes over the layers that failed, inside the same budget. Cheap,
 # because osmnx caches every tile that already arrived.
@@ -962,6 +970,32 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
     return results, errors, detail
 
 
+def _bounded(fetch, deadline: float):
+    """Run a layer fetch with the step's deadline visible inside the fetcher.
+
+    Abandoning a future does not stop the thread behind it — this pool is shut
+    down with `wait=False` on purpose — so without this the fetchers had no way
+    to know the step had given up on them. Measured 2026-08-11: a server
+    reporting no run in progress was still holding 14 Overpass sockets and
+    opening more, hours after the step timed out. Overpass allows ~2 slots per
+    IP, so those zombies consumed the whole allowance and every RE-run started
+    starved, which is exactly why re-running never got further.
+
+    The deadline is thread-local, and cleared on the way out so a pooled worker
+    never carries one step's expiry into the next step's fetch.
+    """
+    from backend.assess import osm_layers
+
+    def run(bbox):
+        osm_layers.set_deadline(deadline)
+        try:
+            return fetch(bbox)
+        finally:
+            osm_layers.clear_deadline()
+
+    return run
+
+
 def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                 results, errors, all_names, pct_span, started) -> None:
     """One concurrent pass over `names`, updating results/errors/detail in place."""
@@ -977,7 +1011,8 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
     # fighting it. OSM_LAYER_WORKERS raises it for a self-hosted endpoint.
     ex = ThreadPoolExecutor(max_workers=int(_os.environ.get("OSM_LAYER_WORKERS", "2")))
     try:
-        futures = {ex.submit(fetchers[n], tuple(bbox)): n for n in names}
+        futures = {ex.submit(_bounded(fetchers[n], deadline), tuple(bbox)): n
+                   for n in names}
         done = len([n for n in all_names if n in results and n not in errors])
         try:
             for fut in as_completed(futures, timeout=budget_s):
