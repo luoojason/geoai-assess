@@ -536,16 +536,38 @@ function renderChecklist(detail){
 /* Live progress while a step runs. Steps 3 & 7 report real per-layer numbers
    from the backend; the LLM steps (2 & 4) can't, so a time-based estimate
    keeps the bar honest-ish and moving. Capped at 97% until the run returns. */
-let PROG = null;
+let PROG = null, CLOCK = null;
 const STEP_ETA = {1:6, 2:60, 3:180, 4:60, 5:3, 6:3, 7:240, 8:4};  // seconds, typical
 function mmss(s){ return Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"); }
 function startProgress(step){
   stopProgress();
   step = step || S.current;   // the step being run — see renderCanvasLoading
   const t0 = Date.now();
+  let pct = 0;
+
+  // The clock ticks on its own timer and never awaits anything. It used to be
+  // written at the END of the poll callback, after `await api(...)`, so the
+  // displayed time advanced only when a poll came back: it froze while a poll
+  // was slow and then jumped by however long that poll took. Worse, setInterval
+  // does not wait for an async callback, so polls stacked — and an earlier one
+  // resolving late would repaint an OLDER elapsed value, stepping the clock
+  // backwards. Both are invisible against localhost and obvious over the
+  // internet, which is how the hosted deploy surfaced it (2026-08-12).
+  const paint = ()=>{
+    const el = $("ppct");
+    if(el) el.textContent = Math.round(pct)+"%  ·  "+mmss((Date.now()-t0)/1000)+" elapsed";
+  };
+  paint();
+  CLOCK = setInterval(paint, 250);
+
+  let inFlight = false;
   PROG = setInterval(async ()=>{
+    if(inFlight) return;   // one poll at a time; a slow one must not queue more
+    inFlight = true;
     let b = {pct:0, label:""};
-    try{ b = await api(`/hcas/projects/${S.pid}/steps/${step}/progress`); }catch(_){}
+    try{ b = await api(`/hcas/projects/${S.pid}/steps/${step}/progress`); }
+    catch(_){}
+    finally{ inFlight = false; }
     const secs = (Date.now()-t0)/1000;
     // Steps 3 and 7 report REAL per-layer progress; steps 2 and 4 are one
     // blocking model call and can report none, which is what the time estimate
@@ -555,20 +577,23 @@ function startProgress(step){
     // Where there is a real number, use it alone.
     const measured = Array.isArray(b.detail) && b.detail.length > 0;
     const est = Math.min(90, secs / (STEP_ETA[step]||10) * 90);
-    const pct = Math.min(97, measured ? (b.pct||0) : Math.max(b.pct||0, est));
-    const f = $("pfill");
-    if(!f) return;
-    f.style.width = pct+"%";
+    pct = Math.min(97, measured ? (b.pct||0) : Math.max(b.pct||0, est));
     // Elapsed time next to the percentage: a big county's OpenStreetMap query
     // legitimately takes minutes, and a bar alone cannot tell "working" from
     // "stuck" (Prof. Shi 2026-08-07). The step also stops itself — see
     // HCAS_LAYER_BUDGET_S — so this clock always ends.
-    $("ppct").textContent = Math.round(pct)+"%  ·  "+mmss(secs)+" elapsed";
+    paint();
+    const f = $("pfill");
+    if(!f) return;
+    f.style.width = pct+"%";
     if(b.label) $("plabel").textContent = b.label;
     if(b.detail) renderChecklist(b.detail);
   }, 700);
 }
-function stopProgress(){ if(PROG){ clearInterval(PROG); PROG = null; } }
+function stopProgress(){
+  if(PROG){ clearInterval(PROG); PROG = null; }
+  if(CLOCK){ clearInterval(CLOCK); CLOCK = null; }
+}
 function renderCanvas(){
   const n = S.current, row = stepRow(n), a = S.edited;
   const head = canvasHead(n);
