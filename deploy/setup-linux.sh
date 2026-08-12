@@ -53,6 +53,10 @@ if [ "$ID" = "ol" ]; then
 fi
 
 # --- 1. System packages -----------------------------------------------------
+# `python3` is NOT a safe default. Oracle Linux 9 ships 3.9 under that name,
+# and numpy/pandas/geopandas stopped publishing 3.9 wheels — pip would either
+# fail outright or silently resolve to years-old versions. Ask for a specific
+# interpreter and then verify what we actually got.
 say "Installing system packages"
 if [ "$PKG" = apt ]; then
     sudo apt-get update -qq
@@ -61,14 +65,36 @@ if [ "$PKG" = apt ]; then
     # install the very thing you just tried to use.
     sudo apt-get install -y -qq python3 python3-venv python3-pip git curl
 else
-    sudo dnf install -y -q python3 python3-pip git curl
+    sudo dnf install -y -q git curl
+    # AppStream carries 3.12 and 3.11 alongside the 3.9 that owns `python3`.
+    sudo dnf install -y -q python3.12 python3.12-pip \
+        || sudo dnf install -y -q python3.11 python3.11-pip \
+        || sudo dnf install -y -q python3 python3-pip
 fi
 
-python3 --version
+# Newest first — take the best interpreter present rather than whatever `python3`
+# happens to point at.
+PY=""
+for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
+done
+[ -n "$PY" ] || { echo "No python3 found." >&2; exit 1; }
+
+PYVER="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+say "Using $PY ($PYVER)"
+"$PY" - <<'CHECK'
+import sys
+if sys.version_info < (3, 11):
+    sys.exit(
+        f"Python {sys.version_info.major}.{sys.version_info.minor} is too old for the "
+        "geospatial wheel set (numpy/pandas/geopandas need 3.11+).\n"
+        "On Oracle Linux/RHEL: sudo dnf install python3.12 python3.12-pip, then re-run."
+    )
+CHECK
 
 # --- 2. Python environment --------------------------------------------------
 say "Building the virtualenv"
-[ -d "$VENV" ] || python3 -m venv "$VENV"
+[ -d "$VENV" ] || "$PY" -m venv "$VENV"
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
 "$VENV/bin/python" -m pip install --quiet -r "$REPO_DIR/requirements.txt"
 "$VENV/bin/python" -c "import geopandas, osmnx, folium; print('geospatial stack OK')"
