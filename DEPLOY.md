@@ -86,9 +86,19 @@ is a different (and cheaper to reason about) product than serverless.
 | **Hugging Face Spaces**, free CPU | $0 | 2 vCPU / 16 GB RAM, Docker supported, no request timeout — the only genuinely free option with enough headroom. Storage is ephemeral unless you pay, so it would need Supabase (or similar) for persistence. A real path, but it is a second piece of work, not a free lunch. |
 | **Dartmouth hardware** | $0 | Prof. Shi has offered this. No monthly bill and no data leaves the university, at the cost of an IT conversation and someone maintaining the box. |
 
-Memory is the one number to watch: the free 512 MB tiers are the risk, since a
-county-sized GeoDataFrame plus a Folium render is not small. **This has not been
-measured under load** — budget 1 GB and confirm on the first real county.
+Memory is the one number to watch, and it is now measured. A full 8-step run
+over Adams County OH (1,518 km², all eight layers, 19,051 features) peaks at
+**555 MB resident** — 115 MB of that is just importing the geospatial stack,
+and the two spikes are the layer fetch (533 MB) and the step-7 Folium render
+(553 MB). Steady state between steps is ~334 MB.
+
+**That rules out every 512 MB tier**, which is the whole free column above, and
+it confirms the 2 GB instance the blueprint asks for. Two cautions on the
+number: it was taken outside a container (add uvicorn and FastAPI on top), and
+Adams County is a *small rural* county. Feature count is what drives this, so a
+metro county is a different measurement — an earlier Franklin County OH run
+pulled ~90k features, roughly 4.7× this one, and nothing yet says 2 GB survives
+that. **Measure a metro county before demoing one.**
 
 ### The cost that does not go away
 
@@ -160,10 +170,9 @@ and stores it encrypted).
    deploys reuse the layer cache.
 
 The blueprint asks for the **Standard** instance (2 GB). Starter is 512 MB and
-$18/mo cheaper, but a county-sized GeoDataFrame plus a Folium render is exactly
-what dies at 512 MB — and an out-of-memory kill mid-demo is the failure class
-that has already cost this project weeks. Change the plan in the dashboard once
-there is a real memory measurement.
+$18/mo cheaper, and the measurement above settles it: a small rural county
+peaks at **555 MB**, so Starter would be killed on the first real run. Do not
+downgrade it to save the difference.
 
 ### One risk to watch on the first real run
 
