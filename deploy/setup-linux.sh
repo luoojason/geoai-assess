@@ -64,6 +64,12 @@ if [ "$PKG" = apt ]; then
     # confusing failure: `python3 -m venv` exits non-zero telling you to apt
     # install the very thing you just tried to use.
     sudo apt-get install -y -qq python3 python3-venv python3-pip git curl
+    # Ubuntu 22.04 is the case this guards: `python3` is 3.10, below the wheel
+    # floor, so the loop below picks the 3.11 that universe already ships — and
+    # 3.11's venv module lives in its OWN package. Installing only python3-venv
+    # leaves `python3.11 -m venv` failing on a missing ensurepip.
+    sudo apt-get install -y -qq python3.12-venv 2>/dev/null \
+        || sudo apt-get install -y -qq python3.11-venv 2>/dev/null || true
 else
     sudo dnf install -y -q git curl
     # AppStream carries 3.12 and 3.11 alongside the 3.9 that owns `python3`.

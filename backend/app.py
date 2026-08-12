@@ -73,6 +73,17 @@ _hcas_poll_deps = [
     Depends(require_basic_auth),
 ]
 
+# For routes a browser reaches by navigation rather than by fetch(): the wizard
+# page itself, and the read-only GETs opened as plain links (a target=_blank
+# anchor cannot send X-Requested-With, so no CSRF-header dep here).
+#
+# The page MUST carry require_basic_auth even though it only renders HTML. A
+# browser prompts for Basic credentials on a 401 it gets while navigating, and
+# never on one it gets from fetch(). Leave the page open and a hosted deploy
+# hands the visitor a working-looking wizard in which every action fails 401
+# with no way to enter the password.
+_hcas_link_deps = [Depends(require_rate_limit), Depends(require_basic_auth)]
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -371,7 +382,7 @@ async def compare(body: CompareRequest):
 # HCAS — 8-step gated assessment (backend/hcas.py)
 # ---------------------------------------------------------------------------
 
-@app.get("/hcas", response_class=HTMLResponse)
+@app.get("/hcas", response_class=HTMLResponse, dependencies=_hcas_link_deps)
 async def hcas_wizard(request: Request):
     return templates.TemplateResponse(request, "hcas.html")
 
@@ -422,7 +433,7 @@ class HcasReviseRequest(BaseModel):
     place: str = "the study area"
 
 
-@app.get("/hcas/areal-units")
+@app.get("/hcas/areal-units", dependencies=_assess_deps)
 async def hcas_areal_units():
     """The reporting units a project may choose (Prof. Shi 2026-08-07 #5)."""
     from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
@@ -610,11 +621,6 @@ async def hcas_chat(pid: str, body: HcasChatRequest):
                 f"({type(exc).__name__}). The terminal window has the full traceback."
             ),
         )
-
-
-# No CSRF-header dep on the two GETs below: they are read-only and opened as
-# plain browser links (a target=_blank anchor can't send X-Requested-With).
-_hcas_link_deps = [Depends(require_rate_limit), Depends(require_basic_auth)]
 
 
 @app.get("/hcas/projects/{pid}/map", response_class=HTMLResponse, dependencies=_hcas_link_deps)
