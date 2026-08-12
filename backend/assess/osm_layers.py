@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import socket
 import threading
 import time
 
 import geopandas as gpd
 import osmnx as ox
-from osmnx._errors import InsufficientResponseError
+from osmnx._errors import InsufficientResponseError, ResponseStatusCodeError
 
 from backend.assess.netdiag import record_fetch_error
 
@@ -589,6 +590,61 @@ OSM_TILE_MAX_DEG = float(os.environ.get("OSM_TILE_MAX_DEG", "1.0"))
 # retry the same area first and only split when retrying has not helped.
 OSM_TILE_RETRIES = int(os.environ.get("OSM_TILE_RETRIES", "1"))
 
+# ...and one retry was not enough, because the retry ran out and the split
+# happened anyway. Measured 2026-08-12 (Delaware County OH), the identical
+# whole-county buildings query against overpass-api.de inside one minute:
+#
+#   [timeout:90]  -> 504 after 20.2 s          [timeout:180] -> 429 after 19.9 s
+#   [timeout:90]  -> 200 in   23.9 s (23.3 MB) [timeout:300] -> 200 in  12.9 s
+#
+# The area is answerable — 26,532 building elements, and roads 47,869 in 14.1 s
+# — and roughly a third of attempts are turned away regardless, at about 20 s
+# each. So a refusal is a coin flip, and the right response to one is to flip
+# again, not to send four requests where one was just declined.
+OSM_REFUSAL_RETRIES = int(os.environ.get("OSM_REFUSAL_RETRIES", "3"))
+
+# Gateway and rate-limit codes. 504 is included deliberately: it reads like
+# "your query was too slow", but the measurement above shows the SAME query
+# returning 504 and then 200 at the same declared timeout, so here it is load.
+_REFUSAL_STATUS = {429, 502, 503, 504}
+
+
+def _is_refusal(exc: BaseException) -> bool:
+    """Did the server decline to do the work, rather than fail at doing it?
+
+    Splitting an area answers the question "is this too big for this server?".
+    It is the wrong answer to a refusal, where it turns one turned-away request
+    into four and makes the rate limiting worse — the note above OSM_TILE_RETRIES
+    has said so since 2026-08-11, but the code still fell through to the split
+    once the retry was spent. The 2026-08-12 reproduction logged the result:
+
+        Overpass query still failing ... after 2 attempts (ConnectTimeout(...))
+        — splitting into 4 (depth 1)
+
+    A connection that never completed cannot have measured anything about the
+    area behind it. These are the failures that carry no size information:
+
+      * the connection never completed  (ConnectTimeout, ConnectionError)
+      * the server dropped a query it had accepted  (ReadTimeout)
+      * it answered with a rate limit or a gateway error  (429/502/503/504)
+
+    A truncated or unparseable body is deliberately NOT here. That is what a
+    genuinely oversize query looked like when one was actually measured (Grand
+    Isle VT, 2026-08-07: whole county failed after 103 s with a truncated
+    response, the same area as four quadrants returned 6,086 buildings in 16 s),
+    and that case must still be allowed to split.
+    """
+    import requests
+
+    if isinstance(exc, (requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout)):
+        return True          # covers ConnectTimeout and ReadTimeout, both subclasses
+    if isinstance(exc, ResponseStatusCodeError):
+        # osmnx puts the status line in the message (_http._parse_response).
+        found = re.search(r"responded:\s*(\d{3})", str(exc))
+        return bool(found) and int(found.group(1)) in _REFUSAL_STATUS
+    return False
+
 
 def _retry_pause(attempt: int) -> float:
     """Backoff before retrying the same area. Bounded: a long sleep inside a
@@ -668,11 +724,13 @@ def _tiled(bbox, call_one, depth: int = 0):
     # refused, a 429 or a gateway 504 says nothing about the size of the query,
     # and splitting on one multiplies the requests that caused it.
     last_failure = None
+    attempt = 0
     attempts = 1 if _outage_suspected() else 1 + OSM_TILE_RETRIES
-    for attempt in range(attempts):
+    while attempt < attempts:
         if attempt:
             _pause_for_retry(attempt)
             _stop_if_expired()
+        attempt += 1
         try:
             return [call_one(bbox)]
         except InsufficientResponseError:
@@ -682,7 +740,24 @@ def _tiled(bbox, call_one, depth: int = 0):
         except Exception as exc:
             last_failure = exc
             _stop_if_expired()
+            # A refusal buys more attempts at the SAME area. Refusals are
+            # intermittent (see OSM_REFUSAL_RETRIES) so another flip of the coin
+            # is both cheaper and likelier to work than four requests to a
+            # server that just turned this one away.
+            if _is_refusal(exc) and not _outage_suspected():
+                attempts = max(attempts,
+                               1 + OSM_TILE_RETRIES + OSM_REFUSAL_RETRIES)
     if depth >= OSM_TILE_MAX_DEPTH:
+        raise last_failure
+    if _is_refusal(last_failure):
+        # Every attempt was declined, so nothing here measured the area. Four
+        # sub-requests would be four more of exactly what is being refused —
+        # and quartering to depth 3 turns one refusal into as many as 85.
+        logger.warning(
+            f"Overpass refused {bbox} on all {attempt} attempts "
+            f"({last_failure!r}) — not splitting: a refusal says nothing about "
+            "the size of the area, and splitting multiplies the refused requests"
+        )
         raise last_failure
     if _outage_suspected():
         # Splitting asks "is this area too big?" of servers that are not

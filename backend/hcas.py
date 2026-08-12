@@ -1010,8 +1010,25 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
     # flight just queues behind the rate limiter. Two keeps the pipe full without
     # fighting it. OSM_LAYER_WORKERS raises it for a self-hosted endpoint.
     ex = ThreadPoolExecutor(max_workers=int(_os.environ.get("OSM_LAYER_WORKERS", "2")))
+    # When a layer's own fetch began — NOT when the step began. There are more
+    # layers than workers, so a layer can sit in the pool queue for the whole
+    # budget and never be requested at all. Delaware County OH, 2026-08-12: two
+    # slow layers held both workers, five layers were never sent to Overpass,
+    # and all seven were reported as "the OpenStreetMap server did not answer",
+    # each credited with the step's full 900 s. Only three fetchers had run.
+    started_at: dict[str, float] = {}
+    start_lock = threading.Lock()
+
+    def _mark_start(name, fetch):
+        def run(bbox):
+            with start_lock:
+                started_at[name] = time.time()
+            return fetch(bbox)
+        return run
+
     try:
-        futures = {ex.submit(_bounded(fetchers[n], deadline), tuple(bbox)): n
+        futures = {ex.submit(_mark_start(n, _bounded(fetchers[n], deadline)),
+                             tuple(bbox)): n
                    for n in names}
         done = len([n for n in all_names if n in results and n not in errors])
         try:
@@ -1031,7 +1048,7 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                 results[n] = g
                 done += 1
                 slot = next(d for d in detail if d["layer"] == n)
-                slot["elapsed_s"] = round(time.time() - started, 1)
+                slot["elapsed_s"] = round(time.time() - started_at.get(n, started), 1)
                 if n in errors:
                     slot["status"] = "error"
                     slot["note"] = errors[n]
@@ -1048,17 +1065,31 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                     continue
                 fut.cancel()
                 results[n] = _empty_layer()
-                errors[n] = (
-                    f"gave up after {int(budget_s)}s — the OpenStreetMap server did "
-                    "not answer for this area in time. Those servers queue requests "
-                    "when busy, so this is usually waiting rather than a fault. "
-                    "Re-run the step: every piece that already arrived is cached and "
-                    "returns instantly, so each attempt gets further."
-                )
                 slot = next(d for d in detail if d["layer"] == n)
+                began = started_at.get(n)
+                if began is None:
+                    # Never requested. Blaming the data source here is what made
+                    # a scheduling problem read as a seven-way outage.
+                    errors[n] = (
+                        "not attempted — the step ran out of time while earlier "
+                        "layers were still fetching, so this one was never "
+                        "requested. Nothing here says the data source failed. "
+                        "Re-run the step: the layers that did arrive are cached "
+                        "and return instantly, which frees the time for this one."
+                    )
+                    slot.pop("elapsed_s", None)     # no fetch, so no fetch time
+                else:
+                    errors[n] = (
+                        f"gave up after {int(time.time() - began)}s — the "
+                        "OpenStreetMap server did not answer for this area in "
+                        "time. Those servers queue requests when busy, so this is "
+                        "usually waiting rather than a fault. Re-run the step: "
+                        "every piece that already arrived is cached and returns "
+                        "instantly, so each attempt gets further."
+                    )
+                    slot["elapsed_s"] = round(time.time() - began, 1)
                 slot["status"] = "error"
                 slot["note"] = errors[n]
-                slot["elapsed_s"] = round(time.time() - started, 1)
             set_progress_detail(pid, step, detail)
             logger.warning(
                 f"step {step}: layer budget {budget_s}s expired with "
