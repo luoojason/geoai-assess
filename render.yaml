@@ -31,7 +31,11 @@ services:
         sync: false
       - key: CENSUS_API_KEY      # optional, free — step 1's income/home-value figures
         sync: false
-      # A step legitimately runs for minutes; keep the app's own ceiling below
-      # any platform-side idle assumptions rather than above them.
+      # 900, matching the app default since 2026-08-11. This blueprint was
+      # written before that change and pinned 420 — which would have silently
+      # reimposed the exact ceiling that was measured dropping five of eight
+      # layers mid-request on a slow link. A healthy run finishes in ~2 minutes
+      # and never approaches either number; the ceiling exists to absorb a bad
+      # Overpass day, so it must not be set below the app's own default.
       - key: HCAS_LAYER_BUDGET_S
-        value: "420"
+        value: "900"

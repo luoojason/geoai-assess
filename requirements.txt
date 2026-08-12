@@ -2,9 +2,15 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
-geopandas>=0.14.0
-osmnx>=1.9.0
+geopandas>=1.0
+# 2.0 is a real floor, not caution: the code reads ox.settings.overpass_url and
+# relies on the (element_type, osmid) MultiIndex that 2.x returns. A container
+# resolving 1.x would import and then behave wrongly.
+osmnx>=2.0
 folium>=0.16.0
+# Used directly by fastapi.templating.Jinja2Templates (app.py:14). It has been
+# arriving transitively through folium, which is luck, not a declaration.
+jinja2>=3.1
 requests>=2.31.0
 shapely>=2.0.0
 pyproj>=3.6.0

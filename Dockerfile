@@ -2,7 +2,7 @@
 #
 # Why a container and not a serverless function: one assessment step is a
 # single blocking HTTP request that can legitimately run for minutes (step 3's
-# layer budget alone is 420s by default), and geopandas/osmnx/folium need a
+# layer budget alone is 900s by default), and geopandas/osmnx/folium need a
 # warm process with a writable tile cache. Function platforms cap request time
 # well below that.
 FROM python:3.12-slim
@@ -32,7 +32,12 @@ ENV HCAS_DB=/data/hcas.db \
 # directory, and that cache is what makes a re-run of a half-failed step cheap.
 # Symlink rather than an env var because osmnx takes the path from
 # ox.settings.cache_folder, not the environment.
-RUN mkdir -p /data/osm-cache && rm -rf /app/cache && ln -s /data/osm-cache /app/cache
+#
+# Only the symlink is made here. The directory it points at is created at
+# startup instead, because /data is where the platform mounts the volume at
+# RUN time — anything this build writes under /data disappears behind that
+# mount, so a build-time mkdir would leave the symlink dangling on first boot.
+RUN rm -rf /app/cache && ln -s /data/osm-cache /app/cache
 
 # One worker on purpose. A run holds its worker for the whole step, and the
 # progress registry that drives the wizard's live bar is in-process — a second
@@ -42,4 +47,4 @@ RUN mkdir -p /data/osm-cache && rm -rf /app/cache && ln -s /data/osm-cache /app/
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
   CMD curl -fsS "http://127.0.0.1:${PORT}/healthz" || exit 1
-CMD ["sh", "-c", "uvicorn backend.app:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 650"]
+CMD ["sh", "-c", "mkdir -p /data/osm-cache && uvicorn backend.app:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 950"]
