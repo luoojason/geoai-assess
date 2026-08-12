@@ -174,6 +174,37 @@ $18/mo cheaper, and the measurement above settles it: a small rural county
 peaks at **555 MB**, so Starter would be killed on the first real run. Do not
 downgrade it to save the difference.
 
+### Your own box, single user — `deploy/setup-linux.sh`
+
+Everything above is the *hosted* path: a container, a real API key, a shared
+password, other people using it. If the deployment is a personal server that
+only you test on, none of that applies and the container is the wrong tool —
+it exists to make a deploy reproducible for other people, and it fights the
+`claude -p` path, which wants your own OAuth credentials in `~/.claude`.
+
+Run `deploy/setup-linux.sh` instead. It installs the venv, Claude Code, and a
+systemd unit bound to `127.0.0.1`; you reach it over an SSH tunnel
+(`ssh -L 8000:localhost:8000 you@box`) rather than opening a port. No TLS, no
+`DEMO_PASSWORD`, no API key, **$0 per run** — the LLM steps go through your
+subscription.
+
+Two settings in that unit are load-bearing, and both fail identically and
+misleadingly — every step 2 and 4 reports "no API key configured", pointing at
+a key you deliberately did not set:
+
+- **`PATH`** must include `~/.local/bin`, where the native installer puts
+  `claude`. systemd's default `PATH` does not, so `shutil.which("claude")`
+  returns `None`.
+- **`HOME`** must be your home directory and writable. The CLI reads *and
+  refreshes* its OAuth token under `~/.claude`.
+
+On **Oracle Cloud Always Free** specifically: an instance is reclaimable when,
+over a 7-day window, CPU (95th percentile), network, *and* — on A1 shapes —
+memory are all under 20%. An idle HCAS box sits at roughly 1% of 12 GB, so it
+qualifies. Oracle's docs do not say what happens to the data. Keep nothing
+irreplaceable on it (the SQLite file is test projects), and treat the setup
+script as the real artifact: a reclaim then costs one command, not an evening.
+
 ### One risk to watch on the first real run
 
 A step is a single HTTP request that can run for minutes, and a hosted platform
