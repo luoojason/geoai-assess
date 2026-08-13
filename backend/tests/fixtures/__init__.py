@@ -13,6 +13,10 @@ third of requests away under load, and on 2026-08-13 a single Adams layer took
 test suite that fails for reasons that have nothing to do with the code, so it
 does not fetch.
 
+The `landuse` layer keeps its `landuse` tag column; every other layer is
+geometry-only. That column is what the per-class colouring reads, and a
+fixture stripped of it would let a class-colouring bug pass unnoticed.
+
 `transit_stops` is deliberately EMPTY: Adams genuinely has none tagged. An
 empty layer is a real case the renderer has to survive, and keeping it in the
 fixture means that case is covered by default rather than by remembering to

@@ -19,6 +19,77 @@ logger = logging.getLogger(__name__)
 GATE_ZOOM = 0
 
 
+# OSM `landuse=*` says what an area of land is FOR — a zone, not an object, and
+# independent of whatever is built on it. Measured on Adams County: 18 distinct
+# values, and only 51% of buildings have any landuse polygon under them at all,
+# because drawing zones is optional work most mappers skip.
+#
+# Drawing all 18 in one colour (how landuse first shipped, 2026-08-13) makes
+# farmland, a cemetery, a quarry and a housing estate pixel-identical: the layer
+# says the land is spoken for and nothing else. These classes are the coarsest
+# split that still answers "for what?", and they line up with what
+# `land_use_mix` measures.
+#
+# Every value is kept, including the four `_GREENSPACE_TAGS` also fetches
+# (grass, forest, meadow, recreation_ground — 31% of the greenspace layer by
+# area). Dropping them would make the Land use layer a subset of what
+# `land_use_mix` counts: a map disagreeing with its own metric, which is the
+# defect class this area keeps producing. They genuinely overlap; showing that
+# beats hiding it.
+_LANDUSE_CLASSES = (
+    # label, colour, member values
+    ("Farmland & pasture", "#c9b072",
+     ("farmland", "farmyard", "meadow", "animal_keeping", "orchard", "vineyard",
+      "greenhouse_horticulture", "allotments", "aquaculture", "plant_nursery")),
+    ("Grass, forest & parks", "#8fae7b",
+     ("grass", "forest", "recreation_ground", "village_green", "flowerbed",
+      "park", "greenfield")),
+    ("Residential", "#d8a48f", ("residential",)),
+    ("Commercial & retail", "#c58fbf", ("commercial", "retail", "office")),
+    ("Industrial & extractive", "#9b8579",
+     ("industrial", "quarry", "landfill", "brownfield", "construction",
+      "railway", "port", "depot")),
+    ("Civic & institutional", "#8fa9c4",
+     ("cemetery", "religious", "institutional", "education", "military",
+      "school", "hospital")),
+)
+_LANDUSE_OTHER = ("Other land use", "#b3aca4")
+_LANDUSE_CLASS_OF = {v: i for i, (_l, _c, vals) in enumerate(_LANDUSE_CLASSES)
+                     for v in vals}
+
+
+def landuse_class_index(value) -> int:
+    """Map a raw OSM `landuse=*` value to an index into _LANDUSE_CLASSES.
+
+    Anything unlisted — a value new to OSM, a typo, or a NaN from a feature
+    that matched on some other tag — lands on the "Other" bucket rather than
+    being dropped. A value that vanished from the map because nobody had
+    enumerated it would be the same silent-omission defect as the rest of
+    this area's history.
+    """
+    try:
+        return _LANDUSE_CLASS_OF.get(str(value).strip().lower(), len(_LANDUSE_CLASSES))
+    except Exception:
+        return len(_LANDUSE_CLASSES)
+
+
+def _landuse_styles(base: dict) -> list:
+    """One style per class, in class-index order, with "Other" last.
+
+    Shares the base style's opacity and stroke weight so the classes differ
+    only in hue — the point is to tell farmland from a quarry, not to make
+    landuse louder than the buildings drawn on top of it.
+    """
+    out = []
+    for _label, colour, _vals in _LANDUSE_CLASSES + (
+            (_LANDUSE_OTHER[0], _LANDUSE_OTHER[1], ()),):
+        st = dict(base)
+        st["fillColor"] = colour
+        st["color"] = colour
+        out.append(st)
+    return out
+
+
 # Draw order is bottom-to-top, and it is load-bearing: landuse (farmland,
 # forest, meadow — the large background polygons) has to sit UNDER greenspace
 # and buildings or it buries them. Landuse was fetched, counted in the step-3
@@ -313,6 +384,22 @@ def render_assessment_map(
         )
         if _line:
             keys.append(_line)
+    # Landuse draws in several colours, so it needs a key or the colours mean
+    # nothing. Only emitted when the layer is actually on the map, and only for
+    # the classes this county actually has — a legend listing seven classes for
+    # a county with three is its own small lie.
+    lu_payload = (detail_payloads or {}).get("landuse") or {}
+    present = sorted(set(lu_payload.get("classes") or []))
+    if present:
+        _all = list(_LANDUSE_CLASSES) + [(_LANDUSE_OTHER[0], _LANDUSE_OTHER[1], ())]
+        swatches = "".join(
+            f'<span style="display:inline-block;width:9px;height:9px;'
+            f'background:{_all[i][1]};border:1px solid rgba(0,0,0,.25);'
+            f'margin-right:5px;vertical-align:middle;"></span>{_all[i][0]}<br>'
+            for i in present if 0 <= i < len(_all))
+        keys.append("<b>land use</b> = what an area of land is FOR, independent of "
+                    "what is built on it:<br>" + swatches)
+
     legend_html = (
         '<div style="margin-top:8px;padding-top:7px;border-top:1px solid #e5e5e5;'
         'font-size:11px;color:#555;max-width:250px;line-height:1.45;">'
@@ -412,6 +499,12 @@ def render_assessment_map(
                     "style": _styles.get(name, {}),
                     "shape": _shapes.get(name, "polygon"),
                 }
+                # `styles` + the payload's own `classes` array let one layer
+                # draw in several colours. Only landuse uses it; every other
+                # layer keeps the single `style` above and the JS never looks
+                # at `styles` for them.
+                if payload.get("classes") is not None:
+                    opts["styles"] = _landuse_styles(_styles.get(name, {}))
                 # overview_group/overview_layer: the JS var names of this
                 # layer's own overview FeatureGroup and the GeoJson sublayer
                 # inside it (set above, keyed by layer name). Passed as bare

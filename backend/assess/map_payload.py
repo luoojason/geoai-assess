@@ -64,7 +64,8 @@ def _parts(geom) -> list:
     return []
 
 
-def build_payload(gdf: gpd.GeoDataFrame, cell_deg: float = GRID_CELL_DEG) -> dict:
+def build_payload(gdf: gpd.GeoDataFrame, cell_deg: float = GRID_CELL_DEG,
+                  class_col: str | None = None, classer=None) -> dict:
     """Bucket every feature into a lat/lon grid. Returns geoms + cell index.
 
     Each entry in `geoms` is a list of rings — `[exterior, hole1, hole2,
@@ -105,14 +106,23 @@ def build_payload(gdf: gpd.GeoDataFrame, cell_deg: float = GRID_CELL_DEG) -> dic
     empty = {"geoms": [], "cells": {}, "total": 0, "cell_deg": cell_deg}
     if gdf is None or len(gdf) == 0:
         return empty
-    g = gdf[["geometry"]].to_crs("EPSG:4326")
+    has_class = bool(class_col) and class_col in getattr(gdf, "columns", [])
+    g = gdf[["geometry"] + ([class_col] if has_class else [])].to_crs("EPSG:4326")
     g = g[~g.geometry.is_empty & g.geometry.notna()]
     if len(g) == 0:
         return empty
 
+    # A class index per PART, index-aligned with `geoms`, or absent entirely.
+    # This is what lets ONE layer draw in several colours — landuse: farmland
+    # vs quarry vs housing — instead of splitting it into several LayerControl
+    # entries. `classer` maps a raw tag value to an index into the caller's own
+    # style list, so this module never learns what the classes mean.
+    classes: list | None = [] if has_class else None
+    col = list(g[class_col]) if has_class else None
+
     geoms: list = []
     cells: dict = {}
-    for geom in g.geometry:
+    for row, geom in enumerate(g.geometry):
         # One entry per geometry part keeps the client decoder trivial; a
         # multipart feature contributes its parts as separate entries, which
         # is why `total` counts parts and can exceed len(gdf).
@@ -120,9 +130,16 @@ def build_payload(gdf: gpd.GeoDataFrame, cell_deg: float = GRID_CELL_DEG) -> dic
             i = len(geoms)
             entry = [[[round(x, 6), round(y, 6)] for x, y in ring] for ring in rings]
             geoms.append(entry)
+            if classes is not None:
+                # Every part of a multipart feature inherits its feature's
+                # class, which is what keeps `classes` aligned with `geoms`.
+                classes.append(classer(col[row]) if classer else col[row])
             exterior = entry[0]
             xs = [p[0] for p in exterior]
             ys = [p[1] for p in exterior]
             for key in _cells_for_bounds(min(xs), min(ys), max(xs), max(ys), cell_deg):
                 cells.setdefault(key, []).append(i)
-    return {"geoms": geoms, "cells": cells, "total": len(geoms), "cell_deg": cell_deg}
+    out = {"geoms": geoms, "cells": cells, "total": len(geoms), "cell_deg": cell_deg}
+    if classes is not None:
+        out["classes"] = classes
+    return out

@@ -83,6 +83,13 @@
     // measurement flowing into that template produces NaN, not undefined.
     this.gateZoom = Number.isFinite(opts.gateZoom) ? opts.gateZoom : Infinity;
     this.style = opts.style || {};
+    // Optional per-class palette. When the payload carries a `classes`
+    // array (landuse does; nothing else currently), each part draws with
+    // styles[classes[i]] instead of the single `style` above — so one
+    // LayerControl entry can show farmland, housing and a quarry in
+    // different colours without becoming four separate checkboxes.
+    this.styles = Array.isArray(opts.styles) ? opts.styles : null;
+    this.classes = (payload && Array.isArray(payload.classes)) ? payload.classes : null;
     // Three values. 'polygon' (default) closes and fills each ring —
     // buildings, greenspace, landuse, parking, anything with possible holes.
     // 'polyline' draws only rings[0] as an open path — roads and sidewalks are
@@ -139,7 +146,15 @@
     // module's contract is that a malformed entry must never throw and take
     // the page down with it — so a ringless entry is skipped, not drawn.
     if (!rings || !rings.length) return null;
-    var opts = Object.assign({ renderer: this.renderer }, this.style);
+    // Per-class style when both halves are present, else the single style.
+    // An index outside the palette falls back rather than yielding
+    // `undefined` options, which Leaflet would draw with its default blue.
+    var style = this.style;
+    if (this.styles && this.classes) {
+      var ci = this.classes[i];
+      if (typeof ci === "number" && this.styles[ci]) style = this.styles[ci];
+    }
+    var opts = Object.assign({ renderer: this.renderer }, style);
     if (this.shape === "point") {
       // Transit stops and facilities are Points. build_payload emits a Point
       // part as a single ring holding one coordinate, so rings[0][0] is the

@@ -1572,11 +1572,20 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         # never counted. Left unclipped once already: see
         # _clip_to_study_area's docstring for the 2026-08-09 report this
         # would have reopened.
+        from backend.assess.renderer import landuse_class_index
+
         detail = {}
         for _n in layers:
             try:
                 clipped = _clip_to_study_area(layers[_n], study_area)
-                detail[_n] = _detail_payload(clipped)
+                # landuse alone carries a per-feature class, so one layer can
+                # draw farmland, housing and a quarry in different colours
+                # instead of one undifferentiated wash.
+                detail[_n] = _detail_payload(
+                    clipped,
+                    class_col="landuse" if _n == "landuse" else None,
+                    classer=landuse_class_index if _n == "landuse" else None,
+                )
             except Exception as _exc:          # a drawing aid never fails the step
                 logger.warning(f"detail payload for {_n} failed: {_exc}")
 
@@ -1722,7 +1731,7 @@ def _overview_geoms(gdf):
     return g, {"shown": len(g), "total": n, "stride": stride}
 
 
-def _detail_payload(gdf):
+def _detail_payload(gdf, class_col=None, classer=None):
     """Every feature, lightly simplified, bucketed for viewport rendering.
 
     This is the tier the legend promises "zoom in and every one in view is
@@ -1738,7 +1747,11 @@ def _detail_payload(gdf):
 
     if gdf is None or gdf.empty:
         return build_payload(None)
-    g = gdf[["geometry"]].copy()
+    # Keep the class column when one is asked for: it is what lets a single
+    # layer draw in several colours (landuse). Everything else is dropped —
+    # OSM tag columns are hundreds of mostly-NaN keys per feature.
+    keep = ["geometry"] + ([class_col] if class_col and class_col in gdf.columns else [])
+    g = gdf[keep].copy()
     # Sampled BEFORE the empty/notna filter, not after: that filter itself
     # can silently drop features (an already-empty or null geometry arriving
     # from upstream), and a count taken after it would never see that drop.
@@ -1757,7 +1770,7 @@ def _detail_payload(gdf):
             f"detail payload dropped {before - after} of {before} feature(s) "
             "to an empty/null/simplified-away geometry"
         )
-    return build_payload(g)
+    return build_payload(g, class_col=class_col, classer=classer)
 
 
 def _empty_layer():

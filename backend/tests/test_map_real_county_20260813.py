@@ -39,13 +39,22 @@ def county():
 
 
 def _payloads(county):
+    """Built exactly the way hcas.py's step-7 block builds them, classer and all
+    — a helper that skipped the classer would test a payload production never
+    produces."""
+    from backend.assess.renderer import landuse_class_index
+
     sa = county["study_area"]
     out = {}
     for name in LAYERS:
         g = county[name]
         if g is None or g.empty:
             continue
-        out[name] = hcas._detail_payload(_clip_to_study_area(g, sa))
+        out[name] = hcas._detail_payload(
+            _clip_to_study_area(g, sa),
+            class_col="landuse" if name == "landuse" else None,
+            classer=landuse_class_index if name == "landuse" else None,
+        )
     return out
 
 
@@ -235,3 +244,67 @@ def test_the_map_fetches_nothing_for_its_own_features(county):
     assert "fetch(" not in doc
     assert "XMLHttpRequest" not in doc
     assert "cell_deg" in doc, "payload should be inline, not referenced"
+
+
+# ---------------------------------------------------------------------------
+# Landuse classes. `landuse=*` says what an area of land is FOR — a zone, not
+# an object. Adams has 18 distinct values; drawing them in one colour made
+# farmland, a cemetery, a quarry and a housing estate pixel-identical, so the
+# layer said "this land is spoken for" and nothing else.
+# ---------------------------------------------------------------------------
+
+def test_landuse_values_map_onto_classes_and_nothing_is_dropped(county):
+    from backend.assess.renderer import _LANDUSE_CLASSES, landuse_class_index
+
+    lu = _clip_to_study_area(county["landuse"], county["study_area"])
+    payload = hcas._detail_payload(lu, class_col="landuse", classer=landuse_class_index)
+    classes = payload.get("classes")
+    assert classes is not None, "landuse must carry a class per part"
+    assert len(classes) == payload["total"], "classes must be index-aligned with geoms"
+    n_classes = len(_LANDUSE_CLASSES) + 1          # + the Other bucket
+    assert all(isinstance(c, int) and 0 <= c < n_classes for c in classes)
+
+
+def test_an_unknown_landuse_value_lands_in_other_rather_than_vanishing(county):
+    """A value new to OSM, a typo, or a NaN must still draw. Silently dropping
+    an unrecognised value is the same omission defect as the rest of this
+    area's history."""
+    from backend.assess.renderer import _LANDUSE_CLASSES, landuse_class_index
+
+    other = len(_LANDUSE_CLASSES)
+    for odd in ("something_new_2027", "", "  ", None, float("nan"), 42):
+        assert landuse_class_index(odd) == other, f"{odd!r} did not fall to Other"
+    # and a known value still maps to a real class
+    assert landuse_class_index("farmland") < other
+    assert landuse_class_index("FARMLAND") < other, "matching must be case-insensitive"
+
+
+def test_only_landuse_gets_a_palette(county):
+    """Every other layer keeps its single style; `styles` is emitted only where
+    a `classes` array exists to index it."""
+    doc = _rendered(county)
+    with_palette = [o for o in _emitted_options(doc) if "styles" in o]
+    assert len(with_palette) == 1, "exactly one layer should carry a palette"
+    palette = with_palette[0]["styles"]
+    from backend.assess.renderer import _LANDUSE_CLASSES
+    assert len(palette) == len(_LANDUSE_CLASSES) + 1
+    assert len({s["fillColor"] for s in palette}) == len(palette), "colours must differ"
+
+
+def test_the_legend_keys_the_classes_actually_present(county):
+    """A legend listing seven classes for a county holding three is its own
+    small lie, so only the present ones are keyed."""
+    from collections import Counter
+    from backend.assess.renderer import _LANDUSE_CLASSES, _LANDUSE_OTHER, landuse_class_index
+
+    lu = _clip_to_study_area(county["landuse"], county["study_area"])
+    present = set(hcas._detail_payload(
+        lu, class_col="landuse", classer=landuse_class_index)["classes"])
+    doc = _rendered(county)
+    assert "what an area of land is FOR" in doc
+    labels = [l for l, _c, _v in _LANDUSE_CLASSES] + [_LANDUSE_OTHER[0]]
+    for i, label in enumerate(labels):
+        if i in present:
+            assert label in doc, f"{label} is present in the data but absent from the legend"
+        else:
+            assert label not in doc, f"{label} is keyed but this county has none"
