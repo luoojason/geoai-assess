@@ -1670,15 +1670,18 @@ def _detail_payload(gdf):
     if gdf is None or gdf.empty:
         return build_payload(None)
     g = gdf[["geometry"]].copy()
-    g = g[~g.geometry.is_empty & g.geometry.notna()]
+    # Sampled BEFORE the empty/notna filter, not after: that filter itself
+    # can silently drop features (an already-empty or null geometry arriving
+    # from upstream), and a count taken after it would never see that drop.
     before = len(g)
+    g = g[~g.geometry.is_empty & g.geometry.notna()]
     g["geometry"] = g.geometry.simplify(_DETAIL_SIMPLIFY_M)
     g = g[~g.geometry.is_empty]
     after = len(g)
     if after != before:
         logger.warning(
-            f"detail payload simplification dropped {before - after} of "
-            f"{before} feature(s) to an empty geometry"
+            f"detail payload dropped {before - after} of {before} feature(s) "
+            "to an empty/null/simplified-away geometry"
         )
     return build_payload(g)
 

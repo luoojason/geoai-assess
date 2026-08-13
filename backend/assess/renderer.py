@@ -295,9 +295,17 @@ def render_assessment_map(
         keys.append("<b>not selected</b> = this factor is not in the confirmed list "
                     "for this assessment, so it was never fetched")
     for _layer in ("buildings", "roads", "sidewalks"):
+        # Per-layer membership, not a single bool(detail_payloads) for all
+        # three: hcas.py builds each layer's detail payload in its own
+        # try/except, so one layer can fail (dropped, logged) while the
+        # other two succeed. A dict-wide truthiness check would then have
+        # the failed layer's legend line claim "zoom in and every one in
+        # view is drawn" for a layer with no embedded payload and no
+        # HCASViewportLayer ever registered for it — exactly the
+        # legend-overstates-the-map defect this whole plan exists to fix.
         _line = _sample_legend_line(
             _layer, (sample_info or {}).get(_layer),
-            has_detail=bool(detail_payloads),
+            has_detail=(_layer in (detail_payloads or {})),
         )
         if _line:
             keys.append(_line)

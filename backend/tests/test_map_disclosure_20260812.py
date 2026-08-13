@@ -117,3 +117,125 @@ def test_render_includes_the_sampled_layer_sentence_end_to_end():
     # No detail_payloads were passed, so the map cannot yet keep the "zoom in"
     # promise — the end-to-end render must not overstate itself either.
     assert "zoom in" not in html.lower()
+
+
+def test_legend_only_promises_zoom_for_layers_that_actually_have_detail():
+    """hcas.py builds each layer's detail payload inside its OWN try/except
+    (backend/hcas.py, _run_step_7): one layer's `_detail_payload()` call can
+    raise, be caught and logged, and never make it into the `detail` dict,
+    while the other layers' calls succeed — leaving `detail_payloads` a
+    non-empty dict that is nonetheless missing that one layer's key.
+
+    A single `has_detail=bool(detail_payloads)` applied to every layer would
+    have the failed layer's legend line claim "zoom in and every one in view
+    is drawn" even though no HCASViewportLayer was ever registered for it —
+    the exact "legend promises what the map cannot keep" defect this whole
+    plan exists to eliminate. Reproduces that shape directly: buildings has a
+    detail payload, roads does not, and asserts each layer's own sentence in
+    the rendered HTML matches its own reality.
+    """
+    import geopandas as gpd
+    from shapely.geometry import Polygon
+    from backend.assess.renderer import render_assessment_map
+    from backend.assess.map_payload import build_payload
+
+    sa = gpd.GeoDataFrame(
+        geometry=[Polygon([(-83.1, 40.0), (-82.9, 40.0), (-82.9, 40.2), (-83.1, 40.2)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    b = gpd.GeoDataFrame(
+        geometry=[Polygon([(-83.0, 40.1), (-82.99, 40.1), (-82.99, 40.11), (-83.0, 40.11)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+
+    # Different totals so each layer's rendered sentence is unambiguous to
+    # locate in the HTML.
+    sample_info = {
+        "buildings": {"shown": 3300, "total": 26393, "stride": 8},
+        "roads": {"shown": 3200, "total": 28865, "stride": 9},
+    }
+    html = render_assessment_map(
+        sa, b, empty, empty, {"building_coverage_ratio": 0.1},
+        sample_info=sample_info,
+        # Only buildings' detail payload "succeeded" — roads' key is absent,
+        # as it would be if hcas.py's try/except for roads had caught
+        # something. detail_payloads is still a non-empty dict.
+        detail_payloads={"buildings": build_payload(b)},
+    )
+
+    bldg_anchor = html.index("showing 3,300 of 26,393")
+    roads_anchor = html.index("showing 3,200 of 28,865")
+    bldg_sentence = html[bldg_anchor:bldg_anchor + 200].lower()
+    roads_sentence = html[roads_anchor:roads_anchor + 200].lower()
+
+    assert "zoom in" in bldg_sentence
+    assert "zoom in" not in roads_sentence
+
+
+def test_viewport_layer_shape_matches_geometry_type():
+    """Buildings are polygons — L.polygon(rings) renders their holes as
+    voids. Roads and sidewalks are LineStrings and MUST get shape:'polyline',
+    or every road gets a spurious closing segment joining its last point back
+    to its first. Nothing previously asserted the shape landed correctly per
+    layer in the rendered HTML — only that SOME shape option existed.
+    """
+    import html as html_module
+    import json
+    import re
+
+    import geopandas as gpd
+    from shapely.geometry import LineString, Polygon
+    from backend.assess.renderer import render_assessment_map
+    from backend.assess.map_payload import build_payload
+
+    sa = gpd.GeoDataFrame(
+        geometry=[Polygon([(-83.1, 40.0), (-82.9, 40.0), (-82.9, 40.2), (-83.1, 40.2)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    b = gpd.GeoDataFrame(
+        geometry=[Polygon([(-83.0, 40.1), (-82.99, 40.1), (-82.99, 40.11), (-83.0, 40.11)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    r = gpd.GeoDataFrame(
+        geometry=[LineString([(-83.0, 40.1), (-82.99, 40.11)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    sw = gpd.GeoDataFrame(
+        geometry=[LineString([(-83.0, 40.12), (-82.99, 40.13)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+
+    html = render_assessment_map(
+        sa, b, empty, empty, {"building_coverage_ratio": 0.1},
+        sidewalks=sw,
+        detail_payloads={
+            "buildings": build_payload(b),
+            "roads": build_payload(r),
+            "sidewalks": build_payload(sw),
+        },
+    )
+    # render_assessment_map returns m._repr_html_(), which HTML-entity-
+    # escapes the whole document to embed it in an iframe srcdoc attribute
+    # (folium's own Figure._repr_html_, unrelated to this task). Unescape to
+    # get back real quote characters before parsing JSON out of it.
+    raw = html_module.unescape(html)
+
+    decoder = json.JSONDecoder()
+    opts_list = []
+    pos = 0
+    while True:
+        idx = raw.find("new HCASViewportLayer(", pos)
+        if idx == -1:
+            break
+        opts_start = re.search(r",p,", raw[idx:]).end() + idx
+        opts, _ = decoder.raw_decode(raw, opts_start)
+        opts_list.append(opts)
+        pos = opts_start
+
+    assert len(opts_list) == 3
+    shape_by_color = {opts["style"].get("color"): opts["shape"] for opts in opts_list}
+    assert shape_by_color["#333333"] == "polygon"    # buildings
+    assert shape_by_color["#3a7abf"] == "polyline"   # roads
+    assert shape_by_color["#7b4fa6"] == "polyline"   # sidewalks
