@@ -1553,7 +1553,9 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         from backend.assess import render_assessment_map
 
         empty = _empty_layer()
-        slim = {n: _slim_for_map(g) for n, g in layers.items()}
+        slim_pairs = {n: _slim_for_map(g) for n, g in layers.items()}
+        slim = {n: pair[0] for n, pair in slim_pairs.items()}
+        sample_info = {n: pair[1] for n, pair in slim_pairs.items()}
         # ponytail: stashed under _map_html; run_step pops it into the maps table
         # so the multi-MB HTML never bloats the editable artifact JSON
         html = render_assessment_map(
@@ -1566,6 +1568,7 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
             sidewalks=slim.get("sidewalks"),
             transit_stops=slim.get("transit_stops"),
             facilities=slim.get("facilities"),
+            sample_info=sample_info,
         )
         if len(html) > 150_000_000:
             raise RuntimeError(f"rendered map too large ({len(html)/1e6:.0f} MB)")
@@ -1589,17 +1592,25 @@ _MAP_SIMPLIFY_M = 12.0
 def _slim_for_map(gdf):
     """Geometry-only, evenly capped, and simplified for a light browser payload.
     OSM tag columns (hundreds of mostly-NaN keys per feature) and full-precision
-    vertices are what made raw Franklin County maps ~500 MB."""
+    vertices are what made raw Franklin County maps ~500 MB.
+
+    Returns (slimmed, info). `info` is {"shown", "total", "stride"} so the caller
+    can state on the map how much of the layer is drawn: a map that silently
+    shows 1 building in 8 is read as a failed fetch, which is what happened on
+    Delaware County 2026-08-12.
+    """
     if gdf is None or gdf.empty:
-        return gdf
+        return gdf, {"shown": 0, "total": 0, "stride": 1}
     g = gdf[["geometry"]].copy()
     g = g[~g.geometry.is_empty & g.geometry.notna()]
     n = len(g)
-    if n > _MAP_MAX_FEATURES:
+    stride = (n // _MAP_MAX_FEATURES) + 1 if n > _MAP_MAX_FEATURES else 1
+    if stride > 1:
         # even stride keeps the sample spread across the area, not clustered
-        g = g.iloc[:: (n // _MAP_MAX_FEATURES) + 1]
+        g = g.iloc[::stride]
     g["geometry"] = g.geometry.simplify(_MAP_SIMPLIFY_M)
-    return g[~g.geometry.is_empty]
+    g = g[~g.geometry.is_empty]
+    return g, {"shown": len(g), "total": n, "stride": stride}
 
 
 def _empty_layer():

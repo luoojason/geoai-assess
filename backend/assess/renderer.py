@@ -76,6 +76,20 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
     return m._repr_html_()
 
 
+def _sample_legend_line(layer: str, info: dict | None) -> str:
+    """One honest sentence about how much of a layer is drawn, or "" if all of it.
+
+    Deliberately does NOT promise "zoom in for all" — the viewport renderer that
+    would make that true is not built yet, and a legend that overstates the map
+    is the bug this line exists to fix.
+    """
+    if not info or info.get("stride", 1) <= 1:
+        return ""
+    shown, total, stride = info["shown"], info["total"], info["stride"]
+    return (f"<b>{layer}</b>: showing {shown:,} of {total:,} (1 in {stride}) to keep "
+            f"the map fast. All {total:,} were measured and counted in the metrics above.")
+
+
 def render_assessment_map(
     study_area: gpd.GeoDataFrame,
     buildings: gpd.GeoDataFrame,
@@ -86,6 +100,7 @@ def render_assessment_map(
     sidewalks: gpd.GeoDataFrame | None = None,
     transit_stops: gpd.GeoDataFrame | None = None,
     facilities: gpd.GeoDataFrame | None = None,
+    sample_info: dict | None = None,
 ) -> str:
     """Render buildings, greenspace, and roads onto a single Folium map.
 
@@ -265,6 +280,10 @@ def render_assessment_map(
     if _UNSELECTED in shown:
         keys.append("<b>not selected</b> = this factor is not in the confirmed list "
                     "for this assessment, so it was never fetched")
+    for _layer in ("buildings", "roads", "sidewalks"):
+        _line = _sample_legend_line(_layer, (sample_info or {}).get(_layer))
+        if _line:
+            keys.append(_line)
     legend_html = (
         '<div style="margin-top:8px;padding-top:7px;border-top:1px solid #e5e5e5;'
         'font-size:11px;color:#555;max-width:250px;line-height:1.45;">'
