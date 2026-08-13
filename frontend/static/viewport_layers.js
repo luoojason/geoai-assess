@@ -47,7 +47,15 @@
     // gate", so the map falls back to the labelled overview instead of hanging.
     // This is a backstop against a caller bug, not a supported way to call the
     // module — gateZoom is still required in intent; no default is documented.
-    this.gateZoom = typeof opts.gateZoom === "number" ? opts.gateZoom : Infinity;
+    //
+    // `typeof x === "number"` is NOT enough: `typeof NaN === "number"` is
+    // true, and `getZoom() < NaN` is false at every zoom — the exact fail-open
+    // this guard exists to close. Number.isFinite rejects NaN and both
+    // Infinities while accepting every real zoom value; do not "simplify"
+    // this back to typeof. NaN is not hypothetical — Task 7 builds this call
+    // by string-formatting a value into JS, and a missing/non-numeric
+    // measurement flowing into that template produces NaN, not undefined.
+    this.gateZoom = Number.isFinite(opts.gateZoom) ? opts.gateZoom : Infinity;
     this.style = opts.style || {};
     // 'polygon' (default) closes and fills each ring — buildings, and
     // anything with possible holes. 'polyline' draws only rings[0] as an
