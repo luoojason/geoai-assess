@@ -216,6 +216,14 @@
   .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
            min-height:340px;text-align:center;}
   .loading .lmsg{font:500 var(--fs-base) var(--sans);color:var(--muted);max-width:42ch;}
+  /* Shown only on the two steps that fetch from OpenStreetMap. A slow step there
+     is nearly always the public Overpass servers shedding load, not a fault in
+     the run: measured 2026-08-11 and again 2026-08-13, roughly a third of
+     requests are turned away under load and the identical query succeeds
+     moments later. Saying so up front stops a normal slow fetch reading as a
+     hang — which is exactly how the 2026-08-12 step-3 report was misread. */
+  .loading .lnote{font:400 var(--fs-sm) var(--sans);color:var(--faint);
+                  max-width:46ch;margin-top:-4px;line-height:1.55;}
   .spin-lg{width:32px;height:32px;border:3px solid var(--line);border-top-color:var(--teal);
            border-radius:50%;animation:spin .85s linear infinite;}
 
@@ -406,6 +414,14 @@ const RUN_HINTS = {
   6:"Building the workflow from the confirmed metrics…",
   7:"Gathering layers, computing metrics, building the map…",
   8:"Preparing the report…"};
+/* Steps 3 and 7 are the only ones that query OpenStreetMap. They can be slow for
+   reasons that have nothing to do with this run, so say so before the wait
+   rather than after it. */
+const FETCH_NOTE = "This can take several minutes. Map data comes from OpenStreetMap’s "
+  + "public servers, which turn requests away when they are busy — a slow step usually "
+  + "means they are under load, not that anything is wrong. The step keeps retrying, and "
+  + "every layer that already arrived is cached, so re-running picks up where this left off.";
+const FETCH_STEPS = new Set([3, 7]);
 const DEFAULT_SYS = "Focus on spatial analysis for community-health assessment. Be concise and specific.";
 
 const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
@@ -506,6 +522,7 @@ function loadingBody(n){
        <div class="pbar"><div class="fill" id="pfill"></div></div>
        <div class="ppct" id="ppct">0%</div>
        <div class="lmsg" id="plabel">${esc(RUN_HINTS[n]||"Working…")}</div>
+       ${FETCH_STEPS.has(n) ? `<div class="lnote">${esc(FETCH_NOTE)}</div>` : ""}
        <div class="pchecklist" id="pdetail"></div></div>`;
 }
 /* `n` is the step being RUN, which is not necessarily the one on screen: the
