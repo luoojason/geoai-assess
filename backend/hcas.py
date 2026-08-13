@@ -1553,7 +1553,7 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         from backend.assess import render_assessment_map
 
         empty = _empty_layer()
-        slim_pairs = {n: _slim_for_map(g) for n, g in layers.items()}
+        slim_pairs = {n: _overview_geoms(g) for n, g in layers.items()}
         slim = {n: pair[0] for n, pair in slim_pairs.items()}
         sample_info = {n: pair[1] for n, pair in slim_pairs.items()}
         # ponytail: stashed under _map_html; run_step pops it into the maps table
@@ -1588,8 +1588,13 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
 _MAP_MAX_FEATURES = 3500
 _MAP_SIMPLIFY_M = 12.0
 
+# A typical house is 10-15 m across, so the 12 m overview tolerance turns each
+# footprint into a blob. Showing every building is pointless if every building
+# is melted, so the zoomed-in tier simplifies an order of magnitude less.
+_DETAIL_SIMPLIFY_M = 1.5
 
-def _slim_for_map(gdf):
+
+def _overview_geoms(gdf):
     """Geometry-only, evenly capped, and simplified for a light browser payload.
     OSM tag columns (hundreds of mostly-NaN keys per feature) and full-precision
     vertices are what made raw Franklin County maps ~500 MB.
@@ -1611,6 +1616,19 @@ def _slim_for_map(gdf):
     g["geometry"] = g.geometry.simplify(_MAP_SIMPLIFY_M)
     g = g[~g.geometry.is_empty]
     return g, {"shown": len(g), "total": n, "stride": stride}
+
+
+def _detail_payload(gdf):
+    """Every feature, lightly simplified, bucketed for viewport rendering."""
+    from backend.assess.map_payload import build_payload
+
+    if gdf is None or gdf.empty:
+        return build_payload(None)
+    g = gdf[["geometry"]].copy()
+    g = g[~g.geometry.is_empty & g.geometry.notna()]
+    g["geometry"] = g.geometry.simplify(_DETAIL_SIMPLIFY_M)
+    g = g[~g.geometry.is_empty]
+    return build_payload(g)
 
 
 def _empty_layer():

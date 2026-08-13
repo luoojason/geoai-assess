@@ -22,7 +22,7 @@ def _grid_gdf(n: int, size: float = 50.0) -> gpd.GeoDataFrame:
 
 
 def test_slim_reports_how_many_it_kept():
-    slim, info = hcas._slim_for_map(_grid_gdf(26393))
+    slim, info = hcas._overview_geoms(_grid_gdf(26393))
     assert info["total"] == 26393
     assert info["stride"] == 8
     assert info["shown"] == len(slim)
@@ -30,7 +30,7 @@ def test_slim_reports_how_many_it_kept():
 
 
 def test_slim_reports_no_sampling_when_under_the_cap():
-    slim, info = hcas._slim_for_map(_grid_gdf(100))
+    slim, info = hcas._overview_geoms(_grid_gdf(100))
     assert info == {"shown": 100, "total": 100, "stride": 1}
     assert len(slim) == 100
 

@@ -7,8 +7,9 @@ before 2026-08-12 asserted that the map contains what was measured, which is why
 from __future__ import annotations
 
 import geopandas as gpd
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
+from backend import hcas
 from backend.assess.map_payload import build_payload
 
 
@@ -76,3 +77,43 @@ def test_polygon_with_hole_keeps_the_hole_as_a_second_ring():
     hole_ring = entry[1]
     assert [-82.98, 40.02] in hole_ring
     assert [-82.92, 40.08] in hole_ring
+
+
+def _metre_squares(n: int, size: float = 12.0) -> gpd.GeoDataFrame:
+    polys = [Polygon([(x * size * 2, 0), (x * size * 2 + size, 0),
+                      (x * size * 2 + size, size), (x * size * 2, size)]) for x in range(n)]
+    return gpd.GeoDataFrame(geometry=polys, crs="EPSG:5070")
+
+
+def _many_vertex_blobs(n: int, spacing: float = 100.0, radius: float = 20.0) -> gpd.GeoDataFrame:
+    """n ~64-vertex circles (buffered points), in metres (EPSG:5070).
+
+    Unlike a 4-corner square, shapely's preserve_topology=True simplification
+    can actually remove vertices from this fixture, so the 12 m overview
+    tolerance and the 1.5 m detail tolerance produce visibly different point
+    counts.
+    """
+    blobs = [Point(x * spacing, 0).buffer(radius, quad_segs=16) for x in range(n)]
+    return gpd.GeoDataFrame(geometry=blobs, crs="EPSG:5070")
+
+
+def test_detail_payload_keeps_every_feature():
+    gdf = _metre_squares(20000)
+    p = hcas._detail_payload(gdf)
+    assert p["total"] >= 20000, "the detail tier must not sample"
+
+
+def test_detail_geometry_is_finer_than_overview():
+    gdf = _many_vertex_blobs(50)
+    overview, _info = hcas._overview_geoms(gdf)
+    detail = hcas._detail_payload(gdf)
+    overview_pts = sum(len(g.exterior.coords) for g in overview.geometry)
+    detail_pts = sum(len(r) for entry in detail["geoms"] for r in entry)
+    assert detail_pts > overview_pts, "12 m simplification on a 12 m house is a blob"
+
+
+def test_overview_still_samples_and_reports():
+    gdf = _metre_squares(26393)
+    _slim, info = hcas._overview_geoms(gdf)
+    assert info["stride"] == 8
+    assert info["total"] == 26393
