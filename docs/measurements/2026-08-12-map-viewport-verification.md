@@ -1,22 +1,109 @@
 # 2026-08-12: Browser verification of viewport map rendering
 
-**Current status (re-run after commit `8888d0b`): PASS, all nine checks.**
-The map loads, is interactive, and every claim it makes about itself is now
-true when opened the way the recipient will actually open it — a real
-headless Chromium browser, `file:///...`, no server running. The first run
-of this task (below, kept for the record) found the map completely broken;
-that defect is fixed and re-verified here, not assumed fixed.
+**Current status (re-run against commits `b688bc6` + `25de62e`, the
+whole-branch-review fix wave): PASS, all nine checks, plus the four
+new/changed behaviors that wave introduced.** This is the third verification
+pass. History, newest first:
 
-**Superseded byte size, 2026-08-13:** the 12,715,013-byte figure below (both
-runs measured the same number) was rendered from the DETAIL tier built off
-the raw bbox-fetched layers, unclipped to the study area — a defect a
-whole-branch review caught after this doc was written (the overview tier was
-always clipped; the detail tier never was). See the section immediately
-below for the re-measurement after that fix. Everything else in this
-doc — the browser-interactivity findings (load, console, shape, holes,
-count-match, pan timing) — is unaffected by the clip fix and still holds.
+1. **Round 3 (`b688bc6` + `25de62e`, this run):** PASS 9/9, layer control,
+   no-double-draw, and boundary-containment all confirmed in a real browser.
+2. **Round 2 (`8888d0b`, superseded):** reported PASS 9/9, but against a
+   renderer whose detail tier was NOT clipped to the study area — a defect a
+   later whole-branch review caught that round 2 had no way to see (its own
+   Python-side count check replayed the same unclipped payload the page
+   embedded, so it was self-consistent by construction and could not have
+   caught this). Kept below for the record, not deleted.
+3. **Round 1 (`0cfc704`, FAILED):** the map never loaded at all. Kept below.
 
-## Clip-before-detail fix re-measurement (2026-08-13, final whole-branch review fix wave)
+## Round 3 verification (commits `b688bc6`, `25de62e`)
+
+### What changed since round 2
+
+A whole-branch review found five Important issues after round 2 passed.
+Summarized from the coordinator's brief, confirmed against the actual diff:
+
+1. **Detail tier now clipped to the study area.** It was being built from
+   the raw bbox-fetched layers while the overview was clipped — so above
+   the gate the map used to draw 11,293 features outside the county that
+   the metrics never counted. `backend/hcas.py`'s `_run_step_7` now calls
+   the same `_clip_to_study_area` the overview tier already used, on each
+   layer, before building its detail payload.
+2. **Layer attachment changed.** Each `HCASViewportLayer`'s canvas group
+   now nests inside its overview `FeatureGroup` (`container.addLayer`)
+   rather than attaching to the map directly, so `LayerControl` governs
+   both tiers as one on/off unit.
+3. **The overview's own GeoJson sublayer is now hidden above the gate**
+   once the detail canvas draws successfully, so only one tier is visible
+   at a time (round 2's renderer drew both, doubled, in identical styling
+   — a "no double draw above the gate" claim round 2 never actually tested).
+4. **Per-layer `try/catch`** around each instantiation and around
+   `refresh()`, so one layer's exception can no longer kill the other two
+   (this is what fixed the exact failure class round 1 found, made
+   robust against a DIFFERENT trigger).
+5. **Regression fix on top of that:** hiding the overview before drawing
+   could leave a layer showing neither tier if the draw threw mid-way. The
+   overview is now hidden only after a successful draw, and a mid-draw
+   throw restores it.
+6. **Detail payloads are now skipped for layers under the sampling cap**
+   (`stride == 1`) — no duplicate bytes for a layer the overview already
+   draws in full.
+
+### Setup
+
+Same real cached Delaware County pickles (`buildings.pkl` 26,393 /
+`roads.pkl` 28,865 / `sidewalks.pkl` 7,135 / `study_area.pkl`), same
+production call path (`backend.hcas._overview_geoms` →
+`backend.assess.renderer._clip_to_study_area` → `backend.hcas._detail_payload`
+→ `backend.assess.render_assessment_map`, matching `_run_step_7` exactly,
+including the new `stride > 1` skip). Rendered size: **11,079,342 bytes
+(11.08 MB)** — matches the coordinator's stated 11,077,515 bytes to within
+0.02% (a few bytes of float-formatting noise across environments, not a
+discrepancy worth chasing). Clipped feature counts: buildings 22,953 /
+roads 22,759 / sidewalks 5,388 — exactly as stated. Headless
+Playwright/Chromium, viewport 1200×800, no visible window.
+
+### Results — all nine checks
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | Loads at all | **PASS** — `load` event at 0.701s, map `_loaded===true` at 0.710s. |
+| 2 | Zero console errors | **PASS** — 0 console errors, 0 uncaught page errors. |
+| 3 | Zero network requests for feature data | **PASS** — 59 requests: CDN libraries + CartoDB tiles only, zero feature-data requests. |
+| 4 | County zoom labelled overview | **PASS** — zoom 11, exact expected sentence for all three layers. |
+| 5 | z16 dense subdivision, no gaps | **PASS** — screenshot `r3-z16-dense-subdivision.png`, blocks fill edge-to-edge. |
+| 6 | Roads not closed rings | **PASS** — every drawn road/sidewalk `HCASViewportLayer` layer at z16 (777 + 161 = 938 layers) is `instanceof L.Polyline` and **not** `L.Polygon`, checked directly on the real Leaflet objects. |
+| 7 | Buildings with holes render as voids | **PASS** — target building (2 interior rings). Pixel test: hole point RGB(237,237,237) vs. fill point RGB(214.5,214.5,214.5), delta 39.0. Visual crop `r3-building-hole-void.png` shows a clean rectangular void cut into the fill. |
+| 8 | Rendered count == Python-computed count for the same bbox — **now a genuinely independent test** | **PASS, exact match: 3,556 == 3,556.** Per the coordinator's specific concern, this was NOT a replay of the embedded payload: a second, separate script (`rebuild_independent.py`) re-derived the buildings detail payload from the raw pickle via a fresh `_clip_to_study_area` + `_detail_payload` call, confirmed it byte-for-byte identical to what got embedded (determinism check), then computed the expected count for Leaflet's actual `getBounds()` from THAT independently-rebuilt payload. Additionally, per the coordinator's suggestion: checked every one of 293,946 embedded ring-0 vertices across all three layers against the real county polygon (loaded fresh from `study_area.pkl`) with an 0.0002°(~20m) buffer — **0 violations, 0 vertices outside**, max distance 0.0. Nothing draws outside the study area. |
+| 9 | Pan/zoom responsiveness | **PASS** — 5 pans at z16 measured 15.5–20.1ms round-trip each, well under 100ms. Max drawn on any layer: 3,556, under the 5,000 budget. |
+
+### The four attention items
+
+- **Check 8 strengthened (see above):** independent rebuild + full boundary-containment scan, not a self-consistent replay. This is the test that would have caught the unclipped-detail-tier bug round 2 missed.
+- **Layer control now matters:** unticked "Buildings" at z16 via the real checkbox (`.leaflet-control-layers-overlays` input, clicked through Playwright, not simulated) — `map.hasLayer(buildingsContainer)` went `true → false` and the screenshot (`r3-buildings-unticked.png`) shows every building gone (both tiers; the FeatureGroup nests the canvas group, so one uncheck removes both), roads still drawn. Sidewalks (`show=False` by default): confirmed `mapHasContainer: false` at z16 before any interaction; ticked the checkbox, confirmed `true` and 161 features rendered (`r3-sidewalks-ticked.png`).
+- **No double-draw above the gate:** `HCASViewportLayer.overviewHidden` was `false` below the gate (zoom 11, canvas empty, overview visible — correct) and `true` for all three layers at z16 (canvas populated, overview sublayer genuinely removed from its FeatureGroup via `container.removeLayer`, not merely drawn under/over it) — checked via the live JS object state, not inferred from a screenshot alone.
+- **`GeometryCollection`/`MultiLineString` at the clip boundary:** the real clip produced 3 MultiPolygon buildings, 68 MultiLineString roads, 101 MultiLineString sidewalks (no `GeometryCollection` in this particular county's data — the code path for it exists and is unit-tested per the fix-wave commit, just not exercised by this specific real dataset). `_detail_payload` logged zero silent drops. Screenshots at two real boundary-clipped MultiLineString road locations (`r3-county-edge-multilinestring.png` — "Smothers Road" running exactly along the county line) show the clipped segments rendering correctly, following the real road, no spurious jumps or malformed artifacts.
+
+### Verification scripts (scratch, not committed)
+
+`render_real_map.py` (updated to match the new clip-before-detail +
+stride-skip logic), `rebuild_independent.py` (the independent rebuild +
+containment check), `verify_map2.py` (main harness — layer control,
+double-draw, and all nine checks), `analyze_payload.py` (re-run against the
+new clipped payload; hole-building indices shifted from round 2 since 4 of
+the 35 holed buildings were clipped out), `edge_check.py` (boundary
+screenshots). All under the session scratchpad.
+
+New screenshots under
+`docs/measurements/screenshots-2026-08-12-viewport-verification/`:
+`r3-county-overview.png`, `r3-z16-dense-subdivision.png`,
+`r3-buildings-unticked.png`, `r3-sidewalks-ticked.png`,
+`r3-building-hole-void.png`, `r3-county-edge-multilinestring.png`.
+
+No production code was modified during this verification.
+
+---
+
+## Round 2 history: clip-before-detail fix re-measurement note (as originally written by the fix-wave commit, 2026-08-13)
 
 `backend/hcas.py`'s `_run_step_7` now clips each layer to the study area
 (`backend.assess.renderer._clip_to_study_area`, the same function the
@@ -55,7 +142,13 @@ it directly in `backend/tests/test_map_payload_20260812.py`
 `test_multilinestring_parts_are_all_reachable`), asserting every member/part
 is reachable from the cell index and keeps its own point count.
 
-## Re-verification run (commit `8888d0b`)
+## Round 2 (commit `8888d0b`, superseded by round 3 above)
+
+**This run reported PASS 9/9, but against a renderer whose detail tier was
+not yet clipped to the study area, and whose check 8 replayed the same
+payload the page embedded rather than an independently-rebuilt one — the
+exact combination that let the unclipped-tier defect ship undetected. Round
+3 above is the current, trustworthy result.** Kept for the record.
 
 ### Setup
 
