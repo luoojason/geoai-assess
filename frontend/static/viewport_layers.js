@@ -171,14 +171,16 @@
       }
       return;
     }
-    // Above the gate: hide the overview's own GeoJson sublayer (not the
-    // whole FeatureGroup — that stays under LayerControl's on/off state) so
-    // the same sampled features are never drawn twice, once by the overview
-    // and once by this canvas group, in byte-identical styling.
-    if (this.overviewLayer && !this.overviewHidden) {
-      this.container.removeLayer(this.overviewLayer);
-      this.overviewHidden = true;
-    }
+    // Above the gate, but the overview sublayer is NOT hidden here anymore.
+    // It used to be hidden right at this point, before the detail group was
+    // even touched — so a throw anywhere in the drawing below (a malformed
+    // cell entry, a _buildLayer edge case) left the layer showing NEITHER
+    // tier: overview already removed, detail group never (or only
+    // partially) populated. Blank, under a legend that promises "every one
+    // in view is drawn". The hide now happens only after a successful draw,
+    // at the bottom of this function; see the catch block below for the
+    // case where the overview was already hidden by a PRIOR successful
+    // refresh and THIS one fails.
     var b = this.map.getBounds(), d = this.payload.cell_deg;
     var c0 = Math.floor(b.getWest() / d), c1 = Math.floor(b.getEast() / d);
     var r0 = Math.floor(b.getSouth() / d), r1 = Math.floor(b.getNorth() / d);
@@ -196,12 +198,42 @@
     // distinct index sets can never serialize equal; that's all this needs.
     var key = Object.keys(wanted).sort().join(",");
     if (key === this.drawn) return;        // same features, nothing to redo
-    this.group.clearLayers();
-    var self = this;
-    Object.keys(wanted).forEach(function (i) {
-      var layer = self._buildLayer(i);
-      if (layer) self.group.addLayer(layer);
-    });
+
+    try {
+      this.group.clearLayers();
+      var self = this;
+      Object.keys(wanted).forEach(function (i) {
+        var layer = self._buildLayer(i);
+        if (layer) self.group.addLayer(layer);
+      });
+    } catch (e) {
+      // Drawing failed partway. Whatever ended up in `this.group` is
+      // untrustworthy (possibly empty, possibly a partial set), so drop it
+      // rather than leave stale/partial features on screen next to a
+      // restored overview. Restore the overview unconditionally — covers
+      // both "we hadn't hidden it yet this call" (nothing to do, it was
+      // never removed) and "a PRIOR successful refresh had already hidden
+      // it" (this is the case that used to strand the layer blank). Reset
+      // `drawn` to null so the next moveend/zoomend retries the full draw
+      // instead of trusting a key that no longer matches what's on screen.
+      this.group.clearLayers();
+      this.drawn = null;
+      if (this.overviewLayer && this.overviewHidden) {
+        this.container.addLayer(this.overviewLayer);
+        this.overviewHidden = false;
+      }
+      throw e;   // refresh()'s own try/catch logs it; not swallowed here too
+    }
+
+    // Hide the overview's own GeoJson sublayer (not the whole FeatureGroup —
+    // that stays under LayerControl's on/off state) ONLY after the detail
+    // group drew successfully, so the same sampled features are never drawn
+    // twice (overview + canvas, byte-identical styling) but a failed draw
+    // can never leave neither tier visible.
+    if (this.overviewLayer && !this.overviewHidden) {
+      this.container.removeLayer(this.overviewLayer);
+      this.overviewHidden = true;
+    }
     this.drawn = key;
   };
 
