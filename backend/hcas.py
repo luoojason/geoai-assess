@@ -1578,13 +1578,12 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         # payload would be duplicate bytes and a guaranteed double-draw at
         # the gate zoom for zero benefit.
         detail = {}
-        for _n in ("buildings", "roads", "sidewalks"):
-            if _n in layers and sample_info.get(_n, {}).get("stride", 1) > 1:
-                try:
-                    clipped = _clip_to_study_area(layers[_n], study_area)
-                    detail[_n] = _detail_payload(clipped)
-                except Exception as _exc:      # a drawing aid never fails the step
-                    logger.warning(f"detail payload for {_n} failed: {_exc}")
+        for _n in layers:
+            try:
+                clipped = _clip_to_study_area(layers[_n], study_area)
+                detail[_n] = _detail_payload(clipped)
+            except Exception as _exc:          # a drawing aid never fails the step
+                logger.warning(f"detail payload for {_n} failed: {_exc}")
 
         # ponytail: stashed under _map_html; run_step pops it into the maps table
         # so the multi-MB HTML never bloats the editable artifact JSON
@@ -1598,6 +1597,7 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
             sidewalks=slim.get("sidewalks"),
             transit_stops=slim.get("transit_stops"),
             facilities=slim.get("facilities"),
+            landuse=slim.get("landuse"),
             sample_info=sample_info,
             detail_payloads=detail,
         )
@@ -1695,10 +1695,16 @@ def _overview_geoms(gdf):
     g = gdf[["geometry"]].copy()
     g = g[~g.geometry.is_empty & g.geometry.notna()]
     n = len(g)
-    stride = (n // _MAP_MAX_FEATURES) + 1 if n > _MAP_MAX_FEATURES else 1
-    if stride > 1:
-        # even stride keeps the sample spread across the area, not clustered
-        g = g.iloc[::stride]
+    # No sampling. The 3,500-feature cap that used to live here produced a
+    # fixed COUNT, so fidelity collapsed as density rose: 1 in 2 on rural
+    # Adams, 1 in 8 on suburban Delaware, 1 in 58 on New York County — about
+    # one building per two city blocks, which reads as a map that failed to
+    # load. Every layer now draws through the viewport tier, which holds all
+    # of it; this frame is only the fallback path for a layer whose payload
+    # build failed, and a fallback that silently drops 98% of its features is
+    # worse than none. `stride` stays in the returned dict, always 1, because
+    # the legend's sampling sentence keys off it and self-suppresses at 1.
+    stride = 1
     g["geometry"] = g.geometry.simplify(_MAP_SIMPLIFY_M)
     g = g[~g.geometry.is_empty]
     return g, {"shown": len(g), "total": n, "stride": stride}

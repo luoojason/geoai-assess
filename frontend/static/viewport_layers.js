@@ -130,6 +130,15 @@
     // the page down with it — so a ringless entry is skipped, not drawn.
     if (!rings || !rings.length) return null;
     var opts = Object.assign({ renderer: this.renderer }, this.style);
+    if (this.shape === "point") {
+      // Transit stops and facilities are Points. build_payload emits a Point
+      // part as a single ring holding one coordinate, so rings[0][0] is the
+      // position. L.polygon/L.polyline on a one-point ring draw nothing at
+      // all — which is how these two layers would silently vanish rather
+      // than fail loudly.
+      if (!rings[0] || !rings[0].length) return null;
+      return L.circleMarker(rings[0][0], opts);
+    }
     if (this.shape === "polyline") {
       // A LineString round-trips as a single ring; any further rings can't
       // occur for a part built from a LineString, so only rings[0] is used.

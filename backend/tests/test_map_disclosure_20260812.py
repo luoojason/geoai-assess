@@ -21,15 +21,24 @@ def _grid_gdf(n: int, size: float = 50.0) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=polys, crs="EPSG:5070")
 
 
-def test_slim_reports_how_many_it_kept():
+def test_overview_never_samples_however_dense_the_layer():
+    """The 3,500 cap is gone, and this test is the inverse of the one that
+    stood here before.
+
+    That test asserted `stride == 8` on 26,393 features, which was the
+    behaviour as designed — a fixed feature COUNT, so fidelity fell as density
+    rose. Measured on real counties: 1 in 2 on rural Adams, 1 in 8 on suburban
+    Delaware, and 1 in 58 on New York County, which drew roughly one building
+    per two city blocks and was reported as the map failing to load. A cap
+    calibrated on one county is not a cap, so there is no longer one.
+    """
     slim, info = hcas._overview_geoms(_grid_gdf(26393))
     assert info["total"] == 26393
-    assert info["stride"] == 8
-    assert info["shown"] == len(slim)
-    assert info["shown"] < info["total"]
+    assert info["stride"] == 1
+    assert info["shown"] == len(slim) == 26393, "no feature may be dropped"
 
 
-def test_slim_reports_no_sampling_when_under_the_cap():
+def test_overview_reports_no_sampling_for_a_small_layer_too():
     slim, info = hcas._overview_geoms(_grid_gdf(100))
     assert info == {"shown": 100, "total": 100, "stride": 1}
     assert len(slim) == 100

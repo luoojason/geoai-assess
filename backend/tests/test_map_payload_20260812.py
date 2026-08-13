@@ -118,11 +118,18 @@ def test_detail_geometry_is_finer_than_overview():
     assert detail_pts > overview_pts, "12 m simplification on a 12 m house is a blob"
 
 
-def test_overview_still_samples_and_reports():
+def test_overview_keeps_every_feature_at_any_density():
+    """Was `test_overview_still_samples_and_reports`, asserting stride 8.
+
+    Sampling is gone: it was a fixed 3,500-feature cap, so the fraction kept
+    fell as density rose (1 in 58 on New York County). Both tiers now hold
+    every feature, so the only correct assertion is that nothing is lost.
+    """
     gdf = _metre_squares(26393)
-    _slim, info = hcas._overview_geoms(gdf)
-    assert info["stride"] == 8
+    slim, info = hcas._overview_geoms(gdf)
+    assert info["stride"] == 1
     assert info["total"] == 26393
+    assert len(slim) == 26393
 
 
 def test_geometry_collection_parts_are_all_reachable():

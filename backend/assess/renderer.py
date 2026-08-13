@@ -13,7 +13,42 @@ logger = logging.getLogger(__name__)
 # docs/measurements/2026-08-12-map-payload-sizes.md. Below this zoom the
 # viewport module stays gated off and the thinned overview (drawn by Folium
 # in the ordinary way) is what's on screen.
-GATE_ZOOM = 16
+# 0, not 16: the viewport tier now draws at EVERY zoom, because there is no
+# longer a second (sampled) tier for it to hand over to below a gate. The gate
+# existed to protect a county-wide view from drawing everything at once —
+# measured 2026-08-13 on New York County, the densest case to hand, drawing all
+# 96,294 clipped features at county zoom costs 202 ms once and 82-96 ms per pan,
+# against a 100 ms budget. The sampled overview it was protecting cost far more
+# than that: at 1-in-58 it drew about one building per two city blocks, which
+# reads as "the map didn't load".
+GATE_ZOOM = 0
+
+
+# Draw order is bottom-to-top, and it is load-bearing: landuse (farmland,
+# forest, meadow — the large background polygons) has to sit UNDER greenspace
+# and buildings or it buries them. Landuse was fetched, counted in the step-3
+# inventory and shown in the layer list from the beginning, but had no draw
+# path at all until 2026-08-13 — reported as "the green is missing" on a rural
+# county, where landuse is most of the green there is.
+# key, LayerControl label, on by default, geometry shape, style
+_LAYER_SPEC = (
+    ("landuse", "Land use", True, "polygon",
+     {"fillColor": "#a3b18a", "fillOpacity": 0.30, "color": "#84957a", "weight": 0.3}),
+    ("greenspace", "Greenspace", True, "polygon",
+     {"fillColor": "#2d8a4e", "fillOpacity": 0.5, "color": "#1a5c33", "weight": 0.5}),
+    ("parking", "Parking", False, "polygon",
+     {"fillColor": "#e07b00", "fillOpacity": 0.5, "color": "#a05500", "weight": 0.5}),
+    ("buildings", "Buildings", True, "polygon",
+     {"fillColor": "#555555", "fillOpacity": 0.6, "color": "#333333", "weight": 0.5}),
+    ("roads", "Roads", True, "polyline",
+     {"color": "#3a7abf", "weight": 1, "opacity": 0.8, "fill": False}),
+    ("sidewalks", "Sidewalks", False, "polyline",
+     {"color": "#7b4fa6", "weight": 1.5, "opacity": 0.8, "fill": False}),
+    ("transit_stops", "Transit Stops", False, "point",
+     {"fillColor": "#0d9488", "fillOpacity": 0.9, "color": "#0f766e", "weight": 1, "radius": 4}),
+    ("facilities", "Facilities", False, "point",
+     {"fillColor": "#c2410c", "fillOpacity": 0.9, "color": "#9a3412", "weight": 1, "radius": 4}),
+)
 
 
 def _clip_to_study_area(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame):
@@ -118,11 +153,17 @@ def render_assessment_map(
     sample_info: dict | None = None,
     detail_payloads: dict | None = None,
     gate_zoom: int = GATE_ZOOM,
+    landuse: gpd.GeoDataFrame | None = None,
 ) -> str:
-    """Render buildings, greenspace, and roads onto a single Folium map.
+    """Render every confirmed layer onto a single Folium map.
 
-    Each non-empty layer becomes a FeatureGroup. A metrics panel is shown
-    in the top-right corner. Returns m._repr_html_().
+    Each non-empty layer becomes a FeatureGroup drawn by the viewport module,
+    which holds every feature and paints the ones the camera covers. A metrics
+    panel is shown in the top-right corner. Returns m._repr_html_().
+
+    `landuse` is keyword-only-by-position on purpose: it was added on
+    2026-08-13, after the positional arguments were already load-bearing for
+    existing callers and tests.
 
     Raises:
         ValueError: if study_area is empty or None.
@@ -143,6 +184,7 @@ def render_assessment_map(
     sidewalks = _clip_to_study_area(sidewalks, study_area)
     transit_stops = _clip_to_study_area(transit_stops, study_area)
     facilities = _clip_to_study_area(facilities, study_area)
+    landuse = _clip_to_study_area(landuse, study_area)
 
     # Study area boundary
     fg_area = folium.FeatureGroup(name="Study Area", show=True)
@@ -169,102 +211,35 @@ def render_assessment_map(
     # z16.
     _overview_refs: dict = {}
 
-    if not buildings.empty:
-        fg_b = folium.FeatureGroup(name="Buildings", show=True)
-        gj_b = folium.GeoJson(
-            buildings.to_crs("EPSG:4326").__geo_interface__,
-            style_function=lambda _: {
-                "fillColor": "#555555",
-                "fillOpacity": 0.6,
-                "color": "#333333",
-                "weight": 0.5,
-            },
-        )
-        gj_b.add_to(fg_b)
-        fg_b.add_to(m)
-        _overview_refs["buildings"] = (fg_b.get_name(), gj_b.get_name())
-
-    if not greenspace.empty:
-        fg_g = folium.FeatureGroup(name="Greenspace", show=True)
-        folium.GeoJson(
-            greenspace.to_crs("EPSG:4326").__geo_interface__,
-            style_function=lambda _: {
-                "fillColor": "#2d8a4e",
-                "fillOpacity": 0.5,
-                "color": "#1a5c33",
-                "weight": 0.5,
-            },
-        ).add_to(fg_g)
-        fg_g.add_to(m)
-
-    if not roads.empty:
-        fg_r = folium.FeatureGroup(name="Roads", show=True)
-        gj_r = folium.GeoJson(
-            roads.to_crs("EPSG:4326").__geo_interface__,
-            style_function=lambda _: {
-                "color": "#3a7abf",
-                "weight": 1,
-                "opacity": 0.8,
-            },
-        )
-        gj_r.add_to(fg_r)
-        fg_r.add_to(m)
-        _overview_refs["roads"] = (fg_r.get_name(), gj_r.get_name())
-
-    if parking is not None and not parking.empty:
-        fg_p = folium.FeatureGroup(name="Parking", show=False)
-        folium.GeoJson(
-            parking.to_crs("EPSG:4326").__geo_interface__,
-            style_function=lambda _: {
-                "fillColor": "#e07b00",
-                "fillOpacity": 0.5,
-                "color": "#a05500",
-                "weight": 0.5,
-            },
-        ).add_to(fg_p)
-        fg_p.add_to(m)
-
-    if sidewalks is not None and not sidewalks.empty:
-        fg_sw = folium.FeatureGroup(name="Sidewalks", show=False)
-        gj_sw = folium.GeoJson(
-            sidewalks.to_crs("EPSG:4326").__geo_interface__,
-            style_function=lambda _: {
-                "color": "#7b4fa6",
-                "weight": 1.5,
-                "opacity": 0.8,
-            },
-        )
-        gj_sw.add_to(fg_sw)
-        fg_sw.add_to(m)
-        _overview_refs["sidewalks"] = (fg_sw.get_name(), gj_sw.get_name())
-
-    if transit_stops is not None and not transit_stops.empty:
-        fg_ts = folium.FeatureGroup(name="Transit Stops", show=False)
-        folium.GeoJson(
-            transit_stops.to_crs("EPSG:4326").__geo_interface__,
-            style_function=lambda _: {
-                "fillColor": "#0d9488",
-                "fillOpacity": 0.9,
-                "color": "#0f766e",
-                "weight": 1,
-                "radius": 5,
-            },
-        ).add_to(fg_ts)
-        fg_ts.add_to(m)
-
-    if facilities is not None and not facilities.empty:
-        fg_f = folium.FeatureGroup(name="Facilities", show=False)
-        folium.GeoJson(
-            facilities.to_crs("EPSG:4326")[["geometry"]].__geo_interface__,
-            style_function=lambda _: {
-                "fillColor": "#c2410c",
-                "fillOpacity": 0.9,
-                "color": "#9a3412",
-                "weight": 1,
-                "radius": 5,
-            },
-        ).add_to(fg_f)
-        fg_f.add_to(m)
+    frames = {
+        "landuse": landuse, "greenspace": greenspace, "buildings": buildings,
+        "parking": parking, "roads": roads, "sidewalks": sidewalks,
+        "transit_stops": transit_stops, "facilities": facilities,
+    }
+    for key, label, show, _shape, style in _LAYER_SPEC:
+        gdf = frames.get(key)
+        payload = (detail_payloads or {}).get(key)
+        has_payload = bool(payload and payload.get("total"))
+        # A layer exists on the map if EITHER tier has something to draw. The
+        # payload is the authority: `gdf` is only still consulted so that a
+        # layer whose payload build failed keeps its old GeoJson draw path
+        # rather than disappearing.
+        if not has_payload and (gdf is None or gdf.empty):
+            continue
+        fg = folium.FeatureGroup(name=label, show=show)
+        gj_name = None
+        if not has_payload:
+            # Fallback only. Every layer normally draws through the viewport
+            # tier below; this path exists so a failed payload degrades to the
+            # previous behaviour instead of an empty map.
+            gj = folium.GeoJson(
+                gdf.to_crs("EPSG:4326")[["geometry"]].__geo_interface__,
+                style_function=(lambda s: (lambda _: s))(style),
+            )
+            gj.add_to(fg)
+            gj_name = gj.get_name()
+        fg.add_to(m)
+        _overview_refs[key] = (fg.get_name(), gj_name)
 
     # Top-LEFT, stacking under the zoom buttons. Leaflet puts the layer control
     # in the top-right corner by default, which is where the metrics panel below
@@ -317,7 +292,14 @@ def render_assessment_map(
     if _UNSELECTED in shown:
         keys.append("<b>not selected</b> = this factor is not in the confirmed list "
                     "for this assessment, so it was never fetched")
-    for _layer in ("buildings", "roads", "sidewalks"):
+    # Every layer, not just buildings/roads/sidewalks. Those three were the only
+    # ones over the old 3,500 cap on the county this was designed against, and
+    # scoping the legend to them meant a denser county sampled the others in
+    # silence: New York County fetched 11,314 greenspace features, so greenspace
+    # drew at 1 in 4 with nothing on screen saying so. Nothing is sampled now
+    # (stride is always 1), so these lines self-suppress — the loop stays whole
+    # so that if sampling ever comes back it cannot come back invisibly.
+    for _layer, _lbl, _sh, _shp, _st in _LAYER_SPEC:
         # Per-layer membership, not a single bool(detail_payloads) for all
         # three: hcas.py builds each layer's detail payload in its own
         # try/except, so one layer can fail (dropped, logged) while the
@@ -397,16 +379,16 @@ def render_assessment_map(
             logger.warning(f"could not read viewport_layers.js, shipping overview-only map: {_exc}")
 
         if js is not None:
-            _styles = {
-                "buildings": {"color": "#333333", "weight": 0.5,
-                              "fillColor": "#555555", "fillOpacity": 0.6},
-                "roads": {"color": "#3a7abf", "weight": 1, "fill": False},
-                "sidewalks": {"color": "#7b4fa6", "weight": 1.5, "fill": False},
-            }
-            # Roads and sidewalks are LineStrings: 'polyline' draws only their
-            # first ring open, whereas the 'polygon' default would close each one
-            # with a spurious segment back to its first point.
-            _shapes = {"buildings": "polygon", "roads": "polyline", "sidewalks": "polyline"}
+            # Both tables come from _LAYER_SPEC now, so the styles the viewport
+            # tier paints with cannot drift from the ones the GeoJson fallback
+            # uses, and adding a layer means adding one row rather than editing
+            # three dicts. Roads and sidewalks are LineStrings ('polyline' draws
+            # their first ring open, where the 'polygon' default would close
+            # each one with a spurious segment back to its first point); transit
+            # stops and facilities are Points ('point' -> circleMarker, since
+            # polygon/polyline on a one-coordinate ring draw nothing at all).
+            _styles = {k: st for k, _l, _s, _sh, st in _LAYER_SPEC}
+            _shapes = {k: sh for k, _l, _s, sh, _st in _LAYER_SPEC}
             blocks = [js]
             for name, payload in detail_payloads.items():
                 if not payload or not payload.get("total"):
