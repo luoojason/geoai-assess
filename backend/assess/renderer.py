@@ -4,6 +4,13 @@ from __future__ import annotations
 import geopandas as gpd
 import folium
 
+# Lowest zoom whose densest real-world viewport (Delaware County, 1200x800px
+# pane) holds <=5,000 building features — see
+# docs/measurements/2026-08-12-map-payload-sizes.md. Below this zoom the
+# viewport module stays gated off and the thinned overview (drawn by Folium
+# in the ordinary way) is what's on screen.
+GATE_ZOOM = 16
+
 
 def _clip_to_study_area(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame):
     """Only the part of each feature that lies inside the study area.
@@ -76,18 +83,22 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
     return m._repr_html_()
 
 
-def _sample_legend_line(layer: str, info: dict | None) -> str:
+def _sample_legend_line(layer: str, info: dict | None, has_detail: bool = False) -> str:
     """One honest sentence about how much of a layer is drawn, or "" if all of it.
 
-    Deliberately does NOT promise "zoom in for all" — the viewport renderer that
-    would make that true is not built yet, and a legend that overstates the map
-    is the bug this line exists to fix.
+    `has_detail=False` (the default) deliberately does NOT promise "zoom in for
+    all" — that is only true once the full-detail viewport payload for this
+    layer is actually embedded in the page. `has_detail=True` is the caller's
+    assertion that it is.
     """
     if not info or info.get("stride", 1) <= 1:
         return ""
     shown, total, stride = info["shown"], info["total"], info["stride"]
-    return (f"<b>{layer}</b>: showing {shown:,} of {total:,} (1 in {stride}) to keep "
-            f"the map fast. All {total:,} were measured and counted in the metrics above.")
+    tail = (" Zoom in and every one in view is drawn."
+            if has_detail else
+            f" All {total:,} were measured and counted in the metrics above.")
+    return (f"<b>{layer}</b>: showing {shown:,} of {total:,} (1 in {stride}) at this "
+            f"zoom.{tail}")
 
 
 def render_assessment_map(
@@ -101,6 +112,8 @@ def render_assessment_map(
     transit_stops: gpd.GeoDataFrame | None = None,
     facilities: gpd.GeoDataFrame | None = None,
     sample_info: dict | None = None,
+    detail_payloads: dict | None = None,
+    gate_zoom: int = GATE_ZOOM,
 ) -> str:
     """Render buildings, greenspace, and roads onto a single Folium map.
 
@@ -115,7 +128,8 @@ def render_assessment_map(
 
     study_4326 = study_area.to_crs("EPSG:4326")
     centroid = study_4326.geometry.union_all().centroid
-    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=13, tiles="CartoDB positron")
+    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=13, tiles="CartoDB positron",
+                    prefer_canvas=True)
 
     # Draw only what was measured (see _clip_to_study_area).
     buildings = _clip_to_study_area(buildings, study_area)
@@ -281,7 +295,10 @@ def render_assessment_map(
         keys.append("<b>not selected</b> = this factor is not in the confirmed list "
                     "for this assessment, so it was never fetched")
     for _layer in ("buildings", "roads", "sidewalks"):
-        _line = _sample_legend_line(_layer, (sample_info or {}).get(_layer))
+        _line = _sample_legend_line(
+            _layer, (sample_info or {}).get(_layer),
+            has_detail=bool(detail_payloads),
+        )
         if _line:
             keys.append(_line)
     legend_html = (
@@ -309,6 +326,46 @@ def render_assessment_map(
     </div>
     """
     m.get_root().html.add_child(folium.Element(panel_html))
+
+    # Full-detail viewport layers: every feature is embedded, but only the
+    # cells the camera currently covers are drawn, and only above gate_zoom.
+    # MUST land in folium's SCRIPT section, not its HTML section — folium
+    # renders html before script, so m.get_name()'s map variable does not
+    # exist yet if this runs from the html section, and the layers silently
+    # never attach. folium.Element here is raw JS with NO <script> tags: the
+    # script section is already inside one.
+    if detail_payloads:
+        import json
+        from pathlib import Path
+
+        js = (Path(__file__).resolve().parents[2]
+              / "frontend" / "static" / "viewport_layers.js").read_text(encoding="utf-8")
+        # No encoder: map_payload.py emits plain 6-decimal-place coordinates,
+        # so there is no `encoded:` option to pass.
+        _styles = {
+            "buildings": {"color": "#333333", "weight": 0.5,
+                          "fillColor": "#555555", "fillOpacity": 0.6},
+            "roads": {"color": "#3a7abf", "weight": 1, "fill": False},
+            "sidewalks": {"color": "#7b4fa6", "weight": 1.5, "fill": False},
+        }
+        # Roads and sidewalks are LineStrings: 'polyline' draws only their
+        # first ring open, whereas the 'polygon' default would close each one
+        # with a spurious segment back to its first point.
+        _shapes = {"buildings": "polygon", "roads": "polyline", "sidewalks": "polyline"}
+        blocks = [js]
+        for name, payload in detail_payloads.items():
+            if not payload or not payload.get("total"):
+                continue
+            opts = {
+                "gateZoom": gate_zoom,
+                "style": _styles.get(name, {}),
+                "shape": _shapes.get(name, "polygon"),
+            }
+            blocks.append(
+                "(function(){var p=%s;new HCASViewportLayer(%s,p,%s).attach();})();"
+                % (json.dumps(payload), m.get_name(), json.dumps(opts))
+            )
+        m.get_root().script.add_child(folium.Element("\n".join(blocks)))
 
     # Fit to the study area, as the step-1 locator map already did. A fixed
     # zoom_start=13 centred on the centroid opens a county-wide assessment

@@ -1556,6 +1556,20 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         slim_pairs = {n: _overview_geoms(g) for n, g in layers.items()}
         slim = {n: pair[0] for n, pair in slim_pairs.items()}
         sample_info = {n: pair[1] for n, pair in slim_pairs.items()}
+
+        # Full-detail payloads for the viewport renderer — every feature,
+        # bucketed for the frontend module to draw only what the camera
+        # covers. Each layer builds independently: one bad geometry must not
+        # cost the other two their zoomed-in detail, and a drawing aid must
+        # never fail the step.
+        detail = {}
+        for _n in ("buildings", "roads", "sidewalks"):
+            if _n in layers:
+                try:
+                    detail[_n] = _detail_payload(layers[_n])
+                except Exception as _exc:      # a drawing aid never fails the step
+                    logger.warning(f"detail payload for {_n} failed: {_exc}")
+
         # ponytail: stashed under _map_html; run_step pops it into the maps table
         # so the multi-MB HTML never bloats the editable artifact JSON
         html = render_assessment_map(
@@ -1569,7 +1583,28 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
             transit_stops=slim.get("transit_stops"),
             facilities=slim.get("facilities"),
             sample_info=sample_info,
+            detail_payloads=detail,
         )
+        # Delaware (26,393 buildings + 28,865 roads + 7,135 sidewalks) measures
+        # 21.88 MB against this 25 MB ceiling — Franklin County (~60k buildings)
+        # would exceed it. Fall back to the overview-only render (no
+        # detail_payloads) rather than ship an oversized or truncated map.
+        if len(html) > 25_000_000 and detail:
+            logger.warning(
+                f"map HTML {len(html)/1e6:.0f} MB over the 25 MB ceiling — "
+                "re-rendering without embedded detail layers")
+            html = render_assessment_map(
+                study_area,
+                slim.get("buildings", empty),
+                slim.get("greenspace", empty),
+                slim.get("roads", empty),
+                metrics,
+                parking=slim.get("parking"),
+                sidewalks=slim.get("sidewalks"),
+                transit_stops=slim.get("transit_stops"),
+                facilities=slim.get("facilities"),
+                sample_info=sample_info,
+            )
         if len(html) > 150_000_000:
             raise RuntimeError(f"rendered map too large ({len(html)/1e6:.0f} MB)")
         artifact["_map_html"] = html
@@ -1619,15 +1654,32 @@ def _overview_geoms(gdf):
 
 
 def _detail_payload(gdf):
-    """Every feature, lightly simplified, bucketed for viewport rendering."""
+    """Every feature, lightly simplified, bucketed for viewport rendering.
+
+    This is the tier the legend promises "zoom in and every one in view is
+    drawn" for, so silently dropping features here is exactly the bug class
+    this whole plan exists to fix. `preserve_topology=True` simplification
+    does not collapse even a 1mm square, and measured against the real
+    26,393-feature Delaware buildings layer this filter drops zero features —
+    but a filter believed never to fire is how silent data loss ships, so the
+    pre- and post-filter counts are compared and any gap is logged loudly
+    rather than assumed away.
+    """
     from backend.assess.map_payload import build_payload
 
     if gdf is None or gdf.empty:
         return build_payload(None)
     g = gdf[["geometry"]].copy()
     g = g[~g.geometry.is_empty & g.geometry.notna()]
+    before = len(g)
     g["geometry"] = g.geometry.simplify(_DETAIL_SIMPLIFY_M)
     g = g[~g.geometry.is_empty]
+    after = len(g)
+    if after != before:
+        logger.warning(
+            f"detail payload simplification dropped {before - after} of "
+            f"{before} feature(s) to an empty geometry"
+        )
     return build_payload(g)
 
 
