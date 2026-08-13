@@ -7,6 +7,54 @@ headless Chromium browser, `file:///...`, no server running. The first run
 of this task (below, kept for the record) found the map completely broken;
 that defect is fixed and re-verified here, not assumed fixed.
 
+**Superseded byte size, 2026-08-13:** the 12,715,013-byte figure below (both
+runs measured the same number) was rendered from the DETAIL tier built off
+the raw bbox-fetched layers, unclipped to the study area — a defect a
+whole-branch review caught after this doc was written (the overview tier was
+always clipped; the detail tier never was). See the section immediately
+below for the re-measurement after that fix. Everything else in this
+doc — the browser-interactivity findings (load, console, shape, holes,
+count-match, pan timing) — is unaffected by the clip fix and still holds.
+
+## Clip-before-detail fix re-measurement (2026-08-13, final whole-branch review fix wave)
+
+`backend/hcas.py`'s `_run_step_7` now clips each layer to the study area
+(`backend.assess.renderer._clip_to_study_area`, the same function the
+overview tier already used) BEFORE building its detail payload, not after.
+Re-rendered the identical cached Delaware County pickles
+(`buildings.pkl` 26,393 / `roads.pkl` 28,865 / `sidewalks.pkl` 7,135 /
+`study_area.pkl`) through the fixed production call path.
+
+| Layer | Raw (bbox-fetched) | Clipped to county | Dropped |
+|---|---:|---:|---:|
+| buildings | 26,393 | 22,953 | 3,440 |
+| roads | 28,865 | 22,759 | 6,106 |
+| sidewalks | 7,135 | 5,388 | 1,747 |
+| **total** | **62,393** | **51,100** | **11,293** |
+
+Those 11,293 dropped features are exactly the ones the whole-branch review
+found drawing above zoom 16 outside the county boundary, uncounted by the
+metrics — the same 2026-08-09 boundary defect reopened through the
+unclipped detail tier.
+
+**New rendered size: 11,077,515 bytes (11.08 MB)**, down from
+12,715,013 bytes (12.72 MB) before the fix — a 1.64 MB (12.9%) reduction,
+consistent with the ~18% average feature drop above (byte reduction is
+smaller than the feature-count drop because clipping removes vertices from
+partially-clipped boundary-crossing features as well as whole features, but
+county-interior features — the majority — are untouched).
+
+`build_payload` was also, for the first time, exercised directly against a
+`GeometryCollection` and a `MultiLineString` — the geometry types
+`.intersection()` (used by `_clip_to_study_area`) can return that neither
+`fetch_buildings` (polygon-only) nor `fetch_sidewalks`/`fetch_road_network`
+(LineString-only) had ever produced. `_parts`' `Multi*`/`GeometryCollection`
+recursion was implemented but untested before this fix; two tests now cover
+it directly in `backend/tests/test_map_payload_20260812.py`
+(`test_geometry_collection_parts_are_all_reachable`,
+`test_multilinestring_parts_are_all_reachable`), asserting every member/part
+is reachable from the cell index and keeps its own point count.
+
 ## Re-verification run (commit `8888d0b`)
 
 ### Setup

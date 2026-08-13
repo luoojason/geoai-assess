@@ -7,7 +7,13 @@ before 2026-08-12 asserted that the map contains what was measured, which is why
 from __future__ import annotations
 
 import geopandas as gpd
-from shapely.geometry import Point, Polygon
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    Point,
+    Polygon,
+)
 
 from backend import hcas
 from backend.assess.map_payload import build_payload
@@ -117,3 +123,55 @@ def test_overview_still_samples_and_reports():
     _slim, info = hcas._overview_geoms(gdf)
     assert info["stride"] == 8
     assert info["total"] == 26393
+
+
+def test_geometry_collection_parts_are_all_reachable():
+    """`_clip_to_study_area`'s `.intersection()` against a county polygon can
+    return a GeometryCollection — a LineString clipped exactly along a
+    shared boundary segment, for instance, produces mixed-dimension pieces.
+    fetch_buildings filters to polygons and fetch_sidewalks to lines before
+    this point today, so nothing had ever handed build_payload a
+    GeometryCollection until the Important-1 clip-before-detail fix made
+    that a real, reachable input. `_parts` claims to recurse through
+    Multi*/GeometryCollection; this is the first test that runs it.
+    """
+    gc = GeometryCollection([
+        Polygon([(-83.0, 40.0), (-82.99, 40.0), (-82.99, 40.01), (-83.0, 40.01)]),
+        LineString([(-82.98, 40.02), (-82.97, 40.03)]),
+        Point(-82.96, 40.04),
+    ])
+    gdf = gpd.GeoDataFrame(geometry=[gc], crs="EPSG:4326")
+    p = build_payload(gdf, cell_deg=0.01)
+    assert p["total"] == 3, "one geoms entry per member of the collection"
+    reachable = set()
+    for idxs in p["cells"].values():
+        reachable.update(idxs)
+    assert reachable == {0, 1, 2}, f"not every collection member reachable: {reachable}"
+    # Ring 0 (the only ring each of these members has) keeps its own point
+    # count rather than being merged or dropped: a closed 4-vertex polygon
+    # ring (5 points, shapely repeats the first to close it), a 2-point
+    # line, and a 1-point "ring" for the bare Point.
+    lens = sorted(len(p["geoms"][i][0]) for i in range(3))
+    assert lens == [1, 2, 5], f"member point counts not preserved distinctly: {lens}"
+
+
+def test_multilinestring_parts_are_all_reachable():
+    """`_clip_to_study_area`'s `.intersection()` can also turn a single
+    LineString into a MultiLineString — a sidewalk crossing the county
+    boundary in/out/in comes back as two or more disjoint parts. Untested
+    until the Important-1 clip-before-detail fix made this a real input to
+    build_payload (fetch_sidewalks only ever handed it plain LineStrings).
+    """
+    mls = MultiLineString([
+        [(-83.0, 40.0), (-82.99, 40.0)],
+        [(-82.5, 41.0), (-82.49, 41.0), (-82.48, 41.0)],
+    ])
+    gdf = gpd.GeoDataFrame(geometry=[mls], crs="EPSG:4326")
+    p = build_payload(gdf, cell_deg=0.01)
+    assert p["total"] == 2, "one geoms entry per line part of the MultiLineString"
+    reachable = set()
+    for idxs in p["cells"].values():
+        reachable.update(idxs)
+    assert reachable == {0, 1}, f"not every MultiLineString part reachable: {reachable}"
+    lens = sorted(len(p["geoms"][i][0]) for i in range(2))
+    assert lens == [2, 3], f"each part should keep its own point count, not be merged: {lens}"

@@ -7,14 +7,16 @@
  * zoom the viewport can cover the entire study area, which would mean
  * drawing every embedded feature at once — thousands of polygons rebuilt on
  * every pan/zoom tick — and that is the exact browser freeze this guards
- * against. gateZoom = 16 was measured, not guessed: see task-6-brief.md
- * correction #4 (z15's densest Delaware viewport already holds 5,332
- * buildings, over the 5,000 draw budget).
+ * against. gateZoom = 16 was measured, not guessed: see
+ * docs/measurements/2026-08-12-map-payload-sizes.md's GATE_ZOOM table
+ * (z15's densest Delaware viewport already holds 5,332 buildings, over the
+ * 5,000 draw budget; z16's holds 2,427).
  *
  * Coordinates in `payload.geoms` arrive as plain [lon, lat] pairs already
- * rounded to 6 decimal places by backend/assess/map_payload.py — there is no
- * compact/delta encoding on the wire, so this module does no decoding, only
- * the [lon, lat] -> [lat, lng] axis swap Leaflet requires.
+ * rounded to 6 decimal places by backend/assess/map_payload.py (see that
+ * module for why there is no compact/binary encoder on the wire), so this
+ * module does no decoding, only the [lon, lat] -> [lat, lng] axis swap
+ * Leaflet requires.
  */
 (function (global) {
   "use strict";
@@ -36,10 +38,27 @@
     return out;
   }
 
-  function HCASViewportLayer(map, payload, opts) {
+  function HCASViewportLayer(map, payload, opts, overviewGroup, overviewLayer) {
     opts = opts || {};
     this.map = map;
     this.payload = payload;
+    // `overviewGroup` is the Leaflet layer (typically the overview
+    // FeatureGroup folium's LayerControl already knows about) this layer's
+    // canvas group attaches to instead of the map directly. Both L.Map and
+    // L.LayerGroup/L.FeatureGroup expose addLayer/removeLayer, so the same
+    // calls work whichever was passed. Falling back to `map` when omitted
+    // keeps this constructor's 3-arg form (map, payload, opts) working
+    // exactly as before for any other caller.
+    this.container = overviewGroup || map;
+    // `overviewLayer` is the specific overview GeoJson sublayer INSIDE that
+    // FeatureGroup — the one that actually draws the thinned overview
+    // shapes. Above the gate, refresh() removes just this sublayer from
+    // `container` (not the whole FeatureGroup, whose on/off state belongs
+    // to LayerControl) so the overview and the full-detail canvas group
+    // never draw the same features on top of each other. `null`/omitted
+    // when the caller has no overview counterpart to hide.
+    this.overviewLayer = overviewLayer || null;
+    this.overviewHidden = false;
     // A missing or malformed gate must fail CLOSED. undefined would make
     // `getZoom() < this.gateZoom` false at every zoom, which silently disables
     // the gate and draws every embedded feature on every pan/zoom tick — the
@@ -77,7 +96,12 @@
 
   HCASViewportLayer.prototype.attach = function () {
     if (!this._valid) return;
-    this.group.addTo(this.map);
+    // addLayer on `this.container`, not addTo(this.map): nesting the canvas
+    // group inside the overview FeatureGroup (when one was passed) is what
+    // lets folium's existing LayerControl govern both tiers as a single
+    // on/off unit, instead of the canvas group being invisible to the
+    // control and impossible to switch off.
+    this.container.addLayer(this.group);
     this.map.on("moveend zoomend", this._onMove);
     this.refresh();
   };
@@ -85,7 +109,11 @@
   HCASViewportLayer.prototype.detach = function () {
     if (!this._valid) return;
     this.map.off("moveend zoomend", this._onMove);
-    this.map.removeLayer(this.group);
+    this.container.removeLayer(this.group);
+    if (this.overviewHidden && this.overviewLayer) {
+      this.container.addLayer(this.overviewLayer);
+      this.overviewHidden = false;
+    }
   };
 
   HCASViewportLayer.prototype._latlngs = function (i) {
@@ -112,11 +140,44 @@
     return L.polygon(rings, opts);
   };
 
+  // Public entry point, bound once in the constructor and used as the
+  // moveend/zoomend handler. An uncaught throw from INSIDE Leaflet's event
+  // dispatch aborts dispatch to every OTHER handler registered for the same
+  // event on the same map — including the other two HCASViewportLayer
+  // instances' own moveend/zoomend handlers — which would desynchronise
+  // buildings/roads/sidewalks mid-pan exactly the way one bad layer used to
+  // abort its two siblings at page-load time. So the actual work lives in
+  // _refresh and this wrapper's only job is to make sure nothing it throws
+  // ever reaches Leaflet's dispatcher; logged to console, not swallowed
+  // silently.
   HCASViewportLayer.prototype.refresh = function () {
+    try {
+      this._refresh();
+    } catch (e) {
+      console.error("HCASViewportLayer refresh failed:", e);
+    }
+  };
+
+  HCASViewportLayer.prototype._refresh = function () {
     if (!this._valid) return;
     if (this.map.getZoom() < this.gateZoom) {
       if (this.drawn !== null) { this.group.clearLayers(); this.drawn = null; }
+      // Below the gate: the overview is the only tier that should be
+      // visible, so restore its sublayer if a prior above-gate refresh
+      // hid it.
+      if (this.overviewHidden && this.overviewLayer) {
+        this.container.addLayer(this.overviewLayer);
+        this.overviewHidden = false;
+      }
       return;
+    }
+    // Above the gate: hide the overview's own GeoJson sublayer (not the
+    // whole FeatureGroup — that stays under LayerControl's on/off state) so
+    // the same sampled features are never drawn twice, once by the overview
+    // and once by this canvas group, in byte-identical styling.
+    if (this.overviewLayer && !this.overviewHidden) {
+      this.container.removeLayer(this.overviewLayer);
+      this.overviewHidden = true;
     }
     var b = this.map.getBounds(), d = this.payload.cell_deg;
     var c0 = Math.floor(b.getWest() / d), c1 = Math.floor(b.getEast() / d);

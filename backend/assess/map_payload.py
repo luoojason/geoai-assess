@@ -85,12 +85,22 @@ def build_payload(gdf: gpd.GeoDataFrame, cell_deg: float = GRID_CELL_DEG) -> dic
     definition, so it can never widen the bounding box, and skipping it
     is cheaper.
 
-    Coordinates are rounded to 6 decimal places before being stored. That
-    rounding is load-bearing, not incidental: measured 2026-08-12, it is what
-    keeps the full three-layer render (buildings + roads + sidewalks) under
-    the 25 MB payload budget (21.88 MB rounded vs 25.39 MB unrounded) — see
-    the same measurement doc. There is no separate compact/binary encoder;
-    plain rounded GeoJSON-style coordinates are sufficient on their own.
+    Coordinates are rounded to 6 decimal places before being stored. Keeping
+    the rounding: it measurably shrinks the payload on its own (see
+    docs/measurements/2026-08-12-map-payload-sizes.md's Step 2 table — 14-19%
+    smaller per layer at 6dp versus full float precision). This docstring
+    used to also claim the rounding is "what keeps the full three-layer
+    render under the 25 MB payload budget (21.88 MB rounded vs 25.39 MB
+    unrounded)" — that pair of numbers was measured against a REJECTED
+    design (the sampling cap removed entirely, rendered through plain
+    folium.GeoJson with no clip, no grid, no gate), never against what
+    ships, so the claim was true of a design nobody shipped. What actually
+    ships (this grid-bucketed payload, gated to draw only above zoom 16,
+    clipped to the study area) renders the same real Delaware County
+    buildings + roads + sidewalks at 11,077,515 bytes (11.08 MB) total — see
+    docs/measurements/2026-08-12-map-viewport-verification.md. There is no
+    separate compact/binary encoder; plain rounded GeoJSON-style coordinates
+    are sufficient on their own.
     """
     empty = {"geoms": [], "cells": {}, "total": 0, "cell_deg": cell_deg}
     if gdf is None or len(gdf) == 0:

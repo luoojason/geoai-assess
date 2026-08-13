@@ -1551,6 +1551,7 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         )
     try:
         from backend.assess import render_assessment_map
+        from backend.assess.renderer import _clip_to_study_area
 
         empty = _empty_layer()
         slim_pairs = {n: _overview_geoms(g) for n, g in layers.items()}
@@ -1562,11 +1563,26 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         # covers. Each layer builds independently: one bad geometry must not
         # cost the other two their zoomed-in detail, and a drawing aid must
         # never fail the step.
+        #
+        # Clipped to the study area BEFORE building the payload, with the
+        # same _clip_to_study_area render_assessment_map uses on the overview
+        # tier. OSM layers are fetched by bounding box, so an unclipped
+        # detail payload embeds every feature in the bbox corners that falls
+        # outside the county — features the metrics never counted and the
+        # overview tier (clipped) never draws. Left unclipped once already:
+        # see _clip_to_study_area's docstring for the 2026-08-09 report this
+        # would have reopened.
+        #
+        # Skipped entirely when stride == 1 (layer under the sampling cap):
+        # the overview already draws 100% of a layer that small, so a detail
+        # payload would be duplicate bytes and a guaranteed double-draw at
+        # the gate zoom for zero benefit.
         detail = {}
         for _n in ("buildings", "roads", "sidewalks"):
-            if _n in layers:
+            if _n in layers and sample_info.get(_n, {}).get("stride", 1) > 1:
                 try:
-                    detail[_n] = _detail_payload(layers[_n])
+                    clipped = _clip_to_study_area(layers[_n], study_area)
+                    detail[_n] = _detail_payload(clipped)
                 except Exception as _exc:      # a drawing aid never fails the step
                     logger.warning(f"detail payload for {_n} failed: {_exc}")
 
@@ -1585,13 +1601,35 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
             sample_info=sample_info,
             detail_payloads=detail,
         )
-        # Delaware (26,393 buildings + 28,865 roads + 7,135 sidewalks) measures
-        # 21.88 MB against this 25 MB ceiling — Franklin County (~60k buildings)
-        # would exceed it. Fall back to the overview-only render (no
-        # detail_payloads) rather than ship an oversized or truncated map.
-        if len(html) > 25_000_000 and detail:
+        # The 25 MB / 150 MB ceilings below are byte budgets, so they compare
+        # against len(html.encode()) rather than len(html). The two are NOT
+        # equal today, despite this map's own inputs (county names, metric
+        # labels) being plain ASCII: viewport_layers.js's own comments (this
+        # module's source is embedded verbatim in the page — see the
+        # detail_payloads block below) use em dashes (U+2014, 3 bytes in
+        # UTF-8, 1 char), so a char-count already undercounts the real byte
+        # size by a small but nonzero amount on every render, not just in
+        # some hypothetical future. Encoded once and reused so the fallback
+        # path below does not pay for it twice.
+        #
+        # The 25 MB ceiling itself is checked against what actually ships,
+        # not the 21.88 MB / 25.39 MB pair that used to live in this comment
+        # and in map_payload.py's docstring — those were measured against a
+        # REJECTED design (sampling cap removed, plain folium.GeoJson, no
+        # clip/grid/gate) and never described the shipped renderer. What
+        # ships (grid-bucketed viewport tiers, clipped to the study area
+        # BEFORE the detail payload is built — see the clip above) measures,
+        # on the same real Delaware County data (26,393 buildings + 28,865
+        # roads + 7,135 sidewalks fetched; 22,953 / 22,759 / 5,388 remain
+        # after clipping to the county boundary): 11,077,515 bytes (11.08
+        # MB) — see docs/measurements/2026-08-12-map-viewport-verification.md.
+        # Franklin County (~60k buildings, ~2.3x Delaware's) projects from
+        # that real base to roughly 25 MB — close enough to this ceiling
+        # that the fallback below stays load-bearing, not just a margin.
+        html_bytes = len(html.encode())
+        if html_bytes > 25_000_000 and detail:
             logger.warning(
-                f"map HTML {len(html)/1e6:.0f} MB over the 25 MB ceiling — "
+                f"map HTML {html_bytes/1e6:.0f} MB over the 25 MB ceiling — "
                 "re-rendering without embedded detail layers")
             html = render_assessment_map(
                 study_area,
@@ -1605,8 +1643,9 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
                 facilities=slim.get("facilities"),
                 sample_info=sample_info,
             )
-        if len(html) > 150_000_000:
-            raise RuntimeError(f"rendered map too large ({len(html)/1e6:.0f} MB)")
+            html_bytes = len(html.encode())
+        if html_bytes > 150_000_000:
+            raise RuntimeError(f"rendered map too large ({html_bytes/1e6:.0f} MB)")
         artifact["_map_html"] = html
         artifact["map_available"] = True
     except Exception as exc:  # map is a bonus, never fails the step
@@ -1616,10 +1655,22 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
 
 
 # Map is a visual aid, not the data of record (metrics are computed on the full
-# layers), so it is safe to thin it hard for the browser. Dense urban counties
-# return ~60k buildings; rendering all of them made the map HTML ~45 MB and could
-# freeze a low-spec laptop. Cap the feature count (evenly sampled so coverage
-# stays spatially representative) and simplify more aggressively.
+# layers), so it is safe to thin the OVERVIEW tier hard for the browser. This
+# comment used to justify that with an invented number: "dense urban counties
+# return ~60k buildings; rendering all of them made the map HTML ~45 MB and
+# could freeze a low-spec laptop." That was never measured and does not hold.
+# Measured 2026-08-12 (docs/measurements/2026-08-12-map-payload-sizes.md),
+# real Delaware County data (26,393 buildings + 28,865 roads + 7,135
+# sidewalks — not even a "dense urban" county) rendered uncapped at 1.5 m
+# simplification comes to 25.39 MB unrounded / 21.88 MB with 6dp rounding, not
+# 45 MB. What the measurement did NOT cover, and what still justifies this
+# cap, is draw COST rather than file size: an uncapped, ungated render puts
+# tens of thousands of Leaflet Paths on screen at once with no viewport
+# culling, and that half is unmeasured and untouched by this doc. Cap the
+# OVERVIEW feature count (evenly sampled so coverage stays spatially
+# representative) and simplify aggressively; the full-detail viewport tier
+# (_detail_payload, drawn only above GATE_ZOOM and only what the camera
+# covers) is what shows everything without paying that draw cost.
 _MAP_MAX_FEATURES = 3500
 _MAP_SIMPLIFY_M = 12.0
 
@@ -1675,7 +1726,12 @@ def _detail_payload(gdf):
     # from upstream), and a count taken after it would never see that drop.
     before = len(g)
     g = g[~g.geometry.is_empty & g.geometry.notna()]
-    g["geometry"] = g.geometry.simplify(_DETAIL_SIMPLIFY_M)
+    # preserve_topology=True stated explicitly, not left to shapely's default
+    # (which is also True): this docstring's central safety claim — that
+    # simplification here cannot collapse a feature to nothing — is a
+    # promise about THIS call, and it should not rest on an unstated default
+    # that a future shapely version, or a future edit, could quietly change.
+    g["geometry"] = g.geometry.simplify(_DETAIL_SIMPLIFY_M, preserve_topology=True)
     g = g[~g.geometry.is_empty]
     after = len(g)
     if after != before:

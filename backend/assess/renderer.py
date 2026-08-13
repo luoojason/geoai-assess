@@ -1,8 +1,12 @@
 """Assessment map renderer — produces a multi-layer Folium map for sub-tract analysis."""
 from __future__ import annotations
 
+import logging
+
 import geopandas as gpd
 import folium
+
+logger = logging.getLogger(__name__)
 
 # Lowest zoom whose densest real-world viewport (Delaware County, 1200x800px
 # pane) holds <=5,000 building features — see
@@ -152,9 +156,22 @@ def render_assessment_map(
     ).add_to(fg_area)
     fg_area.add_to(m)
 
+    # Filled in below for each of buildings/roads/sidewalks with
+    # (overview_feature_group_js_name, overview_geojson_layer_js_name), so
+    # the viewport-layer JS emitted further down can nest the detail canvas
+    # inside the SAME FeatureGroup the LayerControl already governs, and can
+    # hide the specific overview GeoJson sublayer above the gate zoom without
+    # touching the FeatureGroup's own on/off state. See the detail_payloads
+    # block below for why: `HCASViewportLayer.group.addTo(this.map)` used to
+    # attach the canvas layer directly to the map, invisible to
+    # `LayerControl` and impossible to switch off — worst for sidewalks,
+    # which default to `show=False` yet still appeared, undismissably, at
+    # z16.
+    _overview_refs: dict = {}
+
     if not buildings.empty:
         fg_b = folium.FeatureGroup(name="Buildings", show=True)
-        folium.GeoJson(
+        gj_b = folium.GeoJson(
             buildings.to_crs("EPSG:4326").__geo_interface__,
             style_function=lambda _: {
                 "fillColor": "#555555",
@@ -162,8 +179,10 @@ def render_assessment_map(
                 "color": "#333333",
                 "weight": 0.5,
             },
-        ).add_to(fg_b)
+        )
+        gj_b.add_to(fg_b)
         fg_b.add_to(m)
+        _overview_refs["buildings"] = (fg_b.get_name(), gj_b.get_name())
 
     if not greenspace.empty:
         fg_g = folium.FeatureGroup(name="Greenspace", show=True)
@@ -180,15 +199,17 @@ def render_assessment_map(
 
     if not roads.empty:
         fg_r = folium.FeatureGroup(name="Roads", show=True)
-        folium.GeoJson(
+        gj_r = folium.GeoJson(
             roads.to_crs("EPSG:4326").__geo_interface__,
             style_function=lambda _: {
                 "color": "#3a7abf",
                 "weight": 1,
                 "opacity": 0.8,
             },
-        ).add_to(fg_r)
+        )
+        gj_r.add_to(fg_r)
         fg_r.add_to(m)
+        _overview_refs["roads"] = (fg_r.get_name(), gj_r.get_name())
 
     if parking is not None and not parking.empty:
         fg_p = folium.FeatureGroup(name="Parking", show=False)
@@ -205,15 +226,17 @@ def render_assessment_map(
 
     if sidewalks is not None and not sidewalks.empty:
         fg_sw = folium.FeatureGroup(name="Sidewalks", show=False)
-        folium.GeoJson(
+        gj_sw = folium.GeoJson(
             sidewalks.to_crs("EPSG:4326").__geo_interface__,
             style_function=lambda _: {
                 "color": "#7b4fa6",
                 "weight": 1.5,
                 "opacity": 0.8,
             },
-        ).add_to(fg_sw)
+        )
+        gj_sw.add_to(fg_sw)
         fg_sw.add_to(m)
+        _overview_refs["sidewalks"] = (fg_sw.get_name(), gj_sw.get_name())
 
     if transit_stops is not None and not transit_stops.empty:
         fg_ts = folium.FeatureGroup(name="Transit Stops", show=False)
@@ -360,42 +383,82 @@ def render_assessment_map(
         import json
         from pathlib import Path
 
-        js = (Path(__file__).resolve().parents[2]
-              / "frontend" / "static" / "viewport_layers.js").read_text(encoding="utf-8")
-        # No encoder: map_payload.py emits plain 6-decimal-place coordinates,
-        # so there is no `encoded:` option to pass.
-        _styles = {
-            "buildings": {"color": "#333333", "weight": 0.5,
-                          "fillColor": "#555555", "fillOpacity": 0.6},
-            "roads": {"color": "#3a7abf", "weight": 1, "fill": False},
-            "sidewalks": {"color": "#7b4fa6", "weight": 1.5, "fill": False},
-        }
-        # Roads and sidewalks are LineStrings: 'polyline' draws only their
-        # first ring open, whereas the 'polygon' default would close each one
-        # with a spurious segment back to its first point.
-        _shapes = {"buildings": "polygon", "roads": "polyline", "sidewalks": "polyline"}
-        blocks = [js]
-        for name, payload in detail_payloads.items():
-            if not payload or not payload.get("total"):
-                continue
-            opts = {
-                "gateZoom": gate_zoom,
-                "style": _styles.get(name, {}),
-                "shape": _shapes.get(name, "polygon"),
+        # A drawing aid never fails the step: viewport_layers.js is the only
+        # I/O in this function, and an OSError here (permissions, a moved
+        # install, a partial checkout) used to propagate straight up and
+        # take the whole map down with it. Degrade to the overview-only map
+        # instead — everything below this except block is skipped, exactly
+        # as if detail_payloads had been empty.
+        js = None
+        try:
+            js = (Path(__file__).resolve().parents[2]
+                  / "frontend" / "static" / "viewport_layers.js").read_text(encoding="utf-8")
+        except OSError as _exc:
+            logger.warning(f"could not read viewport_layers.js, shipping overview-only map: {_exc}")
+
+        if js is not None:
+            _styles = {
+                "buildings": {"color": "#333333", "weight": 0.5,
+                              "fillColor": "#555555", "fillOpacity": 0.6},
+                "roads": {"color": "#3a7abf", "weight": 1, "fill": False},
+                "sidewalks": {"color": "#7b4fa6", "weight": 1.5, "fill": False},
             }
-            blocks.append(
-                "(function(){var p=%s;new HCASViewportLayer(%s,p,%s).attach();})();"
-                % (json.dumps(payload), m.get_name(), json.dumps(opts))
-            )
-        # window.addEventListener("load", ...) — not a bare top-level block —
-        # so this runs after every inline script has executed, regardless of
-        # whether folium's own `L.map(...)` call landed before or after this
-        # one in the script section.
-        m.get_root().script.add_child(folium.Element(
-            'window.addEventListener("load", function () {\n'
-            + "\n".join(blocks)
-            + "\n});"
-        ))
+            # Roads and sidewalks are LineStrings: 'polyline' draws only their
+            # first ring open, whereas the 'polygon' default would close each one
+            # with a spurious segment back to its first point.
+            _shapes = {"buildings": "polygon", "roads": "polyline", "sidewalks": "polyline"}
+            blocks = [js]
+            for name, payload in detail_payloads.items():
+                if not payload or not payload.get("total"):
+                    continue
+                opts = {
+                    "gateZoom": gate_zoom,
+                    "style": _styles.get(name, {}),
+                    "shape": _shapes.get(name, "polygon"),
+                }
+                # overview_group/overview_layer: the JS var names of this
+                # layer's own overview FeatureGroup and the GeoJson sublayer
+                # inside it (set above, keyed by layer name). Passed as bare
+                # JS identifiers (4th/5th constructor args), not through
+                # `opts`/json.dumps — `opts` must stay valid JSON on its own
+                # because test_viewport_layer_shape_matches_geometry_type
+                # decodes it directly with json.JSONDecoder.raw_decode.
+                # HCASViewportLayer nests its canvas group inside that
+                # FeatureGroup (instead of adding straight to the map) so
+                # LayerControl governs both tiers as one unit, and hides that
+                # specific GeoJson sublayer above the gate zoom so the two
+                # tiers never draw the same features at once. `null` when
+                # this layer has no overview counterpart (e.g. sample_info
+                # omitted it) — the layer then falls back to attaching
+                # straight to the map, same as before this fix.
+                fg_name, gj_name = _overview_refs.get(name, (None, None))
+                ctor_args = "%s,p,%s,%s,%s" % (
+                    m.get_name(), json.dumps(opts),
+                    fg_name if fg_name else "null",
+                    gj_name if gj_name else "null",
+                )
+                # Each layer's instantiation gets its OWN try/catch: these
+                # three statements used to be bare siblings in one script
+                # tag, so an exception thrown building the FIRST layer
+                # (buildings) aborted the rest of that tag — roads and
+                # sidewalks never even attempted to instantiate. Logged to
+                # console rather than swallowed, so a real failure is still
+                # visible to whoever opens devtools.
+                blocks.append(
+                    "try{(function(){var p=%s;new HCASViewportLayer(%s).attach();})();}"
+                    "catch(e){console.error(%s,e);}"
+                    % (json.dumps(payload), ctor_args,
+                       json.dumps(f"HCAS viewport layer ({name}) failed to attach:"))
+                )
+            # window.addEventListener("load", ...) — not a bare top-level block —
+            # so this runs after every inline script has executed, regardless of
+            # whether folium's own `L.map(...)` call landed before or after this
+            # one in the script section.
+            m.get_root().script.add_child(folium.Element(
+                'window.addEventListener("load", function () {\n'
+                + "\n".join(blocks)
+                + "\n});"
+            ))
 
     # Fit to the study area, as the step-1 locator map already did. A fixed
     # zoom_start=13 centred on the centroid opens a county-wide assessment
