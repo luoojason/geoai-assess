@@ -1,177 +1,156 @@
-# 2026-08-12: Browser verification of viewport map rendering — FAILED
+# 2026-08-12: Browser verification of viewport map rendering
 
-**Status: the map is broken when opened the way the recipient will actually open it.**
-This is not a partial pass. Loaded standalone (`file:///...`, no server) with
-real Leaflet in a real headless Chromium browser, the map area never renders
-anything — no tiles, no boundary, no buildings, no roads. The page is blank
-except the floating metrics panel. Do not report the plan complete.
+**Current status (re-run after commit `8888d0b`): PASS, all nine checks.**
+The map loads, is interactive, and every claim it makes about itself is now
+true when opened the way the recipient will actually open it — a real
+headless Chromium browser, `file:///...`, no server running. The first run
+of this task (below, kept for the record) found the map completely broken;
+that defect is fixed and re-verified here, not assumed fixed.
 
-Everything below is real output from a real browser against the real
-production render path, not a stub.
+## Re-verification run (commit `8888d0b`)
 
-## Setup
+### Setup
 
-- Branch `hcas`, worked in place (no worktree), per instructions.
-- Interpreter: `.venv/Scripts/python.exe`. Installed `playwright` + Chromium
-  and `Pillow` into that venv (neither was present before this task).
-- Rendered through the **actual production call path**: loaded the cached
-  Delaware County pickles (`buildings.pkl` 26,393 / `roads.pkl` 28,865 /
-  `sidewalks.pkl` 7,135 / `study_area.pkl` 1 county polygon, EPSG:5070) and
-  called `backend.hcas._overview_geoms`, `backend.hcas._detail_payload`, and
-  `backend.assess.render_assessment_map` exactly as `_run_step_7` calls them
-  — same functions, same argument shapes, same order. Script:
-  `render_real_map.py` (scratch, not committed).
-- Browser: Playwright, Chromium, **headless**, viewport 1200x800 (matching
-  the pane size the gate-zoom measurement doc used). No visible window was
-  ever opened.
+Identical conditions to the first run: real cached Delaware County pickles
+(`buildings.pkl` 26,393 / `roads.pkl` 28,865 / `sidewalks.pkl` 7,135 /
+`study_area.pkl`), rendered through the actual production call path
+(`backend.hcas._overview_geoms` → `backend.hcas._detail_payload` →
+`backend.assess.render_assessment_map`, same functions and argument shapes
+`_run_step_7` uses). Same output size class: **12,715,013 bytes (12.7150
+MB)**. Headless Playwright/Chromium, viewport 1200×800, no visible window
+opened. `sample_info` unchanged: buildings 3,300/26,393 (1 in 8), roads
+3,208/28,865 (1 in 9), sidewalks 2,379/7,135 (1 in 3).
 
-## Real render measurements
+### What changed since the first run
 
-```
-raw feature counts: {'buildings': 26393, 'roads': 28865, 'sidewalks': 7135}
-sample_info: {'buildings': {'shown': 3300, 'total': 26393, 'stride': 8},
-              'roads': {'shown': 3208, 'total': 28865, 'stride': 9},
-              'sidewalks': {'shown': 2379, 'total': 7135, 'stride': 3}}
-detail totals: {'buildings': 26394, 'roads': 28865, 'sidewalks': 7135}
-detail payload build time: 1.69s
-render time: 1.50s
-HTML size bytes: 12,714,953  (12.7150 MB — matches the brief's "roughly 12.71 MB")
-```
+Commit `8888d0b` wraps the injected viewport-layer init in
+`window.addEventListener("load", function () { ... })`, so it runs only
+after every inline script on the page — including wherever folium placed
+its own `L.map(...)` call — has executed. This is placement-independent:
+it doesn't matter anymore whether the injected script lands before or
+after folium's own map-creation script in the document.
 
-This confirms the payload/render layer (Tasks 1–7, exercised via pure Python
-+ pytest) produces exactly the artifact the brief described. **The failure
-below is specifically in what a browser does with that artifact.**
-
-## Checklist results
+### Results — all nine checks
 
 | # | Check | Result |
 |---|-------|--------|
-| 1 | Loads at all | **FAIL** — outer HTML document parses (`load` event ~0.6–3.6s), but the Leaflet map inside the iframe never initializes. Polled up to 260s across three separate runs; the map variable stayed `undefined` the entire time. This is a hang, not a slow load. |
-| 2 | Zero console errors | **FAIL** — one uncaught `TypeError: Cannot read properties of undefined (reading 'addLayer')`, thrown from `HCASViewportLayer.attach()` on the very first instantiation (buildings). |
-| 3 | Zero network requests for feature data | **PASS** — 11 total network requests, all CDN library assets (`leaflet@1.9.3`, `jquery-3.7.1`, `bootstrap@5.2.2`, `fontawesome`, `awesome-markers`). None reference buildings/roads/sidewalks/payload data. The embedding-not-fetching design works; this part of the standalone requirement holds. (No tile requests were reached either, because the map itself never initializes — CartoDB tiles are exonerated only by the control render below, see "Root cause".) |
-| 4 | County zoom shows labelled overview | **Text present, but moot.** The exact expected sentence — `buildings: showing 3,300 of 26,393 (1 in 8) at this zoom. Zoom in and every one in view is drawn.` — is present in the DOM (it's static HTML added to folium's `html` section, unaffected by the script failure). But there is no map underneath it to zoom into: see screenshot. |
-| 5 | Zoom past gate (z16) draws building detail | **BLOCKED** — cannot be tested; the map cannot be zoomed because it never exists. |
-| 6 | Roads are not closed rings | **BLOCKED** — no road layer ever attaches (the exception aborts the injection script before the roads IIFE runs). |
-| 7 | Buildings with holes render as voids | **BLOCKED** — same reason. |
-| 8 | Rendered count vs. Python-computed count for a bbox | **BLOCKED** — zero features are ever drawn by `HCASViewportLayer`, so there is nothing to count. (The Python-side half of this check — replicating the client's grid-cell selection against `map_payload.py`'s `cells` index — was written and works; it has nothing to compare against.) |
-| 9 | Pan/zoom responsiveness (<100ms/update, ≤5,000 draw budget) | **BLOCKED** — same reason. |
+| 1 | Loads at all | **PASS** — `load` event at 0.787s; the Leaflet map object was fully initialized (`_loaded === true`) at 0.794s. No hang. |
+| 2 | Zero console errors | **PASS** — 0 console errors, 0 uncaught page errors. |
+| 3 | Zero network requests for feature data | **PASS** — 59 total requests: 10 CDN library assets (Leaflet/jQuery/Bootstrap/FontAwesome/awesome-markers) + 49 CartoDB basemap tile requests (`*.basemaps.cartocdn.com`, expected and fine per the brief). Zero requests reference buildings/roads/sidewalks/payload data — everything feature-related is inline, none of it fetched. |
+| 4 | County zoom shows labelled overview | **PASS** — initial zoom 11 (fit to county bounds). DOM text contains exactly: `buildings: showing 3,300 of 26,393 (1 in 8) at this zoom. Zoom in and every one in view is drawn.` (and the equivalent roads/sidewalks lines). Screenshot: `pass-county-overview.png`. |
+| 5 | z16 over dense subdivision draws detail, no visible gaps | **PASS** — set view to the payload's densest building grid cell (Delaware, OH, near W Central Ave) at z16. Buildings fill blocks edge-to-edge with recognizable rectangular footprints, roads run through as thin lines, no gaps. Screenshot: `pass-z16-dense-subdivision.png`. |
+| 6 | Roads are NOT closed rings | **PASS**, checked two ways. (a) Programmatically: every layer object Leaflet actually built for the roads (777 drawn) and sidewalks (158 drawn) `HCASViewportLayer` instances at z16 is an `L.Polyline` and **not** an `L.Polygon` (`instanceof` check on every drawn layer, not a code read) — `shape:"polyline"` really does produce open polylines in real Leaflet. (b) Visually: `pass-z16-dense-subdivision.png` shows roads as plain lines, no spurious fill or closing segments. |
+| 7 | Buildings with holes render as voids | **PASS**, after fixing a bug in my own test script (see below), confirmed both by pixel sampling and direct visual crop. Target: building index 6 (2 interior rings — this building has two courtyards, more than the "1 hole" I originally assumed). Zoomed to z19 on it. Pixel sample: exterior-fill point = RGB(146,146,146) (building fill blended over basemap); corrected hole-centroid point = RGB(250,250,248) (essentially the basemap's own light color, i.e. genuinely a hole). Color delta 179.0. Screenshot crop `pass-building-hole-void.png` shows the building with two clean rectangular white notches cut out of the gray fill — real voids, not solid patches. |
+| 8 | Rendered count at z16 matches Python-computed count for the same bbox | **PASS — exact match.** Took the actual `map.getBounds()` Leaflet computed after the z16 setView (south 40.296696, west -83.085201, north 40.308314, east -83.059795), replicated the client's own grid-cell-selection algorithm in Python against the identical `detail_payloads.json` that was embedded in the HTML (same `floor(coord/cell_deg)` cell math, same dedup-by-index), and got **3,556**. The browser's `HCASViewportLayer` instance for buildings reports `group.getLayers().length === 3556` at that same viewport. This is the plan's central promise, and it holds exactly, not approximately. |
+| 9 | Pan/zoom responsiveness (<100ms/update, ≤5,000 draw budget) | **PASS**, measured honestly with one methodology caveat noted below. Five simulated pans at z16 (`panTo` + `fire('moveend')`, matching what a real drag-pan dispatches) measured **18.0–27.5 ms** round-trip each (mean ~23.5ms), all well under the 100ms budget — and this number includes Playwright's own CDP IPC overhead, so the true in-page cost is likely lower still. Max features drawn on any single layer through the whole test (county overview, z16 dense cell, and after panning): 3,556 buildings, comfortably under the 5,000 draw budget. |
 
-## Screenshot evidence
+### Methodology note on check 9
+
+My first attempt instrumented `HCASViewportLayer.prototype.refresh` directly
+to get a more precise in-page timing, but the wrapper was installed *after*
+`attach()` had already done `this._onMove = this.refresh.bind(this)` —
+the bound reference captured the original unwrapped function, so my
+wrapper never actually fired and `hcas_refresh_ms_per_call` came back
+empty. That's a bug in my test harness, not the product. I did not treat
+the empty array as a finding; I relied instead on the Python-side
+round-trip timing around `fire('moveend')`, which is a legitimate measure
+since Leaflet's event dispatch (and therefore `refresh()`) runs
+synchronously within `fire()` — by the time `frame.evaluate(...fire...)`
+returns, the redraw has already happened.
+
+### Methodology note on check 7 (the bug I found in my own script)
+
+My first pass at this re-verification also reported `hole_appears_as_void:
+false` (delta 0.0, identical pixel colors) — which would have been a real
+defect. Before reporting that, I checked it: the target building actually
+has **two** holes, not one (`geoms[6]` has 3 rings: 1 exterior + 2
+interior), and my centroid calculation for the hole ring used the raw
+shoelace formula on absolute lon/lat coordinates (~-83°, ~40°). For a tiny
+ring (a few meters across) far from the coordinate origin, the shoelace
+cross-product terms subtract two nearly-equal ~3,300-magnitude numbers —
+catastrophic cancellation in float64 — and the computed "hole centroid"
+landed about 12–15 meters outside the actual hole. Fixed by recentering
+each ring on its own bounding-box minimum before the shoelace sum and
+translating back after; re-verified the fix reproduces a sane centroid
+(within ~1e-9 of an independent manual average-of-vertices check on this
+near-rectangular hole) before re-running the pixel test. Recorded here
+because a false failure reported as real would have been exactly the kind
+of "green suite that isn't evidence" this task exists to prevent, just
+inverted.
+
+### Verification scripts and artifacts (scratch, not committed)
+
+`render_real_map.py`, `analyze_payload.py` (now with the corrected
+centroid), `verify_map.py` (main 9-point harness), `hole_check.py`
+(focused re-check for #7). All under the session scratchpad. Screenshots
+copied into this repo under
+`docs/measurements/screenshots-2026-08-12-viewport-verification/`:
+`pass-county-overview.png`, `pass-z16-dense-subdivision.png`,
+`pass-building-hole-void.png`, `pass-after-pan.png`.
+
+No production code was modified during this re-verification.
+
+---
+
+## First run (commit `0cfc704`) — FAILED
+
+Kept in full for the record: the first verification attempt found the map
+completely broken, and that defect (not this task) is what commit
+`8888d0b` fixed.
+
+Rendered the same real Delaware County pickles through the same production
+call path. Got the expected artifact: 12,714,953 bytes (12.7150 MB),
+correct `sample_info`. Opened it `file:///...` with headless Playwright,
+no server running.
+
+**The map never loaded.** The outer HTML document parsed in under 4
+seconds, but the Leaflet map object inside folium's iframe never
+initialized — its variable stayed hoisted-but-`undefined` for the full
+duration of three independent polling runs (up to 260 seconds each). The
+page rendered as a blank white screen with only the static metrics panel
+floating on it. One uncaught error fired: `TypeError: Cannot read
+properties of undefined (reading 'addLayer')`, thrown from
+`HCASViewportLayer.attach()` at the very first instantiation.
+
+**Root cause diagnosed:** `render_assessment_map`'s
+`m.get_root().script.add_child(folium.Element(...))` call for the
+detail-layer JS ran eagerly at Python build time, but folium defers the
+actual `var map_xxx = L.map(...)` initialization line until
+`_repr_html_()` traverses the Map macro element's own `.render()`. Since
+both land in the same ordered `script` children dict and insertion order
+is preserved, the eagerly-added block rendered **before** the map variable
+was assigned. Verified directly against the unescaped `srcdoc`: the
+`HCASViewportLayer` instantiation appeared at byte offset 5,047,723; the
+`L.map(...)` assignment for the same variable appeared at byte offset
+9,623,721 — 4.6 MB later. `this.map` was therefore `undefined` when
+`.attach()` ran `this.group.addTo(this.map)`, and Leaflet's `addTo` threw
+trying to call `.addLayer` on it. Because all three layers (buildings,
+roads, sidewalks) were joined into one script element, the first exception
+(buildings) aborted the rest of that script tag — roads and sidewalks
+never even attempted to instantiate.
+
+Isolated with a control render: calling the same `render_assessment_map`
+with `detail_payloads=None` (the exact fallback branch `_run_step_7`
+itself uses over 25 MB) loaded and became fully interactive in **0.6
+seconds**, zero errors — proving the defect was isolated to the
+`detail_payloads` script injection, not the renderer generally.
+
+### First-run checklist (superseded)
+
+1. Loads at all — FAIL (hung indefinitely)
+2. Zero console errors — FAIL (1 uncaught TypeError)
+3. Zero network requests for feature data — PASS (this part always worked)
+4. County zoom legend text — text present in DOM but moot, no map underneath
+5–9. **BLOCKED** — never evaluated, the map was never interactive enough to test them
+
+### First-run screenshots (kept)
 
 - `docs/measurements/screenshots-2026-08-12-viewport-verification/broken-blank-render.png`
-  — the actual 12.71 MB production render, 8s after load, headless
-  Chromium, `file://` with no server. Blank white page; only the metrics
-  panel (static HTML) is visible. No tiles, no boundary, no zoom control, no
-  layer control.
+  — the failing 12.71 MB production render, 8s after load: blank page,
+  only the metrics panel visible.
 - `docs/measurements/screenshots-2026-08-12-viewport-verification/control-overview-only-render.png`
-  — the same real Delaware data, same code path, **with `detail_payloads`
-  omitted** (i.e. `render_assessment_map(..., detail_payloads=None)`, the
-  exact fallback branch `_run_step_7` itself takes when the detail-embedded
-  HTML would exceed 25 MB). This loads and becomes interactive in **0.6
-  seconds**, zero console errors: full basemap, county boundary, buildings,
-  roads, layer control, legend with the correct non-detail tail ("All 26,393
-  were measured and counted in the metrics above."). This isolates the
-  defect precisely to the `detail_payloads` script injection — the rest of
-  the renderer is sound.
+  — the same data with `detail_payloads=None`, loading fine in 0.6s — the
+  control that isolated the defect to the detail-layer injection.
 
-## Root cause (diagnosed, not fixed — reporting per instructions)
-
-`backend/assess/renderer.py`, in `render_assessment_map`, when
-`detail_payloads` is truthy, does:
-
-```python
-m.get_root().script.add_child(folium.Element("\n".join(blocks)))
-```
-
-This call runs **eagerly at Python build time**, before `m._repr_html_()` is
-ever invoked. folium defers the actual Leaflet map creation code
-(`var map_xxx = L.map(...)`) until render time: `folium.Map` is itself a
-`MacroElement` whose `.render()` method emits that line into
-`figure.script`'s children — but only when `.render()` runs, which happens
-inside `_repr_html_()`, i.e. **after** our `add_child` call already occupied
-a slot in that ordered dict. Python dicts (and folium's child registry)
-preserve insertion order, so **our block, inserted first, is emitted into
-the HTML before the map's own initialization script.**
-
-Verified directly against the unescaped `srcdoc` content of the real
-render (`html.unescape`'d, then searched by byte offset):
-
-```
-var map_38ee193326e4fa34c301fbbfea650d56 = L.map(...)   -> byte offset 9,623,721
-new HCASViewportLayer(map_38ee193326e4fa34c301fbbfea650d56, ...) -> byte offset 5,047,723
-```
-
-The instantiation runs ~4.6 MB earlier in the document than the variable it
-references is assigned. At that point `map_38ee...` exists (hoisted `var`,
-per-script) but is `undefined`. `HCASViewportLayer.attach()` calls
-`this.group.addTo(this.map)`; Leaflet's `addTo` immediately calls
-`map.addLayer(this)` on the `undefined` map, throwing the observed
-`TypeError`. Full stack trace, captured via Playwright's `pageerror` event:
-
-```
-Uncaught TypeError: Cannot read properties of undefined (reading 'addLayer')
-    at addTo (https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js:4:66354)
-    at HCASViewportLayer.attach (about:srcdoc:158:15)
-    at <anonymous> (about:srcdoc:228:5037486)
-    at <anonymous> (about:srcdoc:228:5037497)
-```
-
-Because all three per-layer instantiations (buildings, roads, sidewalks)
-are joined into **one** `folium.Element`/script tag, the buildings
-instantiation throws first and the roads/sidewalks IIFEs after it in the
-same script tag never run at all — confirmed by exactly one `pageerror`
-event, not three.
-
-This is the same failure class Task 7's own brief anticipated and tried to
-guard against ("script section, not HTML section... `ReferenceError`") —
-moving the injection to the `script` section was necessary but not
-sufficient. It fixed the coarse html-vs-script ordering (the map variable
-does exist as a name in scope by the time our code runs, so it's not a
-`ReferenceError`) but did not account for folium's **deferred** rendering of
-the map's own initialization script, which still lands after an eagerly
-`add_child`-ed script even when both are nominally in the same `script`
-section.
-
-Separately unresolved: even beyond the immediate exception, the actual
-`var map_xxx = L.map(...)` statement is never observed to execute within
-260+ seconds of polling (three independent runs). Whether that is solely
-downstream of the aborted script tag, or whether parsing/executing the
-~12 MB single inline script (the `viewport_layers.js` module text plus
-three JSON-literal payloads, roughly 500K+ small nested-array literals) is
-independently pathologically slow in this configuration, was not
-determined — diagnosing further would mean modifying or bisecting
-production code, which is out of scope for this task per instructions.
-Either way, the practical, user-facing result is identical: **the map does
-not become usable within any tolerable wait.**
-
-## What was NOT touched
-
-No production code was modified. `backend/assess/renderer.py`,
-`backend/hcas.py`, and `frontend/static/viewport_layers.js` are unchanged
-from `hcas` branch commit `0cfc704`. This defect needs a fix dispatched
-separately (e.g. rendering the detail-layer script via a call that runs
-after the Map macro element's own script is emitted, or explicitly
-appending after `m.render()`/inside a `DOMContentLoaded`/`window.onload`
-guard rather than relying on child-insertion order).
-
-## Verification scripts (scratch, not committed)
-
-- `render_real_map.py` — production-path render, writes
-  `delaware_map.html` (12.71 MB) + `detail_payloads.json`.
-- `render_overview_only.py` — diagnostic control render with
-  `detail_payloads=None`.
-- `analyze_payload.py` — computed the densest building grid cell and the
-  35 holed-building targets from the real payload (unused once the map
-  failed to load, but written and correct — kept for whoever picks up the
-  fix, so the re-verification pass doesn't have to redo this analysis).
-- `verify_map.py` — the full 9-point Playwright verification harness
-  (instance introspection via a `HCASViewportLayer` constructor proxy
-  installed with `context.add_init_script`, per-viewport `refresh()` timing,
-  pixel-level hole-vs-fill sampling with Pillow, Python-side replication of
-  the client's grid-cell selection for the count cross-check). It never got
-  past the readiness gate because the map never becomes ready — kept as-is
-  so a fix can be verified by simply re-running it.
-- `isolate_error.py` / `isolate_error2.py` / `isolate_error3.py` — root-cause
-  isolation scripts.
-
-All under the session scratchpad, not the repo — none of these ship.
+No production code was modified during the first run either; the defect
+was reported back to the coordinator, who dispatched commit `8888d0b`.
