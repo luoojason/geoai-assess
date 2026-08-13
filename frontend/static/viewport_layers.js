@@ -40,7 +40,14 @@
     opts = opts || {};
     this.map = map;
     this.payload = payload;
-    this.gateZoom = opts.gateZoom;
+    // A missing or malformed gate must fail CLOSED. undefined would make
+    // `getZoom() < this.gateZoom` false at every zoom, which silently disables
+    // the gate and draws every embedded feature on every pan/zoom tick — the
+    // freeze this module exists to prevent. Infinity means "never above the
+    // gate", so the map falls back to the labelled overview instead of hanging.
+    // This is a backstop against a caller bug, not a supported way to call the
+    // module — gateZoom is still required in intent; no default is documented.
+    this.gateZoom = typeof opts.gateZoom === "number" ? opts.gateZoom : Infinity;
     this.style = opts.style || {};
     // 'polygon' (default) closes and fills each ring — buildings, and
     // anything with possible holes. 'polyline' draws only rings[0] as an
@@ -82,6 +89,10 @@
 
   HCASViewportLayer.prototype._buildLayer = function (i) {
     var rings = this._latlngs(i);
+    // map_payload.py never emits an entry with zero rings today, but this
+    // module's contract is that a malformed entry must never throw and take
+    // the page down with it — so a ringless entry is skipped, not drawn.
+    if (!rings || !rings.length) return null;
     var opts = Object.assign({ renderer: this.renderer }, this.style);
     if (this.shape === "polyline") {
       // A LineString round-trips as a single ring; any further rings can't
@@ -111,12 +122,16 @@
         for (var k = 0; k < idxs.length; k++) wanted[idxs[k]] = true;
       }
     }
+    // Not a numeric ordering — a stable set-equality key. Sorting only
+    // reorders the tokens (integer indices can't contain ","), so two
+    // distinct index sets can never serialize equal; that's all this needs.
     var key = Object.keys(wanted).sort().join(",");
     if (key === this.drawn) return;        // same features, nothing to redo
     this.group.clearLayers();
     var self = this;
     Object.keys(wanted).forEach(function (i) {
-      self.group.addLayer(self._buildLayer(i));
+      var layer = self._buildLayer(i);
+      if (layer) self.group.addLayer(layer);
     });
     this.drawn = key;
   };
