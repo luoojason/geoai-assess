@@ -57,6 +57,22 @@ def test_empty_input_is_an_empty_payload_not_a_crash():
 def test_reprojects_to_4326():
     gdf = _squares(3).to_crs("EPSG:5070")
     p = build_payload(gdf, cell_deg=0.01)
-    lon, lat = p["geoms"][0][0]
+    # geoms[feature][ring][point] — ring 0 is the exterior.
+    lon, lat = p["geoms"][0][0][0]
     assert -84.0 < lon < -82.0
     assert 39.0 < lat < 41.0
+
+
+def test_polygon_with_hole_keeps_the_hole_as_a_second_ring():
+    # A square with a smaller square hole cut out of it.
+    square_with_hole = Polygon(
+        shell=[(-83.0, 40.0), (-82.9, 40.0), (-82.9, 40.1), (-83.0, 40.1)],
+        holes=[[(-82.98, 40.02), (-82.92, 40.02), (-82.92, 40.08), (-82.98, 40.08)]],
+    )
+    gdf = gpd.GeoDataFrame(geometry=[square_with_hole], crs="EPSG:4326")
+    p = build_payload(gdf, cell_deg=0.01)
+    entry = p["geoms"][0]
+    assert len(entry) == 2, "expected exterior ring + one hole ring"
+    hole_ring = entry[1]
+    assert [-82.98, 40.02] in hole_ring
+    assert [-82.92, 40.08] in hole_ring
