@@ -342,6 +342,20 @@ def render_assessment_map(
     # exist yet if this runs from the html section, and the layers silently
     # never attach. folium.Element here is raw JS with NO <script> tags: the
     # script section is already inside one.
+    #
+    # Landing in the script section is NOT enough on its own: folium emits
+    # its own `L.map(...)` call into that same script section too, placed by
+    # its own Jinja template, and a child added here can land either before
+    # OR after it depending on internal render order (measured: it landed
+    # BEFORE, so m.get_name() was still undefined when our code ran —
+    # TypeError, and the layers never attached; confirmed against real
+    # Leaflet in a browser, not caught by any unit test, stubbed JS harness,
+    # or two prior code reviews). The one placement-independent fix is to
+    # defer to `window`'s `load` event, which fires only after every inline
+    # script on the page — including wherever folium put L.map(...) —  has
+    # already run. Do not go back to guessing placement in the script
+    # section; only the deferral is reliable regardless of what folium does
+    # around it.
     if detail_payloads:
         import json
         from pathlib import Path
@@ -373,7 +387,15 @@ def render_assessment_map(
                 "(function(){var p=%s;new HCASViewportLayer(%s,p,%s).attach();})();"
                 % (json.dumps(payload), m.get_name(), json.dumps(opts))
             )
-        m.get_root().script.add_child(folium.Element("\n".join(blocks)))
+        # window.addEventListener("load", ...) — not a bare top-level block —
+        # so this runs after every inline script has executed, regardless of
+        # whether folium's own `L.map(...)` call landed before or after this
+        # one in the script section.
+        m.get_root().script.add_child(folium.Element(
+            'window.addEventListener("load", function () {\n'
+            + "\n".join(blocks)
+            + "\n});"
+        ))
 
     # Fit to the study area, as the step-1 locator map already did. A fixed
     # zoom_start=13 centred on the centroid opens a county-wide assessment

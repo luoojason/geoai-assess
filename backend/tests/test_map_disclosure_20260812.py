@@ -239,3 +239,57 @@ def test_viewport_layer_shape_matches_geometry_type():
     assert shape_by_color["#333333"] == "polygon"    # buildings
     assert shape_by_color["#3a7abf"] == "polyline"   # roads
     assert shape_by_color["#7b4fa6"] == "polyline"   # sidewalks
+
+
+def test_viewport_init_is_deferred_to_window_load():
+    """Task 8's real-browser check found the map hangs indefinitely: folium
+    emits its OWN `L.map(...)` call into the same script section our
+    injected code lands in, positioned by folium's own template — a plain
+    top-level child added via `script.add_child(...)` can land BEFORE that
+    call in execution order. The map variable is then undefined when our
+    `new HCASViewportLayer(...)` runs: an uncaught TypeError, and every
+    viewport layer silently never attaches. This was invisible to every
+    prior unit test (including this file's own ordering-focused tests) and
+    to two code reviews; it took a real Leaflet browser run to surface.
+
+    Text POSITION relative to `L.map(` is not a reliable regression guard
+    here — folium's own template still places `L.map(...)` after our
+    injected script child textually, and re-ordering placement was
+    explicitly rejected as "the third guess". The actual fix is deferral:
+    the instantiation runs inside a `window.addEventListener("load", ...)`
+    callback, which fires only once every inline script — wherever it
+    landed — has already executed. So this test asserts the real invariant
+    directly: the instantiation call sits INSIDE that deferred callback's
+    body, not at top level.
+    """
+    import html as html_module
+
+    import geopandas as gpd
+    from shapely.geometry import Polygon
+    from backend.assess.renderer import render_assessment_map
+    from backend.assess.map_payload import build_payload
+
+    sa = gpd.GeoDataFrame(
+        geometry=[Polygon([(-83.1, 40.0), (-82.9, 40.0), (-82.9, 40.2), (-83.1, 40.2)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    b = gpd.GeoDataFrame(
+        geometry=[Polygon([(-83.0, 40.1), (-82.99, 40.1), (-82.99, 40.11), (-83.0, 40.11)])],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:5070")
+    empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
+
+    html = render_assessment_map(
+        sa, b, empty, empty, {"building_coverage_ratio": 0.1},
+        detail_payloads={"buildings": build_payload(b)},
+    )
+    raw = html_module.unescape(html)
+
+    listener_start = raw.index('window.addEventListener("load"')
+    # Only one addEventListener("load", ...) is ever emitted by this module,
+    # so its closing "});" is the next one after the opening — a direct
+    # stand-in for "still inside this callback" without a full JS parser.
+    listener_close = raw.index("\n});", listener_start)
+    inst_idx = raw.index("new HCASViewportLayer(", listener_start)
+
+    assert listener_start < inst_idx < listener_close
