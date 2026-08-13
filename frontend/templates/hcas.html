@@ -417,10 +417,8 @@ const RUN_HINTS = {
 /* Steps 3 and 7 are the only ones that query OpenStreetMap. They can be slow for
    reasons that have nothing to do with this run, so say so before the wait
    rather than after it. */
-const FETCH_NOTE = "This can take several minutes. Map data comes from OpenStreetMap’s "
-  + "public servers, which turn requests away when they are busy — a slow step usually "
-  + "means they are under load, not that anything is wrong. The step keeps retrying, and "
-  + "every layer that already arrived is cached, so re-running picks up where this left off.";
+const FETCH_NOTE = "Can take a few minutes — public map servers get busy. "
+  + "Anything already fetched is saved, so re-running only retries what failed.";
 const FETCH_STEPS = new Set([3, 7]);
 const DEFAULT_SYS = "Focus on spatial analysis for community-health assessment. Be concise and specific.";
 
