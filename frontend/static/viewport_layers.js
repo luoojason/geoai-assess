@@ -1,16 +1,19 @@
 /* Viewport rendering for HCAS assessment maps.
  *
- * The map embeds every feature (building/road/sidewalk) but draws only the
- * grid cells the camera currently covers, and only once zoomed in past the
- * gate. Below the gate a thinned overview is drawn by Folium in the normal
- * way and this module stays out of the way. Do not delete the gate: at low
- * zoom the viewport can cover the entire study area, which would mean
- * drawing every embedded feature at once — thousands of polygons rebuilt on
- * every pan/zoom tick — and that is the exact browser freeze this guards
- * against. gateZoom = 16 was measured, not guessed: see
- * docs/measurements/2026-08-12-map-payload-sizes.md's GATE_ZOOM table
- * (z15's densest Delaware viewport already holds 5,332 buildings, over the
- * 5,000 draw budget; z16's holds 2,427).
+ * The map embeds every feature of every layer and draws the grid cells the
+ * camera currently covers. This is the only tier there is: gateZoom ships as
+ * 0, so it draws at every zoom, and there is no sampled overview behind it.
+ *
+ * The gate USED to be 16, with a thinned overview below it, and that comment
+ * told you not to delete it. Both are gone. The overview was capped at a fixed
+ * 3,500 features per layer, so on a dense county it drew 1 in 58 — about one
+ * building per two city blocks, reported by a user as the map failing to load.
+ * The freeze the gate guarded against was then measured rather than assumed:
+ * on New York County, all 96,294 clipped features build in 202 ms and pan in
+ * 82-96 ms against a 100 ms budget
+ * (docs/measurements/2026-08-12-map-viewport-verification.md). The gate is
+ * kept as a parameter, not a policy — a caller can still gate a layer, and
+ * the fail-closed guard below still refuses a malformed value.
  *
  * Coordinates in `payload.geoms` arrive as plain [lon, lat] pairs already
  * rounded to 6 decimal places by backend/assess/map_payload.py (see that
@@ -59,13 +62,17 @@
     // when the caller has no overview counterpart to hide.
     this.overviewLayer = overviewLayer || null;
     this.overviewHidden = false;
-    // A missing or malformed gate must fail CLOSED. undefined would make
-    // `getZoom() < this.gateZoom` false at every zoom, which silently disables
-    // the gate and draws every embedded feature on every pan/zoom tick — the
-    // freeze this module exists to prevent. Infinity means "never above the
-    // gate", so the map falls back to the labelled overview instead of hanging.
-    // This is a backstop against a caller bug, not a supported way to call the
-    // module — gateZoom is still required in intent; no default is documented.
+    // A missing or malformed gate resolves to Infinity: "never above the gate",
+    // so the layer draws nothing at all.
+    //
+    // ⚠ The trade-off inverted when the overview tier was deleted. This guard
+    // was written when failing closed meant falling back to a labelled overview
+    // — harmless. There is no overview now, so a malformed gateZoom yields a
+    // BLANK layer rather than a degraded one. It is still the safer of the two
+    // (the alternative, undefined, makes `getZoom() < undefined` false at every
+    // zoom and draws everything on every tick), but it is no longer free, and a
+    // caller that reaches it has a bug worth surfacing rather than absorbing.
+    // gateZoom is required in intent; no default is documented.
     //
     // `typeof x === "number"` is NOT enough: `typeof NaN === "number"` is
     // true, and `getZoom() < NaN` is false at every zoom — the exact fail-open
@@ -76,10 +83,13 @@
     // measurement flowing into that template produces NaN, not undefined.
     this.gateZoom = Number.isFinite(opts.gateZoom) ? opts.gateZoom : Infinity;
     this.style = opts.style || {};
-    // 'polygon' (default) closes and fills each ring — buildings, and
-    // anything with possible holes. 'polyline' draws only rings[0] as an
-    // open path — roads and sidewalks are LineStrings, and a polygon would
-    // wrongly join each one's last point back to its first.
+    // Three values. 'polygon' (default) closes and fills each ring —
+    // buildings, greenspace, landuse, parking, anything with possible holes.
+    // 'polyline' draws only rings[0] as an open path — roads and sidewalks are
+    // LineStrings, and a polygon would wrongly join each one's last point back
+    // to its first. 'point' draws a circleMarker at rings[0][0] — transit
+    // stops and facilities are Points, and polygon/polyline on a
+    // one-coordinate ring draw nothing at all, losing the layer in silence.
     this.shape = opts.shape || "polygon";
     this.group = L.layerGroup();
     this.renderer = L.canvas({ padding: 0.2 });

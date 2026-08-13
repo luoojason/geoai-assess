@@ -95,7 +95,7 @@ def build_payload(gdf: gpd.GeoDataFrame, cell_deg: float = GRID_CELL_DEG) -> dic
     design (the sampling cap removed entirely, rendered through plain
     folium.GeoJson with no clip, no grid, no gate), never against what
     ships, so the claim was true of a design nobody shipped. What actually
-    ships (this grid-bucketed payload, gated to draw only above zoom 16,
+    ships (this grid-bucketed payload, drawn at every zoom by the viewport module,
     clipped to the study area) renders the same real Delaware County
     buildings + roads + sidewalks at 11,077,515 bytes (11.08 MB) total — see
     docs/measurements/2026-08-12-map-viewport-verification.md. There is no

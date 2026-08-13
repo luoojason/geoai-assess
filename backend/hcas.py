@@ -1558,25 +1558,20 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         slim = {n: pair[0] for n, pair in slim_pairs.items()}
         sample_info = {n: pair[1] for n, pair in slim_pairs.items()}
 
-        # Full-detail payloads for the viewport renderer — every feature,
-        # bucketed for the frontend module to draw only what the camera
-        # covers. Each layer builds independently: one bad geometry must not
-        # cost the other two their zoomed-in detail, and a drawing aid must
-        # never fail the step.
+        # The payload the map draws from — every feature of every layer,
+        # bucketed so the frontend module paints only what the camera covers.
+        # This is the ONLY tier: there is no sampled overview and no zoom gate
+        # any more (see _overview_geoms). Each layer builds independently, so
+        # one bad geometry cannot cost the others their detail, and a drawing
+        # aid must never fail the step.
         #
-        # Clipped to the study area BEFORE building the payload, with the
-        # same _clip_to_study_area render_assessment_map uses on the overview
-        # tier. OSM layers are fetched by bounding box, so an unclipped
-        # detail payload embeds every feature in the bbox corners that falls
-        # outside the county — features the metrics never counted and the
-        # overview tier (clipped) never draws. Left unclipped once already:
-        # see _clip_to_study_area's docstring for the 2026-08-09 report this
+        # Clipped to the study area BEFORE building the payload, with the same
+        # _clip_to_study_area the renderer uses. OSM layers are fetched by
+        # bounding box, so an unclipped payload embeds every feature in the
+        # bbox corners that falls outside the county — features the metrics
+        # never counted. Left unclipped once already: see
+        # _clip_to_study_area's docstring for the 2026-08-09 report this
         # would have reopened.
-        #
-        # Skipped entirely when stride == 1 (layer under the sampling cap):
-        # the overview already draws 100% of a layer that small, so a detail
-        # payload would be duplicate bytes and a guaranteed double-draw at
-        # the gate zoom for zero benefit.
         detail = {}
         for _n in layers:
             try:
@@ -1641,6 +1636,12 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
                 sidewalks=slim.get("sidewalks"),
                 transit_stops=slim.get("transit_stops"),
                 facilities=slim.get("facilities"),
+                # landuse belongs here too. Omitting it made the degraded path
+                # drop the Land use layer entirely and silently — reinstating
+                # the "the green is missing" report that adding landuse to the
+                # renderer exists to close, on precisely the dense counties
+                # most likely to trip the ceiling in the first place.
+                landuse=slim.get("landuse"),
                 sample_info=sample_info,
             )
             html_bytes = len(html.encode())
@@ -1654,36 +1655,47 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     return artifact, None, None
 
 
-# Map is a visual aid, not the data of record (metrics are computed on the full
-# layers), so it is safe to thin the OVERVIEW tier hard for the browser. This
-# comment used to justify that with an invented number: "dense urban counties
-# return ~60k buildings; rendering all of them made the map HTML ~45 MB and
-# could freeze a low-spec laptop." That was never measured and does not hold.
-# Measured 2026-08-12 (docs/measurements/2026-08-12-map-payload-sizes.md),
-# real Delaware County data (26,393 buildings + 28,865 roads + 7,135
-# sidewalks — not even a "dense urban" county) rendered uncapped at 1.5 m
-# simplification comes to 25.39 MB unrounded / 21.88 MB with 6dp rounding, not
-# 45 MB. What the measurement did NOT cover, and what still justifies this
-# cap, is draw COST rather than file size: an uncapped, ungated render puts
-# tens of thousands of Leaflet Paths on screen at once with no viewport
-# culling, and that half is unmeasured and untouched by this doc. Cap the
-# OVERVIEW feature count (evenly sampled so coverage stays spatially
-# representative) and simplify aggressively; the full-detail viewport tier
-# (_detail_payload, drawn only above GATE_ZOOM and only what the camera
-# covers) is what shows everything without paying that draw cost.
-_MAP_MAX_FEATURES = 3500
+# There is no feature cap. `_MAP_MAX_FEATURES = 3500` lived here and is gone.
+#
+# Its stated justification — "dense urban counties return ~60k buildings;
+# rendering all of them made the map HTML ~45 MB and could freeze a low-spec
+# laptop" — was never measured. When it finally was, on real Delaware County
+# data, the uncapped payload came to a third of that. The draw-cost half, which
+# the cap's last defence rested on, was then measured too, on New York County,
+# the densest case to hand: all 96,294 clipped features build in 202 ms and pan
+# in 82-96 ms against a 100 ms budget
+# (docs/measurements/2026-08-12-map-payload-sizes.md and
+# -map-viewport-verification.md).
+#
+# What the cap actually cost: it was a fixed COUNT, so the fraction drawn fell
+# as density rose — 1 in 2 on rural Adams, 1 in 8 on suburban Delaware, 1 in 58
+# on New York County, roughly one building per two city blocks. Reported by a
+# user as the map failing to load. A cap calibrated against one county is not a
+# cap, and the one tier that remains is SMALLER than the two it replaced
+# (12.23 MB vs 13.05 MB), because the old design embedded every feature twice.
 _MAP_SIMPLIFY_M = 12.0
 
-# A typical house is 10-15 m across, so the 12 m overview tolerance turns each
-# footprint into a blob. Showing every building is pointless if every building
-# is melted, so the zoomed-in tier simplifies an order of magnitude less.
+# The frame `_overview_geoms` returns is now only the GeoJson fallback for a
+# layer whose payload build failed, so it keeps the coarse 12 m tolerance. The
+# tier that actually draws uses _DETAIL_SIMPLIFY_M: a typical house is 10-15 m
+# across, so 12 m turns every footprint into a blob, and drawing every building
+# is pointless if every building is melted.
 _DETAIL_SIMPLIFY_M = 1.5
 
 
 def _overview_geoms(gdf):
-    """Geometry-only, evenly capped, and simplified for a light browser payload.
-    OSM tag columns (hundreds of mostly-NaN keys per feature) and full-precision
-    vertices are what made raw Franklin County maps ~500 MB.
+    """Geometry-only and coarsely simplified — the GeoJson fallback frame.
+
+    Nothing is capped or sampled any more; every feature survives. This frame
+    is what the renderer draws for a layer whose viewport payload failed to
+    build, so it must not be a subset of that layer. Stripping to geometry
+    still matters: OSM tag columns (hundreds of mostly-NaN keys per feature)
+    and full-precision vertices are what made raw Franklin County maps ~500 MB.
+
+    ⚠ `total` and `shown` are counted BEFORE the renderer clips to the study
+    area, so both are the unclipped fetch count. Inert today because the
+    legend's sampling sentence self-suppresses at stride 1, but wrong by
+    construction if sampling ever returns.
 
     Returns (slimmed, info). `info` is {"shown", "total", "stride"} so the caller
     can state on the map how much of the layer is drawn: a map that silently

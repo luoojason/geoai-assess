@@ -8,11 +8,6 @@ import folium
 
 logger = logging.getLogger(__name__)
 
-# Lowest zoom whose densest real-world viewport (Delaware County, 1200x800px
-# pane) holds <=5,000 building features — see
-# docs/measurements/2026-08-12-map-payload-sizes.md. Below this zoom the
-# viewport module stays gated off and the thinned overview (drawn by Folium
-# in the ordinary way) is what's on screen.
 # 0, not 16: the viewport tier now draws at EVERY zoom, because there is no
 # longer a second (sampled) tier for it to hand over to below a gate. The gate
 # existed to protect a county-wide view from drawing everything at once —
@@ -161,9 +156,10 @@ def render_assessment_map(
     which holds every feature and paints the ones the camera covers. A metrics
     panel is shown in the top-right corner. Returns m._repr_html_().
 
-    `landuse` is keyword-only-by-position on purpose: it was added on
-    2026-08-13, after the positional arguments were already load-bearing for
-    existing callers and tests.
+    `landuse` sits last in the signature rather than beside the other
+    polygon layers because it was added on 2026-08-13, after the positional
+    arguments were already load-bearing for existing callers and tests. Pass
+    it by keyword.
 
     Raises:
         ValueError: if study_area is empty or None.
@@ -198,7 +194,7 @@ def render_assessment_map(
     ).add_to(fg_area)
     fg_area.add_to(m)
 
-    # Filled in below for each of buildings/roads/sidewalks with
+    # Filled in below for each layer with
     # (overview_feature_group_js_name, overview_geojson_layer_js_name), so
     # the viewport-layer JS emitted further down can nest the detail canvas
     # inside the SAME FeatureGroup the LayerControl already governs, and can
@@ -300,17 +296,20 @@ def render_assessment_map(
     # (stride is always 1), so these lines self-suppress — the loop stays whole
     # so that if sampling ever comes back it cannot come back invisibly.
     for _layer, _lbl, _sh, _shp, _st in _LAYER_SPEC:
-        # Per-layer membership, not a single bool(detail_payloads) for all
-        # three: hcas.py builds each layer's detail payload in its own
-        # try/except, so one layer can fail (dropped, logged) while the
-        # other two succeed. A dict-wide truthiness check would then have
+        # Per-layer, not a single bool(detail_payloads) for all of them:
+        # hcas.py builds each layer's payload in its own try/except, so one
+        # layer can fail (dropped, logged) while the rest succeed.
+        # Tested against `total`, not mere membership: an empty layer now
+        # leaves a zero-total entry in the dict, and the JS-emission loop
+        # skips those — so membership alone could claim detail for a layer
+        # that has no HCASViewportLayer at all. A dict-wide truthiness check would then have
         # the failed layer's legend line claim "zoom in and every one in
         # view is drawn" for a layer with no embedded payload and no
         # HCASViewportLayer ever registered for it — exactly the
         # legend-overstates-the-map defect this whole plan exists to fix.
         _line = _sample_legend_line(
             _layer, (sample_info or {}).get(_layer),
-            has_detail=(_layer in (detail_payloads or {})),
+            has_detail=bool((detail_payloads or {}).get(_layer, {}).get("total")),
         )
         if _line:
             keys.append(_line)
@@ -390,7 +389,22 @@ def render_assessment_map(
             _styles = {k: st for k, _l, _s, _sh, st in _LAYER_SPEC}
             _shapes = {k: sh for k, _l, _s, sh, _st in _LAYER_SPEC}
             blocks = [js]
-            for name, payload in detail_payloads.items():
+            # _LAYER_SPEC order, NOT detail_payloads order. Each
+            # HCASViewportLayer builds its own L.canvas and passes it per-path,
+            # and Leaflet appends renderer containers to the pane with no
+            # z-index — so stacking follows ATTACH order, which is the order
+            # these blocks are emitted in. detail_payloads arrives keyed by
+            # hcas.py's `names = sorted(...)`, i.e. alphabetically, which put
+            # landuse (4th) on top of buildings (1st) and greenspace (3rd):
+            # a 30%-opacity farmland wash over every building footprint on a
+            # rural county, which is the opposite of what _LAYER_SPEC's own
+            # comment promises. Any payload key not in the spec is emitted
+            # last rather than dropped.
+            _order = [k for k, _l, _s, _sh, _st in _LAYER_SPEC]
+            _names = ([n for n in _order if n in detail_payloads]
+                      + [n for n in detail_payloads if n not in _order])
+            for name in _names:
+                payload = detail_payloads.get(name)
                 if not payload or not payload.get("total"):
                     continue
                 opts = {
@@ -409,9 +423,10 @@ def render_assessment_map(
                 # FeatureGroup (instead of adding straight to the map) so
                 # LayerControl governs both tiers as one unit, and hides that
                 # specific GeoJson sublayer above the gate zoom so the two
-                # tiers never draw the same features at once. `null` when
-                # this layer has no overview counterpart (e.g. sample_info
-                # omitted it) — the layer then falls back to attaching
+                # tiers never draw the same features at once. `null` in the normal
+                # path, because gj_name is set ONLY in the no-payload fallback
+                # branch — a layer cannot have both a viewport tier and an
+                # overview to hide — the layer then falls back to attaching
                 # straight to the map, same as before this fix.
                 fg_name, gj_name = _overview_refs.get(name, (None, None))
                 ctor_args = "%s,p,%s,%s,%s" % (
