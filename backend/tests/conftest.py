@@ -34,3 +34,15 @@ def _isolate_osm_layer_globals(monkeypatch):
         yield
     finally:
         ol.clear_deadline()
+
+
+# hcas.LAYER_CACHE_DIR defaults to a directory beside hcas.py — right for a
+# laptop install, wrong for a test suite: every step-3/7 run that fetches a
+# layer writes it there, so a full suite run left 80+ pid-named directories in
+# the repo (found 2026-08-14 while adding the cache feature — DB_PATH already
+# gets this same tmp_path treatment per-test, LAYER_CACHE_DIR needs the same).
+@pytest.fixture(autouse=True)
+def _isolate_layer_cache(tmp_path_factory, monkeypatch):
+    from backend import hcas
+
+    monkeypatch.setattr(hcas, "LAYER_CACHE_DIR", tmp_path_factory.mktemp("hcas_layer_cache"))

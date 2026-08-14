@@ -655,6 +655,56 @@ async def hcas_audit_csv():
     return Response(hcas.export_audit_csv(), media_type="text/csv")
 
 
+@app.get("/hcas/projects/{pid}/data", dependencies=_assess_deps)
+async def hcas_data_list(pid: str):
+    """Per-layer cache/upload status — what step 3/7 would use right now
+    without fetching, and what a download would contain."""
+    try:
+        return hcas.list_data_bundle(pid)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/hcas/projects/{pid}/data.zip", dependencies=_hcas_link_deps)
+async def hcas_data_export(pid: str):
+    """Download every layer this project has fetched or the user has uploaded
+    — Xun Shi 2026-08-14 (#all-aigis): "allow the user to download and upload
+    the data ... use their own special data if they want to.\""""
+    from fastapi.responses import Response
+
+    try:
+        blob = hcas.export_data_bundle(pid)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(
+        blob, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="hcas-{pid}-data.zip"'},
+    )
+
+
+@app.post("/hcas/projects/{pid}/data", dependencies=_assess_deps)
+async def hcas_data_import(pid: str, request: Request, filename: str):
+    """Upload a .zip bundle (as produced by the export above) or a single
+    .geojson file named after the layer it replaces, e.g. facilities.geojson.
+    Read as a raw body rather than multipart/form-data so this needs no new
+    dependency for what is, for most users, a one-off upload."""
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty upload")
+    try:
+        return await asyncio.to_thread(hcas.import_data_bundle, pid, filename, content)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.delete("/hcas/projects/{pid}/data/{layer}", dependencies=_assess_deps)
+async def hcas_data_clear(pid: str, layer: str):
+    try:
+        return hcas.clear_data_override(pid, layer)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.app:app", host=settings.host, port=settings.port, reload=settings.debug)

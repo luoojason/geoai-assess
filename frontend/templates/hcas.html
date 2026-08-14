@@ -619,8 +619,13 @@ function renderCanvas(){
   // covers a re-run too, where an artifact row already exists — you pressed Run,
   // so you should see the run, not the previous result.
   else if(S.running === n) body = loadingBody(n);
-  else if(!row) body = `<div class="empty"><div class="big">Nothing here yet</div>
+  else if(!row){
+    body = `<div class="empty"><div class="big">Nothing here yet</div>
       <div>Run this step to generate it.</div></div>`;
+    // Uploading before the first run means this step never fetches the layers
+    // you've supplied yourself — not just a faster re-run.
+    if(n===3 && S.pid) body += dataUploadPanel();
+  }
   else body = ({1:viewIntake,2:viewFactors,3:viewData,4:viewSolution,5:viewDatabase,
                 6:viewWorkflow,7:viewExecution,8:viewReport}[n] || viewRaw)(a);
   // A stale artifact was drafted from an earlier version of an upstream step.
@@ -1020,6 +1025,8 @@ function viewData(a){
     <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Data layers</div>${list}
       <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
+      ${dataDownloadLink(a)}
+      ${dataUploadPanel()}
       <div class="panel"><div class="ph">Study area map</div>
         <div class="mapview">${baseMapFrame()}</div></div>
       <div id="layerinfo"></div>
@@ -1027,6 +1034,51 @@ function viewData(a){
         ${rows?`<table class="data"><thead><tr><th>Measure</th><th>County</th><th>US</th></tr></thead><tbody>${rows}</tbody></table>`
               :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div>
     </div></div>`;
+}
+
+/* Bring-your-own-data (Xun Shi 2026-08-14, #all-aigis): download whatever this
+   project has fetched/uploaded so far, or upload a .zip / single .geojson so a
+   layer is used instead of being fetched at all. */
+function dataDownloadLink(a){
+  if(!S.pid || !(a.layers||[]).length) return "";
+  return `<div class="panel" style="padding:12px 14px;">
+    <a class="cbtn" href="/hcas/projects/${S.pid}/data.zip" target="_blank" style="text-decoration:none;">Download this project's data ↧</a>
+    <span class="hint" style="margin-left:8px;">Every layer fetched or uploaded so far, as GeoJSON.</span>
+  </div>`;
+}
+function dataUploadPanel(){
+  return `<div class="panel" style="padding:12px 14px;">
+    <div class="hint">Upload a .zip (from a previous download) or a single .geojson file named after
+      the layer it supplies — e.g. facilities.geojson — to use your own data instead of fetching it.
+      An upload is never overwritten by a re-run; ${STEP_TITLES[2]} uses it the next time it runs.</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+      <input type="file" id="datafile" accept=".zip,.geojson,.json" multiple>
+      <button class="cbtn" onclick="uploadDataFiles()">Upload</button>
+    </div>
+    <div id="dataUploadResult" class="subnote" style="margin-top:8px;"></div>
+  </div>`;
+}
+async function uploadDataFiles(){
+  const input = $("datafile"), out = $("dataUploadResult");
+  const files = input?.files ? Array.from(input.files) : [];
+  if(!files.length){ if(out) out.textContent = "Choose a file first."; return; }
+  if(out) out.textContent = "Uploading…";
+  const accepted = [], rejected = [];
+  for(const f of files){
+    try{
+      const r = await fetch(`/hcas/projects/${S.pid}/data?filename=${encodeURIComponent(f.name)}`,
+        {method:"POST", headers:{"X-Requested-With":"geoai"}, body:f});
+      const body = await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(body.detail || (r.status+" "+r.statusText));
+      accepted.push(...(body.accepted||[]));
+      rejected.push(...(body.rejected||[]));
+    }catch(e){ rejected.push({file:f.name, reason:e.message}); }
+  }
+  if(out) out.innerHTML = [
+    accepted.length ? `<div style="color:var(--ok)">✓ ${accepted.map(x=>`${esc(x.layer)} (${x.feature_count} feature${x.feature_count===1?"":"s"})`).join(", ")} — run this step to use it.</div>` : "",
+    rejected.length ? `<div style="color:var(--red)">✗ ${rejected.map(x=>`${esc(x.file)}: ${esc(x.reason)}`).join("; ")}</div>` : "",
+  ].filter(Boolean).join("");
+  if(input) input.value = "";
 }
 
 /* step 4 — methodology */

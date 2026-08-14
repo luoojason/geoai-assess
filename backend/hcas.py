@@ -74,6 +74,10 @@ import os as _os
 # mounted volume instead — HCAS_DB points at it. See DEPLOY.md.
 DB_PATH = Path(_os.environ.get("HCAS_DB") or Path(__file__).with_name("hcas.db"))
 
+# Per-project cache of fetched/uploaded layer geometry, keyed by project id —
+# same volume-override reasoning as DB_PATH. See _cached_layer below.
+LAYER_CACHE_DIR = Path(_os.environ.get("HCAS_LAYER_CACHE") or Path(__file__).with_name("hcas_layer_cache"))
+
 # Wall-clock ceiling for the whole per-step layer fetch. Layers still running
 # when it expires are abandoned and reported as timed out, so a step ALWAYS
 # returns a confirmable artifact (see _fetch_layers). Raise it with
@@ -898,6 +902,209 @@ def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None
     return html
 
 
+# --- Per-project layer cache + bring-your-own-data --------------------------
+# Xun Shi 2026-08-14 (#all-aigis): "right now sine our data comes from open
+# source platforms, the queue to get the data is very lengthy... We may allow
+# the user to download and upload the data if they want to. They may upload
+# their own data so that they don't have to download data every time from the
+# opensource and they can use their own special data if they want to."
+#
+# Two effects, both plugged into _fetch_layers below so every caller (steps 3
+# and 7) gets them automatically: (1) a layer this project already fetched is
+# reused instead of hitting Overpass/Census again — step 7 no longer re-fetches
+# what step 3 already has; (2) a layer the user uploads is used in place of any
+# fetch at all, and is never silently overwritten by a later auto-fetch.
+def _bbox_key(bbox) -> str:
+    import hashlib
+
+    return hashlib.sha1(",".join(f"{c:.5f}" for c in bbox).encode()).hexdigest()[:12]
+
+
+def _project_cache_dir(pid: str) -> Path:
+    d = LAYER_CACHE_DIR / pid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _manifest_path(pid: str) -> Path:
+    return _project_cache_dir(pid) / "manifest.json"
+
+
+def _read_manifest(pid: str) -> dict:
+    p = _manifest_path(pid)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(f"manifest for {pid} unreadable, treating as empty: {exc!r}")
+        return {}
+
+
+def _write_manifest(pid: str, manifest: dict) -> None:
+    _manifest_path(pid).write_text(json.dumps(manifest, indent=2))
+
+
+def _user_layer_path(pid: str, layer: str) -> Path:
+    return _project_cache_dir(pid) / f"{layer}.user.geojson"
+
+
+def _fetched_layer_path(pid: str, layer: str, bbox) -> Path:
+    return _project_cache_dir(pid) / f"{layer}.{_bbox_key(bbox)}.geojson"
+
+
+def _cached_layer(pid: str, layer: str, bbox):
+    """A GeoDataFrame already on disk for this layer, if any, plus which kind
+    it was: user upload beats an auto-fetch cache, and an auto-fetch cache is
+    scoped to this exact bbox — redefine the study area and it is a plain
+    cache miss, no invalidation bookkeeping required."""
+    import geopandas as gpd
+
+    user_path = _user_layer_path(pid, layer)
+    if user_path.exists():
+        try:
+            return gpd.read_file(user_path), "user"
+        except Exception as exc:
+            logger.warning(f"uploaded layer {layer} for {pid} unreadable: {exc!r}")
+    fetched_path = _fetched_layer_path(pid, layer, bbox)
+    if fetched_path.exists():
+        try:
+            return gpd.read_file(fetched_path), "fetched"
+        except Exception as exc:
+            logger.warning(f"cached layer {layer} for {pid} unreadable: {exc!r}")
+    return None, None
+
+
+def _save_fetched_layer(pid: str, layer: str, bbox, gdf) -> None:
+    """Best-effort: a cache directory the process can't write to should not
+    fail the run, only skip the cache for next time."""
+    try:
+        gdf.to_file(_fetched_layer_path(pid, layer, bbox), driver="GeoJSON")
+        manifest = _read_manifest(pid)
+        manifest.setdefault("layers", {})[layer] = {
+            "kind": "fetched", "feature_count": int(len(gdf)), "crs": str(gdf.crs),
+            "at": time.time(), "bbox_key": _bbox_key(bbox),
+        }
+        _write_manifest(pid, manifest)
+    except Exception as exc:
+        logger.warning(f"could not cache fetched layer {layer} for {pid}: {exc!r}")
+
+
+def list_data_bundle(pid: str, db: Path | None = None) -> dict:
+    """Per-layer cache/upload status for this project — what step 3/7 would use
+    right now without any network fetch, and what a download would contain."""
+    get_project(pid, db=db)
+    return {"layers": _read_manifest(pid).get("layers", {})}
+
+
+def export_data_bundle(pid: str, db: Path | None = None) -> bytes:
+    """Zip every layer currently on disk for this project — fetched-and-cached
+    plus any upload — with a manifest, so it can be archived or re-uploaded to
+    another project."""
+    import io
+    import zipfile
+
+    get_project(pid, db=db)
+    layers = _read_manifest(pid).get("layers", {})
+    if not layers:
+        raise KeyError(f"no data cached yet for project {pid} — run step 3 first")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for layer, info in layers.items():
+            if info.get("kind") == "user":
+                src = _user_layer_path(pid, layer)
+            else:
+                bbox_key = info.get("bbox_key")
+                src = _project_cache_dir(pid) / f"{layer}.{bbox_key}.geojson" if bbox_key else None
+            if src is None or not src.exists():
+                continue
+            zf.writestr(f"{layer}.geojson", src.read_bytes())
+        zf.writestr("manifest.json", json.dumps({"project_id": pid, "layers": layers}, indent=2))
+    return buf.getvalue()
+
+
+def import_data_bundle(pid: str, filename: str, content: bytes, db: Path | None = None) -> dict:
+    """Accept an upload for step 3's data: a .zip bundle (as produced by
+    export_data_bundle, or hand-assembled) or a single .geojson/.json file
+    named after the layer it supplies — e.g. facilities.geojson. Each layer is
+    validated independently so one bad file doesn't sink the rest, matching
+    step 3's own per-layer honest-degradation style."""
+    import io
+    import zipfile
+
+    import geopandas as gpd
+
+    get_project(pid, db=db)
+    known_layers = set(LAYER_META)
+    entries: list[tuple[str, bytes]] = []
+    if filename.lower().endswith(".zip"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                for name in zf.namelist():
+                    if name.endswith("/") or Path(name).name == "manifest.json":
+                        continue
+                    entries.append((Path(name).name, zf.read(name)))
+        except zipfile.BadZipFile:
+            return {"accepted": [], "rejected": [{"file": filename, "reason": "not a valid zip file"}]}
+    else:
+        entries.append((filename, content))
+
+    accepted, rejected = [], []
+    manifest = _read_manifest(pid)
+    manifest.setdefault("layers", {})
+    for fname, data in entries:
+        stem = Path(fname).stem.lower().replace("-", "_").replace(" ", "_")
+        if stem not in known_layers:
+            rejected.append({
+                "file": fname,
+                "reason": f"'{stem}' is not a known layer. Name the file one of: "
+                          f"{', '.join(sorted(known_layers))} (plus .geojson).",
+            })
+            continue
+        try:
+            gdf = gpd.read_file(io.BytesIO(data))
+        except Exception as exc:
+            rejected.append({"file": fname,
+                              "reason": f"could not be read as GeoJSON ({type(exc).__name__})"})
+            continue
+        if gdf.crs is None:
+            rejected.append({"file": fname,
+                              "reason": "no coordinate reference system (CRS) set on the file — "
+                                        "add one before uploading"})
+            continue
+        gdf.to_file(_user_layer_path(pid, stem), driver="GeoJSON")
+        manifest["layers"][stem] = {
+            "kind": "user", "feature_count": int(len(gdf)), "crs": str(gdf.crs),
+            "at": time.time(), "original_filename": fname,
+        }
+        accepted.append({"layer": stem, "feature_count": int(len(gdf)), "crs": str(gdf.crs)})
+    _write_manifest(pid, manifest)
+    return {"accepted": accepted, "rejected": rejected}
+
+
+def _clear_project_layer_cache(pid: str) -> None:
+    """Wipe every cached/uploaded layer for a project whose geography changed
+    — an uploaded facilities.geojson for County A must never silently answer
+    for County B after a Back-and-redefine (update_project_scope)."""
+    import shutil
+
+    shutil.rmtree(_project_cache_dir(pid), ignore_errors=True)
+
+
+def clear_data_override(pid: str, layer: str, db: Path | None = None) -> dict:
+    """Delete an uploaded layer override so the next run fetches it normally."""
+    get_project(pid, db=db)
+    path = _user_layer_path(pid, layer)
+    manifest = _read_manifest(pid)
+    existed = path.exists() or layer in manifest.get("layers", {})
+    if not existed:
+        raise KeyError(f"no uploaded override for layer {layer!r} on project {pid}")
+    path.unlink(missing_ok=True)
+    manifest.get("layers", {}).pop(layer, None)
+    _write_manifest(pid, manifest)
+    return {"cleared": layer}
+
+
 def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
                   pct_span: tuple[float, float] = (2.0, 100.0)) -> tuple[dict, dict, list]:
     """Fetch `names` concurrently under a wall-clock budget.
@@ -936,7 +1143,30 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
     errors: dict[str, str] = {}
     started = time.time()
     deadline = started + budget_s
-    pending = list(names)
+
+    # Cache check first: a layer the user uploaded, or one this project already
+    # fetched for this exact study area, needs no network call at all — this is
+    # what makes step 7 not re-fetch what step 3 just fetched.
+    pending = []
+    reused = 0
+    for n in names:
+        gdf, kind = _cached_layer(pid, n, bbox)
+        if gdf is None:
+            pending.append(n)
+            continue
+        results[n] = gdf
+        reused += 1
+        slot = next(d for d in detail if d["layer"] == n)
+        slot["status"] = "done"
+        slot["count"] = int(len(gdf))
+        slot["note"] = ("using the data you uploaded" if kind == "user"
+                         else "already fetched this run — reused, not re-fetched")
+        if kind == "user":
+            slot["source"] = "Your uploaded data"
+    if reused:
+        set_progress_detail(pid, step, detail)
+        set_progress(pid, step, lo + (hi - lo) * reused / max(len(names), 1),
+                     f"map layers {reused}/{len(names)} · reused, no fetch needed")
 
     # Automatic retry of the layers that failed. Overpass queues rather than
     # refuses when busy, so a layer that timed out is usually just unlucky — and
@@ -1055,6 +1285,10 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                 else:
                     slot["status"] = "done"
                     slot["count"] = int(len(g))
+                    # A real fetch, not a timeout/error: cache it so a later
+                    # step (or a re-run) for this same project reuses it
+                    # instead of asking Overpass/Census again.
+                    _save_fetched_layer(pid, n, bbox, g)
                 set_progress_detail(pid, step, detail)
                 set_progress(pid, step, lo + (hi - lo) * done / max(len(all_names), 1),
                              f"map layers {done}/{len(all_names)} · {_layer_meta(n)[0]} "
@@ -1120,6 +1354,10 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
         label, source, geom_type = _layer_meta(n)
         err = errs_by_layer.get(n)
         slot = next((d for d in detail if d["layer"] == n), {})
+        # A layer the user uploaded is not from OpenStreetMap — say so, rather
+        # than let the static per-layer source string claim a source that was
+        # never actually queried (the report cites this field verbatim).
+        source = slot.get("source", source)
         inventory.append({
             "layer": n,
             "name": label,
@@ -2161,7 +2399,8 @@ def update_project_scope(
         if areal_unit is not None and areal_unit not in AREAL_UNITS:
             raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
 
-        scope_changed = (new_state, new_county) != (meta["state_fips"], meta["county_fips"]) or (
+        geo_changed = (new_state, new_county) != (meta["state_fips"], meta["county_fips"])
+        scope_changed = geo_changed or (
             areal_unit is not None and areal_unit != meta.get("areal_unit")
         )
         meta.update(state_fips=new_state, county_fips=new_county)
@@ -2184,6 +2423,8 @@ def update_project_scope(
             stale = conn.execute(
                 "UPDATE artifacts SET status = 'stale' WHERE project_id = ?", (pid,)
             ).rowcount
+    if geo_changed:
+        _clear_project_layer_cache(pid)
     return {"project_id": pid, "scope_changed": scope_changed, "stale_steps": stale}
 
 
