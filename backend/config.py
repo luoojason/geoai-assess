@@ -1,6 +1,34 @@
+import os
+from pathlib import Path
 from typing import Optional
 
+from dotenv import dotenv_values
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The installers (START-HCAS.bat / .command) write .env next to themselves,
+# i.e. the repo root, one level above this package.
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+
+
+def load_env_file(path: Optional[Path] = None) -> None:
+    """Export .env into os.environ without clobbering the real environment.
+
+    Settings models a handful of names; the app documents many more and reads
+    them straight from os.environ — CENSUS_API_KEY, HCAS_DB, HCAS_LAYER_BUDGET_S,
+    the OSM_* timeouts. Without this, step 1's own instruction ("add
+    CENSUS_API_KEY=... to the .env file next to START-HCAS") set a value that
+    nothing ever read, and ACS stayed unavailable with the same message telling
+    the user to do what they had already done.
+
+    A real environment variable always wins, and a blank line in .env never
+    shadows one — START-HCAS.bat's 2026-07-19 bug wrote exactly such a blank.
+    """
+    path = ENV_FILE if path is None else Path(path)
+    if not path.is_file():
+        return
+    for key, value in dotenv_values(path, encoding="utf-8").items():
+        if value and not os.environ.get(key):
+            os.environ[key] = value
 
 
 class Settings(BaseSettings):
@@ -34,7 +62,14 @@ class Settings(BaseSettings):
     trust_proxy_headers: bool = True
     rate_limit_lru_max: int = 1024
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore": a name in .env that Settings does not model must never
+    # crash the app at import. It used to — the default is extra="forbid", so
+    # CENSUS_API_KEY in .env raised a ValidationError before uvicorn ever bound,
+    # which is the 2026-07-25 "could not open the site" failure class again.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
 
+load_env_file()
 settings = Settings()

@@ -1,11 +1,12 @@
-"""HCAS — the 8-step gated assessment machine (Milestone 1 skeleton).
+"""HCAS — the 8-step gated assessment machine.
 
 A code-owned coordinator, not an agent: each step drafts an artifact, a human
 confirms (possibly edits) it, and only then may the next step run. Every step
 row carries the audit tuple (ai_draft, human_final, edit_delta, edit_seconds)
 — the dataset for the HITL-vs-autonomy ablation.
 
-Steps 2-8 are stubs in this skeleton; they gain real runners incrementally.
+All 8 steps have real runners. The LLM speaks at steps 2 and 4 only; the
+rest are deterministic over the artifacts a human already confirmed.
 """
 from __future__ import annotations
 
@@ -259,7 +260,7 @@ def _conn(db: Path):
 
 
 # ---------------------------------------------------------------------------
-# Step runners — step 1 is real, 2-8 are stubs until their week lands
+# Step runners — all 8 are real; 2 and 4 call the LLM, the rest compute
 # ---------------------------------------------------------------------------
 
 def _run_step_1(meta: dict) -> dict:
