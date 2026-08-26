@@ -248,3 +248,61 @@ def test_prompt_context_truncates(monkeypatch):
     context = kg.as_prompt_context(answer, max_chars=100)
     assert "[truncated]" in context
     assert len(context) < 500
+
+
+# --- step-4 integration ---------------------------------------------------
+#
+# The knowledgebase must be strictly additive: with it off, step 4 must build
+# exactly the prompt and schema it built before this module existed.
+
+
+def test_step4_system_unchanged_without_knowledgebase():
+    from backend import hcas
+
+    assert hcas._step4_system("") is hcas._STEP4_SYSTEM
+
+
+def test_step4_schema_unchanged_without_knowledgebase():
+    from backend import hcas
+
+    assert hcas._step4_schema(None) is hcas._STEP4_SCHEMA
+    assert hcas._step4_schema([]) is hcas._STEP4_SCHEMA
+
+
+def test_step4_system_appends_knowledgebase_context():
+    from backend import hcas
+
+    system = hcas._step4_system("KNOWLEDGEBASE (GraphRAG):\nGreenspace lowers risk.")
+    assert system.startswith(hcas._STEP4_SYSTEM)
+    assert "Greenspace lowers risk." in system
+    # The built-in theory list must survive alongside it — it is the control.
+    assert "WHO Healthy Cities" in system
+
+
+def test_step4_schema_widens_reference_enum_only():
+    from backend import hcas
+
+    schema = hcas._step4_schema(["Urban green spaces and health"])
+    enum = schema["properties"]["references"]["items"]["enum"]
+    assert "Urban green spaces and health" in enum
+    assert set(hcas._REFERENCE_TITLES).issubset(set(enum))
+    # The theory enum stays locked to the fixed taxonomy.
+    theory_enum = schema["properties"]["theoretical_basis"]["items"]["properties"]["theory"]["enum"]
+    assert theory_enum == [t["name"] for t in hcas.KG_THEORIES]
+
+
+def test_step4_schema_does_not_mutate_the_original():
+    from backend import hcas
+
+    before = list(hcas._STEP4_SCHEMA["properties"]["references"]["items"]["enum"])
+    hcas._step4_schema(["A brand new source document"])
+    after = hcas._STEP4_SCHEMA["properties"]["references"]["items"]["enum"]
+    assert after == before
+
+
+def test_step4_schema_dedupes_titles_already_known():
+    from backend import hcas
+
+    known = hcas._REFERENCE_TITLES[0]
+    enum = hcas._step4_schema([known])["properties"]["references"]["items"]["enum"]
+    assert enum.count(known) == 1

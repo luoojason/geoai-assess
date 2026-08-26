@@ -9,6 +9,7 @@ Steps 2-8 are stubs in this skeleton; they gain real runners incrementally.
 """
 from __future__ import annotations
 
+import copy
 import difflib
 import json
 import logging
@@ -64,6 +65,7 @@ def clear_progress(pid: str, step: int) -> None:
         _progress.pop((pid, step), None)
         _progress_detail.pop((pid, step), None)
 
+from backend import kg
 from backend.assess.references import REFERENCES
 from backend.gis.counties import build_place_name, centroid_of_county, lookup_county
 
@@ -1529,6 +1531,41 @@ _STEP4_SCHEMA = {
 }
 
 
+def _step4_system(kg_context: str = "") -> str:
+    """Step-4 system prompt, optionally grounded in Prof. Wang's knowledgebase.
+
+    The theory list stays fixed whether or not the knowledgebase answers. That
+    list is the experimental control for the grounding study, so the
+    knowledgebase adds *evidence and citable sources* underneath it rather than
+    redefining the taxonomy.
+    """
+    if not kg_context:
+        return _STEP4_SYSTEM
+    return (
+        _STEP4_SYSTEM
+        + "\n\n"
+        + kg_context
+        + "\n\nPrefer the knowledgebase passages above when they bear on a factor, and "
+        "cite their source documents by exact title alongside the reference database."
+    )
+
+
+def _step4_schema(extra_titles: list | None = None) -> dict:
+    """Step-4 schema with the citable-reference enum widened by knowledgebase sources.
+
+    The enum lock itself is never relaxed — only the set of titles it admits
+    grows, and only to documents the knowledgebase actually returned for this
+    question.
+    """
+    if not extra_titles:
+        return _STEP4_SCHEMA
+    titles = list(_REFERENCE_TITLES)
+    titles.extend(t for t in extra_titles if t not in titles)
+    schema = copy.deepcopy(_STEP4_SCHEMA)
+    schema["properties"]["references"]["items"]["enum"] = titles
+    return schema
+
+
 def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
     place = _confirmed(project, 1).get("place_name", "the study area")
     factors = _confirmed(project, 2)["factors"]
@@ -1545,6 +1582,18 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
         if outcome_rows
         else ""
     )
+    # Best-effort knowledgebase grounding. It is off unless an operator points
+    # HCAS at a running instance, and a query can take minutes, so say so on the
+    # progress line and carry on with the built-in theories if it does not answer.
+    kg_answer = None
+    if kg.enabled():
+        set_progress(project["id"], 4, 5, "searching the knowledgebase…")
+        kg_answer = kg.ground_framework(
+            factors=[f["factor"] for f in factors],
+            place=place,
+        )
+    kg_context = kg.as_prompt_context(kg_answer)
+
     set_progress(project["id"], 4, 10, "waiting for the AI model…")
     model = "claude-opus-4-8"
     prompt = (
@@ -1559,7 +1608,20 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
         "outcomes exceed the US benchmark, connect them to the relevant built-"
         "environment factors."
     )
-    draft, usage = _llm_structured(_STEP4_SYSTEM, prompt, _STEP4_SCHEMA, model=model)
+    draft, usage = _llm_structured(
+        _step4_system(kg_context),
+        prompt,
+        _step4_schema(kg_answer.source_titles if kg_answer else None),
+        model=model,
+    )
+    if kg_answer is not None:
+        # Provenance for the audit trail: which index answered, and how well.
+        draft["knowledgebase"] = {
+            "version": kg_answer.version,
+            "method": kg_answer.method,
+            "duration_seconds": kg_answer.duration_seconds,
+            "source_documents": kg_answer.source_titles,
+        }
     return draft, model, usage
 
 
