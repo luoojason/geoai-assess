@@ -28,6 +28,43 @@ groups, 0 entities without sources, 0 graph self-loops).
 It contains **no ingestion, no index construction, no source articles, and no
 credentials**. It is a query surface, nothing more.
 
+## The 96 papers — the list was in the bundle all along
+
+The user guide does not list the corpus, which is why "what are the 96 papers?"
+sat open. It did not need to: `data/v2/output/documents.parquet` carries every
+source document with its metadata, and the 1,169 rows are **sections**, not
+papers — each `title` is `<paper title> — <section heading>`, em dash U+2014.
+Splitting on it yields exactly **96 distinct papers**, 12.2 sections each on
+average (1 to 27).
+
+`docs/kb-corpus.json` is that manifest, extracted 2026-08-26 and committed so
+the grounding evaluation has a corpus definition that does not depend on
+re-downloading 553 MB. Per paper: title, authors, DOI, year, journal, section
+count, and the corpus's own category tags. Every paper has authors and a year;
+**74 of 96 carry a DOI**. Years run 2016-2026, and `raw_data` also exposes
+`keywords`, `content_hash`, `section_index` and `source_path`.
+
+Three properties of the corpus that change how it should be used:
+
+- **It is not an English corpus.** Despite the package name, the 1,169
+  documents are **501 `en`, 444 `zh`, 224 `mixed`** — 43% is Chinese or
+  bilingual. That is what the v2 "bilingual entity resolution" index and the
+  `answer_language` parameter exist for, and any evaluation that assumes an
+  English-only corpus is measuring the wrong thing.
+- **Every document is tagged `rights_scope: internal_research`**, all 1,169 of
+  them. Bibliographic metadata is one thing; the document text is another, and
+  nothing here should be redistributed or published on that basis without
+  asking Prof. Wang first.
+- **It carries its own four-way taxonomy**, which is a ready-made axis for the
+  grounding study: `1_理论_工作框架` (theory / working framework, 331 docs),
+  `2_健康风险` (health risk, 450), `3_健康资源` (health resources, 364),
+  `4_健康行为` (health behaviour, 140). Papers carry one primary `category`
+  and may carry several in `categories`.
+
+The journals skew to Chinese planning titles — 规划师 (88 sections), 城市发展研究
+(80), 南方建筑 (60), 国际城市规划 (53), 风景园林 (52) — alongside IJERPH,
+Applied Geography and Cities.
+
 ## The API
 
 A small Node server serves JSON on loopback:
@@ -156,5 +193,7 @@ degrades from.
 - A minutes-long, single-flight query cannot block an interactive step. Should
   step 4 ground **asynchronously** (draft immediately, enrich when the answer
   lands), or is a multi-minute wait on that step acceptable?
-- **What are the 96 papers?** The corpus list is not in the bundle, and the
-  paper set is load-bearing for the methodology-grounding evaluation.
+- The 96-paper list is **answered** — see the section above and
+  `docs/kb-corpus.json`. What is still worth confirming with Prof. Wang: that
+  the four-way category taxonomy means what its labels say, and whether the 22
+  papers without a DOI are intentional (book chapters, reports) or a gap.

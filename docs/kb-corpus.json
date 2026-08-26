@@ -1,0 +1,1872 @@
+{
+ "source": "graphrag-english-runtime-20260729-051918.zip :: data/v2/output/documents.parquet",
+ "extracted": "2026-08-26",
+ "document_rows": 1169,
+ "paper_count": 96,
+ "raw_data_fields": [
+  "authors",
+  "categories",
+  "category",
+  "content_hash",
+  "doi",
+  "id",
+  "journal",
+  "keywords",
+  "language",
+  "metadata_path",
+  "paper_id",
+  "rights_scope",
+  "section_index",
+  "section_title",
+  "source_path",
+  "text",
+  "text_source",
+  "title",
+  "year"
+ ],
+ "categories": [
+  {
+   "category": "2_健康风险",
+   "documents": 450
+  },
+  {
+   "category": "3_健康资源",
+   "documents": 364
+  },
+  {
+   "category": "1_理论_工作框架",
+   "documents": 331
+  },
+  {
+   "category": "4_健康行为",
+   "documents": 140
+  }
+ ],
+ "papers": [
+  {
+   "title": "From proximity to equity: Rethinking X-minute-city policies for accessibility equity through a spatial optimization perspective",
+   "sections": 19,
+   "authors": [
+    "Jianying Wang",
+    "Mei-Po Kwan",
+    "Dong Liu",
+    "Yang Liu",
+    "Lan Wang"
+   ],
+   "doi": "10.1016/j.jtrangeo.2026.104581",
+   "categories": [
+    "2_健康风险",
+    "4_健康行为"
+   ],
+   "category": "2_健康风险",
+   "year": 2026,
+   "journal": "Journal of Transport Geography",
+   "id": "2026-Jianying-Wang-From-proximity-to-equity--Rethinking-X-minute-city-policies-for-accessibility-equity-through-a-spatia::section::001"
+  },
+  {
+   "title": "The linkage between microbial community dynamics and urbanization age",
+   "sections": 11,
+   "authors": [
+    "Yinghui Jia",
+    "Jun Wu",
+    "Xun Shi",
+    "Jia Tao",
+    "Christopher E. Mason",
+    "Anne Vernez Moudon",
+    "Zhiqiang Wu",
+    "Yu Ye",
+    "Yuxi Cai",
+    "Wenyao Sun",
+    "Tieliu Shi",
+    "Lan Wang"
+   ],
+   "doi": "10.1038/s41893-026-01801-2",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2026,
+   "journal": "Nature Sustainability",
+   "id": "2026-Yinghui-Jia-The-linkage-between-microbial-community-dynamics-and-urbanization-age::section::001"
+  },
+  {
+   "title": "The Pathway Domains Framework for social prescribing",
+   "sections": 1,
+   "authors": [
+    "Xiaoqi Feng",
+    "Thomas Astell-Burt"
+   ],
+   "doi": "10.1016/j.lanprc.2026.100133",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2026,
+   "journal": "The Lancet Primary Care",
+   "id": "2026-Xiaoqi-Feng-The-Pathway-Domains-Framework-for-social-prescribing::section::001"
+  },
+  {
+   "title": "Early‐life education attainment and cognitive impairment in older adults: the moderating role of neighborhood educational facilities",
+   "sections": 12,
+   "authors": [
+    "Surong Zhang",
+    "Juan Zhou",
+    "Zhenxu Xiao",
+    "Xiaowen Zhou",
+    "Shuang Wu",
+    "Qianhua Zhao",
+    "Ding Ding",
+    "Yan Zeng",
+    "Lan Wang"
+   ],
+   "doi": "10.1002/bsa3.70042",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2025,
+   "journal": "Alzheimer s & Dementia Behavior & Socioeconomics of Aging",
+   "id": "2025-Surong-Zhang-Early‐life-education-attainment-and-cognitive-impairment-in-older-adults--the-moderating-role-of-neigh::section::001"
+  },
+  {
+   "title": "Linking urban expansion patterns to lung cancer risk: a nationwide analysis in Chinese cities",
+   "sections": 15,
+   "authors": [
+    "Wenyao Sun",
+    "Yinghui Jia",
+    "Lan Wang",
+    "Chunfang Wang"
+   ],
+   "doi": "10.1186/s13690-025-01747-5",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2025,
+   "journal": "Archives of Public Health",
+   "id": "2025-Wenyao-Sun-Linking-urban-expansion-patterns-to-lung-cancer-risk--a-nationwide-analysis-in-Chinese-cities::section::001"
+  },
+  {
+   "title": "Pathways Through Which Green Exposure Type Influences Cardiovascular Diseases Mortality in Shanghai, China",
+   "sections": 2,
+   "authors": [
+    "Jianzhong Huang",
+    "Yang Xu",
+    "Lan Wang",
+    "Zonglin He"
+   ],
+   "doi": "10.3724/j.fjyl.202401190051",
+   "categories": [
+    "2_健康风险",
+    "3_健康资源"
+   ],
+   "category": "2_健康风险",
+   "year": 2025,
+   "journal": "Landscape Architecture",
+   "id": "2025-Jianzhong-Huang-Pathways-Through-Which-Green-Exposure-Type-Influences-Cardiovascular-Diseases-Mortality-in-Shanghai::section::001"
+  },
+  {
+   "title": "The Effect of Street Orientation on the Temporal Variation in Thermal Environment Within Streets in Different Climate Zones",
+   "sections": 10,
+   "authors": [
+    "Jiayu Li",
+    "Jifa Rao",
+    "Lan Wang"
+   ],
+   "doi": "10.3390/buildings15091506",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2025,
+   "journal": "Buildings",
+   "id": "2025-Jiayu-Li-The-Effect-of-Street-Orientation-on-the-Temporal-Variation-in-Thermal-Environment-Within-Streets-in-Differ::section::001"
+  },
+  {
+   "title": "城市中央商务区防疫规划设计框架与实践",
+   "sections": 17,
+   "authors": [
+    "孙文尧",
+    "王兰",
+    "赵誉行",
+    "牛斌",
+    "任琛琛"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2025,
+   "journal": "规划师",
+   "id": "2025-孙文尧-城市中央商务区防疫规划设计框架与实践::section::001"
+  },
+  {
+   "title": "城市噪声敏感区开放空间形态要素对声环境质量分布的影响研究",
+   "sections": 16,
+   "authors": [
+    "邵钰涵",
+    "张洲滔",
+    "王兰"
+   ],
+   "doi": "10.12193/j.laing.2025.12.0004.001",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2025,
+   "journal": "园林",
+   "id": "2025-邵钰涵-城市噪声敏感区开放空间形态要素对声环境质量分布的影响研究::section::001"
+  },
+  {
+   "title": "城市建成环境对母婴健康的影响",
+   "sections": 11,
+   "authors": [
+    "王兰",
+    "雷安妮",
+    "张钰彤",
+    "贾颖慧",
+    "苗茂华"
+   ],
+   "doi": "10.19775/j.cla.2025.01.0023",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2025,
+   "journal": "中国园林",
+   "id": "2025-王兰-城市建成环境对母婴健康的影响——研究综述与展望::section::001"
+  },
+  {
+   "title": "工作－休息日公园绿地到访量影响因素差异及提升策略",
+   "sections": 10,
+   "authors": [
+    "张雅兰",
+    "孙文尧",
+    "王兰"
+   ],
+   "doi": "10.12169/zgcsly.2025.05.29.0002",
+   "categories": [
+    "3_健康资源",
+    "4_健康行为"
+   ],
+   "category": "3_健康资源",
+   "year": 2025,
+   "journal": "中国城市林业",
+   "id": "2025-张雅兰-工作－休息日公园绿地到访量影响因素差异及提升策略::section::001"
+  },
+  {
+   "title": "急救车资源布局与运营调度优化研究综述",
+   "sections": 20,
+   "authors": [
+    "沈煜",
+    "毕维翰",
+    "王兰",
+    "杜豫川"
+   ],
+   "doi": "10.19721/j.cnki.1001-7372.2025.01.018",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2025,
+   "journal": "中国公路学报",
+   "id": "2025-沈煜-急救车资源布局与运营调度优化研究综述::section::001"
+  },
+  {
+   "title": "面向复杂场景的健康城市规划理论、关键技术及应用",
+   "sections": 12,
+   "authors": [
+    "孙文尧",
+    "王兰",
+    "任祖华",
+    "周俭",
+    "徐斌"
+   ],
+   "doi": "10.16414/j.wa.2025.06.005",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2025,
+   "journal": "Frontal Research in Building Science and Technology",
+   "id": "2025-孙文尧-面向复杂场景的健康城市规划理论、关键技术及应用::section::001"
+  },
+  {
+   "title": "面向市县级国土空间总体规划的传染病风险评估方法及其实践",
+   "sections": 9,
+   "authors": [
+    "王兰",
+    "张钰彤",
+    "贾颖慧",
+    "刘晓"
+   ],
+   "doi": "10.11819/cpr20250205a",
+   "categories": [
+    "1_理论_工作框架",
+    "2_健康风险"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2025,
+   "journal": "城市规划",
+   "id": "2025-王兰-面向市县级国土空间总体规划的传染病风险评估方法及其实践::section::001"
+  },
+  {
+   "title": "Associations between environmental perception and self-rated health in the city hierarchy of China: Findings from a national cross-sectional survey",
+   "sections": 14,
+   "authors": [
+    "Wenyao Sun",
+    "Ying Wu",
+    "Lan Wang",
+    "Xiaotian Li",
+    "Qiaoni Guo",
+    "Zhanzhan Hu"
+   ],
+   "doi": "10.1016/j.socscimed.2024.116785",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2024,
+   "journal": "Social Science & Medicine",
+   "id": "2024-Wenyao-Sun-Associations-between-environmental-perception-and-self-rated-health-in-the-city-hierarchy-of-China--Find::section::001"
+  },
+  {
+   "title": "Detecting thresholds in the health impact of the urban built environment",
+   "sections": 18,
+   "authors": [
+    "Wenyao Sun",
+    "Lan Wang",
+    "Arthi Rao",
+    "Steve Hung Lam Yim",
+    "Haidong Kan",
+    "Yue Gao",
+    "Surong Zhang",
+    "Catherine Sheldrick Ross",
+    "Bao Pingping"
+   ],
+   "doi": "10.1016/j.apgeog.2024.103399",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2024,
+   "journal": "Applied Geography",
+   "id": "2024-Wenyao-Sun-Detecting-thresholds-in-the-health-impact-of-the-urban-built-environment::section::001"
+  },
+  {
+   "title": "Development of a Chrono‐Urbanism Status Composite Index under the 5/10/15‐Minute City Concept Using Social Media Big Data",
+   "sections": 10,
+   "authors": [
+    "Dong Liu",
+    "Mei‐Po Kwan",
+    "Lan Wang",
+    "Zihan Kan",
+    "Jianying Wang",
+    "Jingbo Huang"
+   ],
+   "doi": "10.1111/tesg.12613",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2024,
+   "journal": "Tijdschrift voor Economische en Sociale Geografie",
+   "id": "2024-Dong-Liu-Development-of-a-Chrono‐Urbanism-Status-Composite-Index-under-the-5-10-15‐Minute-City-Concept-Using-Social::section::001"
+  },
+  {
+   "title": "Landscape of global urban environmental resistome and its association with local socioeconomic and medical status",
+   "sections": 13,
+   "authors": [
+    "Jun Wu",
+    "Yige Hu",
+    "Michael H. Perlin",
+    "David Danko",
+    "Jun Lu",
+    "Manuela Oliveira",
+    "Johannes Werner",
+    "María Mercedes Zambrano",
+    "Maria A. Sierra",
+    "Olayinka Osuolale",
+    "Paweł P. Łabaj",
+    "Nicolás Rascovan",
+    "Nur Hazlin Hazrin-Chong",
+    "Soojin Jang",
+    "Haruo Suzuki",
+    "Marina Nieto‐Caballero",
+    "Bharath Prithiviraj",
+    "Patrick K. H. Lee",
+    "Agnieszka Chmielarczyk",
+    "Anna Różańska",
+    "Yongxiang Zhao",
+    "Lan Wang",
+    "Christopher E. Mason",
+    "Tieliu Shi"
+   ],
+   "doi": "10.1007/s11427-023-2504-1",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2024,
+   "journal": "Science China Life Sciences",
+   "id": "2024-Jun-Wu-Landscape-of-global-urban-environmental-resistome-and-its-association-with-local-socioeconomic-and-medical-s::section::001"
+  },
+  {
+   "title": "Spatial and moderating effects of greenspace on the association between air pollution and lung cancer incidence",
+   "sections": 19,
+   "authors": [
+    "Zhe Pang",
+    "Bo Xie",
+    "Zihao An",
+    "Lan Wang"
+   ],
+   "doi": "10.1016/j.apgeog.2024.103207",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2024,
+   "journal": "Applied Geography",
+   "id": "2024-Zhe-Pang-Spatial-and-moderating-effects-of-greenspace-on-the-association-between-air-pollution-and-lung-cancer-inci::section::001"
+  },
+  {
+   "title": "The Annual Effect of Landscapes on the Indoor Thermal Environment in Residential Areas",
+   "sections": 9,
+   "authors": [
+    "Jiayu Li",
+    "Bohong Zheng",
+    "Xiao Chen",
+    "Lan Wang"
+   ],
+   "doi": "10.3390/f15071099",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2024,
+   "journal": "Forests",
+   "id": "2024-Jiayu-Li-The-Annual-Effect-of-Landscapes-on-the-Indoor-Thermal-Environment-in-Residential-Areas—A-Case-Study-in-Sou::section::001"
+  },
+  {
+   "title": "Thinking beyond general greenness: The nuanced associations between a variety of greenspaces and cardiovascular diseases across urbanicity",
+   "sections": 22,
+   "authors": [
+    "Yuwen Yang",
+    "Bin Jiang",
+    "Lan Wang",
+    "Yuyu Zhou",
+    "Bo Li",
+    "Peng Gong"
+   ],
+   "doi": "10.1016/j.landurbplan.2024.105223",
+   "categories": [
+    "2_健康风险",
+    "3_健康资源"
+   ],
+   "category": "2_健康风险",
+   "year": 2024,
+   "journal": "Landscape and Urban Planning",
+   "id": "2024-Yuwen-Yang-Thinking-beyond-general-greenness--The-nuanced-associations-between-a-variety-of-greenspaces-and-cardiov::section::001"
+  },
+  {
+   "title": "Transforming Urbanite Health with Upstream Knowledge",
+   "sections": 5,
+   "authors": [
+    "Zhaowu Yu",
+    "Gaoyuan Yang",
+    "Boyi Yang",
+    "Jun Yang",
+    "Zhuohui Zhao",
+    "Lan Wang",
+    "Hongxiao Liu",
+    "Jinguang Zhang",
+    "Bin Jiang",
+    "Henrik Vejre"
+   ],
+   "doi": "10.1021/envhealth.4c00237",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2024,
+   "journal": "Environment & Health",
+   "id": "2024-Zhaowu-Yu-Transforming-Urbanite-Health-with-Upstream-Knowledge::section::001"
+  },
+  {
+   "title": "What causes Emergency Medical Services (EMS) delay? Unravel high-risk buildings using citywide ambulance trajectory data",
+   "sections": 17,
+   "authors": [
+    "Surong Zhang",
+    "Lan Wang",
+    "Yu Shen",
+    "Yutong Zhang",
+    "Yue Gao",
+    "Tingjia Xu",
+    "Zhifeng Zhang",
+    "Tingjia Xu",
+    "Zhifeng Zhang"
+   ],
+   "doi": "10.1016/j.habitatint.2024.103198",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2024,
+   "journal": "Habitat International",
+   "id": "2024-Surong-Zhang-What-causes-Emergency-Medical-Services-(EMS)-delay--Unravel-high-risk-buildings-using-citywide-ambulan::section::001"
+  },
+  {
+   "title": "城市规划健康影响评估理论框架构建",
+   "sections": 16,
+   "authors": [
+    "王兰",
+    "孙文尧",
+    "陶佳",
+    "谢辉"
+   ],
+   "doi": "10.13791/j.cnki.hsfwest.20240307",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2024,
+   "journal": "西部人居环境学刊",
+   "id": "2024-王兰-城市规划健康影响评估理论框架构建::section::001"
+  },
+  {
+   "title": "城市食品环境对膳食行为及健康的影响",
+   "sections": 16,
+   "authors": [
+    "刘伯初",
+    "王兰"
+   ],
+   "doi": "10.19830/j.upi.2024.372",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2024,
+   "journal": "国际城市规划",
+   "id": "2024-刘伯初-城市食品环境对膳食行为及健康的影响——研究综述与展望::section::001"
+  },
+  {
+   "title": "基于健康理念的绿道规划设计导则优化",
+   "sections": 12,
+   "authors": [
+    "顾浩",
+    "王兰",
+    "张钰彤",
+    "王建勋",
+    "李金涛"
+   ],
+   "doi": "",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2024,
+   "journal": "规划师",
+   "id": "2024-顾浩-基于健康理念的绿道规划设计导则优化::section::001"
+  },
+  {
+   "title": "Creating livable cities for healthy ageing: Cognitive health in older adults and their 15-minute walkable neighbourhoods",
+   "sections": 15,
+   "authors": [
+    "Surong Zhang",
+    "Wanqing Wu",
+    "Zhenxu Xiao",
+    "Shuang Wu",
+    "Qianhua Zhao",
+    "Ding Ding",
+    "Lan Wang"
+   ],
+   "doi": "10.1016/j.cities.2023.104312",
+   "categories": [
+    "2_健康风险",
+    "4_健康行为"
+   ],
+   "category": "2_健康风险",
+   "year": 2023,
+   "journal": "Cities",
+   "id": "2023-Surong-Zhang-Creating-livable-cities-for-healthy-ageing--Cognitive-health-in-older-adults-and-their-15-minute-walka::section::001"
+  },
+  {
+   "title": "Designing bike-friendly cities: Interactive effects of built environment factors on bike-sharing",
+   "sections": 13,
+   "authors": [
+    "Lan Wang",
+    "Kaichen Zhou",
+    "Surong Zhang",
+    "Anne Vernez Moudon",
+    "Jinfeng Wang",
+    "Yong‐Guan Zhu",
+    "Wenyao Sun",
+    "Jianfeng Lin",
+    "Chao Tian",
+    "Miao Liu"
+   ],
+   "doi": "10.1016/j.trd.2023.103670",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2023,
+   "journal": "Transportation Research Part D Transport and Environment",
+   "id": "2023-Lan-Wang-Designing-bike-friendly-cities--Interactive-effects-of-built-environment-factors-on-bike-sharing::section::001"
+  },
+  {
+   "title": "Examining the association between the built environment and active travel using GPS data: A study of a large residential area (Daju) in Shanghai",
+   "sections": 14,
+   "authors": [
+    "Surong Zhang",
+    "Jingwen Li",
+    "Lan Wang",
+    "Mei‐Po Kwan",
+    "Yanwei Chai",
+    "Yirui Du",
+    "Kaichen Zhou",
+    "Hao Gu",
+    "Wenyao Sun"
+   ],
+   "doi": "10.1016/j.healthplace.2023.102971",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2023,
+   "journal": "Health & Place",
+   "id": "2023-Surong-Zhang-Examining-the-association-between-the-built-environment-and-active-travel-using-GPS-data--A-study-of-a::section::001"
+  },
+  {
+   "title": "Identifying spatial heterogeneity of COVID-19 transmission clusters and their built-environment features at the neighbourhood scale",
+   "sections": 16,
+   "authors": [
+    "Lan Wang",
+    "Zhanzhan Hu",
+    "Kaichen Zhou",
+    "Mei‐Po Kwan"
+   ],
+   "doi": "10.1016/j.healthplace.2023.103130",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2023,
+   "journal": "Health & Place",
+   "id": "2023-Lan-Wang-Identifying-spatial-heterogeneity-of-COVID-19-transmission-clusters-and-their-built-environment-features-a::section::001"
+  },
+  {
+   "title": "The effect of greenness on ESKAPE pathogen reduction and its heterogeneity across global climate zones and urbanization gradient",
+   "sections": 12,
+   "authors": [
+    "Lan Wang",
+    "Yinghui Jia",
+    "Jun Wu",
+    "Yuxi Cai",
+    "Qiaoni Guo",
+    "Wenyao Sun",
+    "Yalan Zhang",
+    "Christopher E. Mason",
+    "Tieliu Shi"
+   ],
+   "doi": "10.1016/j.ufug.2023.128048",
+   "categories": [
+    "2_健康风险",
+    "3_健康资源"
+   ],
+   "category": "2_健康风险",
+   "year": 2023,
+   "journal": "Urban forestry & urban greening",
+   "id": "2023-Lan-Wang-The-effect-of-greenness-on-ESKAPE-pathogen-reduction-and-its-heterogeneity-across-global-climate-zones-and::section::001"
+  },
+  {
+   "title": "“同一健康”框架下的城市环境微生物及其优化设计",
+   "sections": 6,
+   "authors": [
+    "朱永官",
+    "王兰",
+    "卢昌熠",
+    "贾颖慧",
+    "蔡雨希",
+    "安新丽"
+   ],
+   "doi": "10.12409/j.fjyl.202305290249",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2023,
+   "journal": "风景园林",
+   "id": "2023-朱永官-“同一健康”框架下的城市环境微生物及其优化设计::section::001"
+  },
+  {
+   "title": "“同一健康”视角下人与动物相互关系对空间规划的影响与应用启示",
+   "sections": 10,
+   "authors": [
+    "尹杰",
+    "谢依庭",
+    "王兰"
+   ],
+   "doi": "10.12409/j.fjyl.202306060263",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2023,
+   "journal": "风景园林",
+   "id": "2023-尹杰-“同一健康”视角下人与动物相互关系对空间规划的影响与应用启示::section::001"
+  },
+  {
+   "title": "健康中国战略背景下的健康城区评价体系构建",
+   "sections": 19,
+   "authors": [
+    "王兰",
+    "许燕婷",
+    "张苏榕",
+    "胡沾沾"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2023,
+   "journal": "规划师",
+   "id": "2023-王兰-健康中国战略背景下的健康城区评价体系构建::section::001"
+  },
+  {
+   "title": "健康城市科学与规划循证实践",
+   "sections": 6,
+   "authors": [
+    "王兰"
+   ],
+   "doi": "10.16361/j.upf.202306005",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2023,
+   "journal": "城市规划学刊",
+   "id": "2023-王兰-健康城市科学与规划循证实践::section::001"
+  },
+  {
+   "title": "城市人群绿地暴露及其健康效应研究综述",
+   "sections": 7,
+   "authors": [
+    "吝涛",
+    "曾志伟",
+    "姚霞",
+    "耿红凯",
+    "余兆武",
+    "王兰",
+    "林美霞",
+    "张浚茂",
+    "郑毅诚"
+   ],
+   "doi": "10.20103/j.stxb.202211283429",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2023,
+   "journal": "生态学报",
+   "id": "2023-吝涛-城市人群绿地暴露及其健康效应研究综述::section::001"
+  },
+  {
+   "title": "城市建成环境对心血管健康的影响路径与空间要素",
+   "sections": 12,
+   "authors": [
+    "黄建中",
+    "许燕婷",
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2023,
+   "journal": "城市发展研究",
+   "id": "2023-黄建中-城市建成环境对心血管健康的影响路径与空间要素::section::001"
+  },
+  {
+   "title": "基于疫情分析的上海社区韧性影响因素研究",
+   "sections": 10,
+   "authors": [
+    "王兰",
+    "胡沾沾",
+    "赫磊"
+   ],
+   "doi": "",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2023,
+   "journal": "城市发展研究",
+   "id": "2023-王兰-基于疫情分析的上海社区韧性影响因素研究::section::001"
+  },
+  {
+   "title": "疫情常态化背景下的城市韧性建设",
+   "sections": 27,
+   "authors": [
+    "蔡云楠",
+    "翟国方",
+    "王兰",
+    "彭翀",
+    "王世福",
+    "修春亮",
+    "王峤",
+    "周素红",
+    "姜洪庆",
+    "邵亦文"
+   ],
+   "doi": "10.3969/j.issn.1000-0232.2023.05.001",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2023,
+   "journal": "南方建筑",
+   "id": "2023-蔡云楠-疫情常态化背景下的城市韧性建设::section::001"
+  },
+  {
+   "title": "融合公共卫生的城乡规划跨学科复合型研究生培养",
+   "sections": 15,
+   "authors": [
+    "尹杰",
+    "郭乔妮",
+    "王兰"
+   ],
+   "doi": "10.19830/j.upi.2022.300",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2023,
+   "journal": "国际城市规划",
+   "id": "2023-尹杰-融合公共卫生的城乡规划跨学科复合型研究生培养——美国双学位的启示::section::001"
+  },
+  {
+   "title": "Deciphering the impact of urban built environment density on respiratory health using a quasi-cohort analysis of 5495 non-smoking lung cancer cases",
+   "sections": 15,
+   "authors": [
+    "Lan Wang",
+    "Wenyao Sun",
+    "Anne Vernez Moudon",
+    "Yong-Guan Zhu",
+    "Jinfeng Wang",
+    "Pingping Bao",
+    "Xiaojing Zhao",
+    "Xiaoming Yang",
+    "Yinghui Jia",
+    "Surong Zhang",
+    "Shuang Wu",
+    "Yuxi Cai"
+   ],
+   "doi": "10.1016/j.scitotenv.2022.158014",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2022,
+   "journal": "Science of the Total Environment",
+   "id": "2022-Lan-Wang-Deciphering-the-impact-of-urban-built-environment-density-on-respiratory-health-using-a-quasi-cohort-analy::section::001"
+  },
+  {
+   "title": "Healthy cities initiative in China: Progress, challenges, and the way forward",
+   "sections": 15,
+   "authors": [
+    "Yuqi Bai",
+    "Yutong Zhang",
+    "О. В. Зотова",
+    "Helen Pineo",
+    "José Siri",
+    "Lü Liang",
+    "Xiangyu Luo",
+    "Mei‐Po Kwan",
+    "John S. Ji",
+    "Xiaopeng Jiang",
+    "Cordia Chu",
+    "Na Cong",
+    "Vivian Lin",
+    "William Summerskill",
+    "Yong Luo",
+    "Hongjun Yu",
+    "Tinghai Wu",
+    "Changhong Yang",
+    "Jing Li",
+    "Yixiong Xiao",
+    "Jingbo Zhou",
+    "Dejing Dou",
+    "Hui Xiong",
+    "Lee Ligang Zhang",
+    "Lan Wang",
+    "Shu Tao",
+    "Bojie Fu",
+    "Yong Zhang",
+    "Bing Xu",
+    "Jun Yang",
+    "Peng Gong"
+   ],
+   "doi": "10.1016/j.lanwpc.2022.100539",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2022,
+   "journal": "The Lancet Regional Health - Western Pacific",
+   "id": "2022-Yuqi-Bai-Healthy-cities-initiative-in-China--Progress,-challenges,-and-the-way-forward::section::001"
+  },
+  {
+   "title": "健康城市规划的研究热点与展望：基于英文文献计量分析",
+   "sections": 10,
+   "authors": [
+    "蒋希冀",
+    "叶丹",
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2022,
+   "journal": "城市发展研究",
+   "id": "2022-蒋希冀-健康城市规划的研究热点与展望：基于英文文献计量分析::section::001"
+  },
+  {
+   "title": "公共健康单元的设定及其平疫结合规划策略",
+   "sections": 14,
+   "authors": [
+    "王兰",
+    "胡沾沾",
+    "戴明"
+   ],
+   "doi": "",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2022,
+   "journal": "规划师",
+   "id": "2022-王兰-公共健康单元的设定及其平疫结合规划策略::section::001"
+  },
+  {
+   "title": "城市街道模式对交通安全的影响研究",
+   "sections": 9,
+   "authors": [
+    "谢波",
+    "凌昌隆",
+    "王兰"
+   ],
+   "doi": "10.11819/cpr20221612a",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2022,
+   "journal": "城市规划",
+   "id": "2022-谢波-城市街道模式对交通安全的影响研究——以武汉市主城区为例::section::001"
+  },
+  {
+   "title": "影响亲自然活动多样性的城市滨江绿地空间特征识别与设计优化",
+   "sections": 12,
+   "authors": [
+    "干靓",
+    "杨伟光",
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2022,
+   "journal": "城市发展研究",
+   "id": "2022-干靓-影响亲自然活动多样性的城市滨江绿地空间特征识别与设计优化———以上海黄浦江沿岸为例::section::001"
+  },
+  {
+   "title": "我国健康城市治理模式演进研究",
+   "sections": 9,
+   "authors": [
+    "罗莹路",
+    "王建勋",
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2022,
+   "journal": "城市发展研究",
+   "id": "2022-罗莹路-我国健康城市治理模式演进研究———以杭州为例::section::001"
+  },
+  {
+   "title": "面向呼吸健康的国土空间规划生态空间布局优化",
+   "sections": 11,
+   "authors": [
+    "谢波",
+    "陈宇杰",
+    "庞哲",
+    "吝涛",
+    "王兰"
+   ],
+   "doi": "10.16361/j.upf.202205010",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2022,
+   "journal": "城市规划学刊",
+   "id": "2022-谢波-面向呼吸健康的国土空间规划生态空间布局优化::section::001"
+  },
+  {
+   "title": "An Improved Measure for Exploring Socio-spatial Inequalities in Access to Online Fresh Food",
+   "sections": 17,
+   "authors": [
+    "Bochu Liu",
+    "Chuhao Liu",
+    "Michael Widener",
+    "Yue Wang",
+    "Lan Wang"
+   ],
+   "doi": "",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "Annals of the American Association of Geographers",
+   "id": "2021-Bochu-Liu-An-Improved-Measure-for-Exploring-Socio-spatial-Inequalities-in-Access-to-Online-Fresh-Food::section::001"
+  },
+  {
+   "title": "Governing public health emergencies during the coronavirus disease outbreak: Lessons from four Chinese cities in the first wave",
+   "sections": 18,
+   "authors": [
+    "Lingyue Li",
+    "Surong Zhang",
+    "Jinfeng Wang",
+    "Xiaoming Yang",
+    "Lan Wang"
+   ],
+   "doi": "10.1177/00420980211049350",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2021,
+   "journal": "Urban Studies",
+   "id": "2021-Lingyue-Li-Governing-public-health-emergencies-during-the-coronavirus-disease-outbreak--Lessons-from-four-Chinese-c::section::001"
+  },
+  {
+   "title": "How does urban green space feature influence physical activity diversity in high-density built environment? An on-site observational study",
+   "sections": 10,
+   "authors": [
+    "Wang Min",
+    "Ming Qiu",
+    "Mengxuan Chen",
+    "Yalan Zhang",
+    "Surong Zhang",
+    "Lan Wang"
+   ],
+   "doi": "10.1016/j.ufug.2021.127129",
+   "categories": [
+    "3_健康资源",
+    "4_健康行为"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "Urban forestry & urban greening",
+   "id": "2021-Wang-Min-How-does-urban-green-space-feature-influence-physical-activity-diversity-in-high-density-built-environment::section::001"
+  },
+  {
+   "title": "Road Traffic and Urban Form Factors Correlated with the Incidence of Lung Cancer in High-density Areas: An Ecological Study in Downtown Shanghai, China",
+   "sections": 16,
+   "authors": [
+    "Wenyao Sun",
+    "Ping‐Ping Bao",
+    "Xiaojing Zhao",
+    "Li Wang",
+    "Lan Wang"
+   ],
+   "doi": "10.1007/s11524-021-00529-y",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2021,
+   "journal": "Journal of Urban Health",
+   "id": "2021-Wenyao-Sun-Road-Traffic-and-Urban-Form-Factors-Correlated-with-the-Incidence-of-Lung-Cancer-in-High-density-Areas::section::001"
+  },
+  {
+   "title": "Time Distances to Residential Food Amenities and Daily Walking Duration: A Cross-Sectional Study in Two Low Tier Chinese Cities",
+   "sections": 17,
+   "authors": [
+    "Ziwen Sun",
+    "Iain Scott",
+    "Simon Bell",
+    "Xiaomeng Zhang",
+    "Lan Wang"
+   ],
+   "doi": "10.3390/ijerph18020839",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "International Journal of Environmental Research and Public Health",
+   "id": "2021-Ziwen-Sun-Time-Distances-to-Residential-Food-Amenities-and-Daily-Walking-Duration--A-Cross-Sectional-Study-in-Two-L::section::001"
+  },
+  {
+   "title": "Time-series analysis of air pollution effects on diabetes related mortality",
+   "sections": 13,
+   "authors": [
+    "Xiaoting CHU",
+    "Jianjing XIONG",
+    "Xiaoming Yang",
+    "Xiaolie YIN",
+    "Guohui ZHANG",
+    "Qiuping WAN",
+    "Yunhui WANG",
+    "Lan Wang"
+   ],
+   "doi": "10.13213/j.cnki.jeom.2021.21102",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2021,
+   "journal": "DOAJ (DOAJ: Directory of Open Access Journals)",
+   "id": "2021-Xiaoting-CHU-Time-series-analysis-of-air-pollution-effects-on-diabetes-related-mortality::section::001"
+  },
+  {
+   "title": "What county-level factors influence COVID-19 incidence in the United States? Findings from the first wave of the pandemic",
+   "sections": 17,
+   "authors": [
+    "Lan Wang",
+    "Surong Zhang",
+    "Zilin Yang",
+    "Ziyu Zhao",
+    "Anne Vernez Moudon",
+    "Huasen Feng",
+    "Liang Junhao",
+    "Wenyao Sun",
+    "Buyang Cao"
+   ],
+   "doi": "10.1016/j.cities.2021.103396",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2021,
+   "journal": "Cities",
+   "id": "2021-Lan-Wang-What-county-level-factors-influence-COVID-19-incidence-in-the-United-States--Findings-from-the-first-wave::section::001"
+  },
+  {
+   "title": "健康公平理念下社区养老设施的空间分布研究",
+   "sections": 9,
+   "authors": [
+    "王兰",
+    "周楷宸",
+    "汪子涵"
+   ],
+   "doi": "10.13959/j.issn.1003-2398.2021.01.007",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "人文地理",
+   "id": "2021-王兰-健康公平理念下社区养老设施的空间分布研究——以上海市中心城区为例::section::001"
+  },
+  {
+   "title": "城市扩张和高密度环境对传染性疾病的影响及规划设计策略",
+   "sections": 8,
+   "authors": [
+    "邓琳爽",
+    "王兰"
+   ],
+   "doi": "10.12069/j.na.202106088",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2021,
+   "journal": "新建筑",
+   "id": "2021-邓琳爽-城市扩张和高密度环境对传染性疾病的影响及规划设计策略::section::001"
+  },
+  {
+   "title": "基于自然实验的城市绿道对居民中高强度体力活动的影响研究",
+   "sections": 5,
+   "authors": [
+    "谢波",
+    "伍蕾",
+    "王兰"
+   ],
+   "doi": "10.14085/j.fjyl.2021.05.0030.06",
+   "categories": [
+    "3_健康资源",
+    "4_健康行为"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "风景园林",
+   "id": "2021-谢波-基于自然实验的城市绿道对居民中高强度体力活动的影响研究::section::001"
+  },
+  {
+   "title": "绿色空间对呼吸健康的影响研究综述及综合分析框架",
+   "sections": 9,
+   "authors": [
+    "王兰",
+    "蒋希冀",
+    "汪子涵",
+    "(美) 安妮·韦尔内斯·穆登"
+   ],
+   "doi": "10.14085/j.fjyl.2021.05.0010.06",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "风景园林",
+   "id": "2021-王兰-绿色空间对呼吸健康的影响研究综述及综合分析框架::section::001"
+  },
+  {
+   "title": "绿色空间的健康促进",
+   "sections": 2,
+   "authors": [
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "《风景园林》",
+   "id": "2021-王兰-绿色空间的健康促进::section::001"
+  },
+  {
+   "title": "针对慢性非传染性呼吸系统疾病的绿色空间定量研究进展",
+   "sections": 12,
+   "authors": [
+    "王兰",
+    "张雅兰",
+    "汪子涵"
+   ],
+   "doi": "10.3969/j.issn.1000-0232.2021.03.001",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2021,
+   "journal": "南方建筑",
+   "id": "2021-王兰-针对慢性非传染性呼吸系统疾病的绿色空间定量研究进展::section::001"
+  },
+  {
+   "title": "2019年健康城市研究与实践热点回眸",
+   "sections": 6,
+   "authors": [
+    "王兰",
+    "蒋希冀"
+   ],
+   "doi": "10.3981/j.issn.1000-7857.2020.03.014",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2020,
+   "journal": "科技导报",
+   "id": "2020-王兰-2019年健康城市研究与实践热点回眸::section::001"
+  },
+  {
+   "title": "A Study on Spatial Distribution of Fever Clinics in Shanghai during the Epidemic of COVID-19 Pneumonia",
+   "sections": 13,
+   "authors": [
+    "刘璐",
+    "王兰"
+   ],
+   "doi": "10.11982/j.supr.20200214",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2020,
+   "journal": "公共卫生与规划响应",
+   "id": "2020-刘璐-新冠肺炎疫情期间上海市发热门诊空间分布研究::section::001"
+  },
+  {
+   "title": "Exploring the physical and mental health of high-speed rail commuters: Suzhou-Shanghai inter-city commuting",
+   "sections": 19,
+   "authors": [
+    "Lan Wang",
+    "Surong Zhang",
+    "Wenyao Sun",
+    "Chia-Lin Chen"
+   ],
+   "doi": "10.1016/j.jth.2020.100902",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2020,
+   "journal": "Journal of Transport & Health",
+   "id": "2020-Lan-Wang-Exploring-the-physical-and-mental-health-of-high-speed-rail-commuters--Suzhou-Shanghai-inter-city-commutin::section::001"
+  },
+  {
+   "title": "不同健康影响路径下的城市绿地空间特征",
+   "sections": 12,
+   "authors": [
+    "干靓",
+    "杨伟光",
+    "王兰"
+   ],
+   "doi": "10.14085/j.fjyl.2020.04.0095.06",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2020,
+   "journal": "风景园林",
+   "id": "2020-干靓-不同健康影响路径下的城市绿地空间特征::section::001"
+  },
+  {
+   "title": "中国健康城市规划研究热点与进展: 基于 Citespace 的文献计量分析",
+   "sections": 17,
+   "authors": [
+    "王兰",
+    "蒋希冀",
+    "叶丹"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2020,
+   "journal": "城市发展研究",
+   "id": "2020-王兰-中国健康城市规划研究热点与进展--基于-Citespace-的文献计量分析::section::001"
+  },
+  {
+   "title": "主观感知的城市环境对居民健康的影响研究",
+   "sections": 13,
+   "authors": [
+    "王兰",
+    "孙文尧",
+    "吴莹"
+   ],
+   "doi": "10.13959/j.issn.1003-2398.2020.02.007",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2020,
+   "journal": "人文地理",
+   "id": "2020-王兰-主观感知的城市环境对居民健康的影响研究——基于全国60个县市的大样本调查::section::001"
+  },
+  {
+   "title": "健康融入 15分钟社区生活圈：突发公共卫生事件下的社区应对",
+   "sections": 11,
+   "authors": [
+    "王兰",
+    "李潇天",
+    "杨晓明"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2020,
+   "journal": "规划师",
+   "id": "2020-王兰-健康融入-15分钟社区生活圈：突发公共卫生事件下的社区应对::section::001"
+  },
+  {
+   "title": "全球健康城市运动的演进及城市规划的作用辨析",
+   "sections": 11,
+   "authors": [
+    "蒋希冀",
+    "叶丹",
+    "王兰"
+   ],
+   "doi": "10.19830/j.upi.2019.585",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2020,
+   "journal": "国际城市规划",
+   "id": "2020-蒋希冀-全球健康城市运动的演进及城市规划的作用辨析::section::001"
+  },
+  {
+   "title": "建成环境对体力活动的影响研究进展",
+   "sections": 6,
+   "authors": [
+    "王兰",
+    "杜怡锐"
+   ],
+   "doi": "10.3981/j.issn.1000-7857.2020.07.007",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2020,
+   "journal": "科技导报",
+   "id": "2020-王兰-建成环境对体力活动的影响研究进展::section::001"
+  },
+  {
+   "title": "建成环境满意度对乡村新型社区居民自评健康的影响分析",
+   "sections": 10,
+   "authors": [
+    "Wang Yang and Huang Lan",
+    "张苏榕",
+    "杨秀"
+   ],
+   "doi": "10.14085/j.fjyl.2020.09.0057.06",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2020,
+   "journal": "风景园林",
+   "id": "2020-Wang-Yang-and-Huang-Lan-建成环境满意度对乡村新型社区居民自评健康的影响分析——以成都市远郊-4-个社区为例::section::001"
+  },
+  {
+   "title": "新冠肺炎疫情下中国医疗卫生设施现状与国际比较",
+   "sections": 11,
+   "authors": [
+    "王兰",
+    "刘璐"
+   ],
+   "doi": "10.3981/j.issn.1000-7857.2020.04.004",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2020,
+   "journal": "科技导报",
+   "id": "2020-王兰-新冠肺炎疫情下中国医疗卫生设施现状与国际比较::section::001"
+  },
+  {
+   "title": "景感生态学视角下的健康社区构建",
+   "sections": 12,
+   "authors": [
+    "张国钦",
+    "李妍",
+    "吝涛",
+    "李新虎",
+    "王兰",
+    "刘文惠"
+   ],
+   "doi": "10.5846/stxb202003250685",
+   "categories": [
+    "1_理论_工作框架",
+    "3_健康资源"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2020,
+   "journal": "生态学报",
+   "id": "2020-张国钦-景感生态学视角下的健康社区构建::section::001"
+  },
+  {
+   "title": "突发公共卫生事件中的替代性护理场所规划及改造策略",
+   "sections": 10,
+   "authors": [
+    "邓琳爽",
+    "王兰"
+   ],
+   "doi": "10.13717/j.cnki.ta.2020.04.013",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2020,
+   "journal": "时代建筑",
+   "id": "2020-邓琳爽-突发公共卫生事件中的替代性护理场所规划及改造策略::section::001"
+  },
+  {
+   "title": "Impact of High-Density Urban Built Environment on Chronic Obstructive Pulmonary Disease: A Case Study of Jing’an District, Shanghai",
+   "sections": 11,
+   "authors": [
+    "Lan Wang",
+    "Rui Chen",
+    "Wenyao Sun",
+    "Xiaoming Yang",
+    "Xinhu Li"
+   ],
+   "doi": "10.3390/ijerph17010252",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2019,
+   "journal": "International Journal of Environmental Research and Public Health",
+   "id": "2019-Lan-Wang-Impact-of-High-Density-Urban-Built-Environment-on-Chronic-Obstructive-Pulmonary-Disease--A-Case-Study-of-J::section::001"
+  },
+  {
+   "title": "Improvement of Walk Score from the Perspective of Public Health: Jing’an District of Shanghai as a Case Study",
+   "sections": 8,
+   "authors": [
+    "Hao Gu",
+    "Kaichen Zhou",
+    "Lan Wang"
+   ],
+   "doi": "10.22217/upi.2019.382",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2019,
+   "journal": "Urban Planning International",
+   "id": "2019-Hao-Gu-Improvement-of-Walk-Score-from-the-Perspective-of-Public-Health--Jing’an-District-of-Shanghai-as-a-Case-Stud::section::001"
+  },
+  {
+   "title": "Spatial Analysis of Built Environment Risk for Respiratory Health and Its Implication for Urban Planning: A Case Study of Shanghai",
+   "sections": 11,
+   "authors": [
+    "Lan Wang",
+    "Wenyao Sun",
+    "Kaichen Zhou",
+    "Minlu Zhang",
+    "Ping‐Ping Bao"
+   ],
+   "doi": "10.3390/ijerph16081455",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2019,
+   "journal": "International Journal of Environmental Research and Public Health",
+   "id": "2019-Lan-Wang-Spatial-Analysis-of-Built-Environment-Risk-for-Respiratory-Health-and-Its-Implication-for-Urban-Planning::section::001"
+  },
+  {
+   "title": "以体力活动多样性为导向的城市绿地空间设计优化策略",
+   "sections": 11,
+   "authors": [
+    "王兰",
+    "张雅兰",
+    "邱明",
+    "王敏"
+   ],
+   "doi": "",
+   "categories": [
+    "4_健康行为"
+   ],
+   "category": "4_健康行为",
+   "year": 2019,
+   "journal": "风景园林理论",
+   "id": "2019-王兰-以体力活动多样性为导向的城市绿地空间设计优化策略::section::001"
+  },
+  {
+   "title": "健康公平视角下社区体育设施分布绩效评价",
+   "sections": 12,
+   "authors": [
+    "王兰",
+    "周楷宸"
+   ],
+   "doi": "10.13791/j.cnki.hsfwest.20190201",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2019,
+   "journal": "西部人居环境学刊",
+   "id": "2019-王兰-健康公平视角下社区体育设施分布绩效评价——以上海市中心城区为例::section::001"
+  },
+  {
+   "title": "城市层面建成环境要素影响肺癌发病水平的关系探析：以 126 个地级市数据为例",
+   "sections": 10,
+   "authors": [
+    "杨秀",
+    "王劲峰",
+    "类延辉",
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2019,
+   "journal": "城市发展研究",
+   "id": "2019-杨秀-城市层面建成环境要素影响肺癌发病水平的关系探析：以-126-个地级市数据为例::section::001"
+  },
+  {
+   "title": "Cardiovascular Diseases Due to Stress Arisen from Social Risk Factors: A Synopsis and Prospectiveness",
+   "sections": 12,
+   "authors": [
+    "Bin Jiang",
+    "Jielin Chen",
+    "Lan Wang"
+   ],
+   "doi": "10.1142/s1793984418400032",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2018,
+   "journal": "Nano LIFE",
+   "id": "2018-Bin-Jiang-Cardiovascular-Diseases-Due-to-Stress-Arisen-from-Social-Risk-Factors--A-Synopsis-and-Prospectiveness::section::001"
+  },
+  {
+   "title": "Exploration of Approaches and Factors for Healthy City Planning",
+   "sections": 10,
+   "authors": [
+    "Wang Lan",
+    "Liao Shuwen",
+    "Zhao Xiaojing"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2018,
+   "journal": "China City Planning Review",
+   "id": "2018-Wang-Lan-Exploration-of-Approaches-and-Factors-for-Healthy-City-Planning::section::001"
+  },
+  {
+   "title": "Impact of Built Environment on Respiratory Health: An Empirical Study",
+   "sections": 15,
+   "authors": [
+    "Wangyue Xu",
+    "Xiaojing Zhao",
+    "Lan Wang"
+   ],
+   "doi": "10.1142/s1793984418400019",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2018,
+   "journal": "Nano LIFE",
+   "id": "2018-Wangyue-Xu-Impact-of-Built-Environment-on-Respiratory-Health--An-Empirical-Study::section::001"
+  },
+  {
+   "title": "健康城市的循证实践：变化世界中的挑战",
+   "sections": 16,
+   "authors": [
+    "安·福赛思"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2018,
+   "journal": "城市与区域规划研究",
+   "id": "2018-安·福赛思-健康城市的循证实践：变化世界中的挑战::section::001"
+  },
+  {
+   "title": "健康导向城市设计的方法建构及实践探索",
+   "sections": 15,
+   "authors": [
+    "王兰",
+    "孙文尧",
+    "古佳玉"
+   ],
+   "doi": "10.16361/j.upf.201805008",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2018,
+   "journal": "",
+   "id": "2018-王兰-健康导向城市设计的方法建构及实践探索——以上海市黄浦区为例::section::001"
+  },
+  {
+   "title": "呼吸健康导向的健康社区设计探索",
+   "sections": 11,
+   "authors": [
+    "徐望悦",
+    "王兰"
+   ],
+   "doi": "10.12069/j.na2018009",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2018,
+   "journal": "新建筑",
+   "id": "2018-徐望悦-呼吸健康导向的健康社区设计探索—基于上海两个社区的模拟辨析::section::001"
+  },
+  {
+   "title": "城市建成环境对呼吸健康的影响及规划策略",
+   "sections": 9,
+   "authors": [
+    "王兰",
+    "蒋希冀",
+    "孙文尧",
+    "赵晓菁",
+    "唐健"
+   ],
+   "doi": "10.11819/cpr20180604a",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2018,
+   "journal": "规划研究",
+   "id": "2018-王兰-城市建成环境对呼吸健康的影响及规划策略::section::001"
+  },
+  {
+   "title": "影响呼吸系统健康的城市绿地空间要素研究",
+   "sections": 9,
+   "authors": [
+    "王兰",
+    "廖舒文",
+    "王敏"
+   ],
+   "doi": "",
+   "categories": [
+    "3_健康资源"
+   ],
+   "category": "3_健康资源",
+   "year": 2018,
+   "journal": "城市建筑",
+   "id": "2018-王兰-影响呼吸系统健康的城市绿地空间要素研究::section::001"
+  },
+  {
+   "title": "Health Impact Assessment in an Urban Regeneration Project in the City of Philadelphia, the USA",
+   "sections": 12,
+   "authors": [
+    "Lan Wang",
+    "Chunting Cai",
+    "Kang Cao"
+   ],
+   "doi": "10.22217/upi.2016.357",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2017,
+   "journal": "Urban Planning International",
+   "id": "2017-Lan-Wang-Health-Impact-Assessment-in-an-Urban-Regeneration-Project-in-the-City-of-Philadelphia,-the-USA::section::001"
+  },
+  {
+   "title": "健康导向的规划设计导则探索：基于纽约和洛杉矶的经验",
+   "sections": 21,
+   "authors": [
+    "张雅兰",
+    "王兰"
+   ],
+   "doi": "10.3969/j.issn.1000-0232.2017.04.015",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2017,
+   "journal": "南方建筑",
+   "id": "2017-张雅兰-健康导向的规划设计导则探索：基于纽约和洛杉矶的经验::section::001"
+  },
+  {
+   "title": "健康社区规划理念与实践初探",
+   "sections": 11,
+   "authors": [
+    "孙文尧",
+    "王兰",
+    "赵钢",
+    "刘刚",
+    "干靓"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2017,
+   "journal": "健康城市",
+   "id": "2017-孙文尧-健康社区规划理念与实践初探——以成都市中和旧城更新规划为例::section::001"
+  },
+  {
+   "title": "城市再开发中健康影响评估的应用",
+   "sections": 15,
+   "authors": [
+    "张雅兰",
+    "蔡纯婷",
+    "王兰"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2017,
+   "journal": "规划师",
+   "id": "2017-张雅兰-城市再开发中健康影响评估的应用—以美国亚特兰大市环线复兴项目为例::section::001"
+  },
+  {
+   "title": "Correlation analysis of lung cancer and urban spatial factor: based on survey in Shanghai",
+   "sections": 9,
+   "authors": [
+    "Lan Wang",
+    "Xiaojing Zhao",
+    "Wangyue Xu",
+    "Li Wang",
+    "Xiji Jiang"
+   ],
+   "doi": "10.21037/jtd.2016.09.10",
+   "categories": [
+    "2_健康风险"
+   ],
+   "category": "2_健康风险",
+   "year": 2016,
+   "journal": "Journal of Thoracic Disease",
+   "id": "2016-Lan-Wang-Correlation-analysis-of-lung-cancer-and-urban-spatial-factor--based-on-survey-in-Shanghai::section::001"
+  },
+  {
+   "title": "Exploration of Approaches and Factors of Healthy City Planning",
+   "sections": 9,
+   "authors": [
+    "王兰",
+    "廖舒文",
+    "赵晓菁"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2016,
+   "journal": "国际城市规划",
+   "id": "2016-王兰-健康城市规划路径与要素辨析::section::001"
+  },
+  {
+   "title": "Healthy City Planning and Assessment: Initiation and Trend",
+   "sections": 2,
+   "authors": [
+    "王兰",
+    "凯瑟琳 · 罗斯"
+   ],
+   "doi": "",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2016,
+   "journal": "国际城市规划",
+   "id": "2016-王兰-健康城市规划与评估：兴起与趋势::section::001"
+  },
+  {
+   "title": "颗粒物分布视角下的健康城市规划研究",
+   "sections": 13,
+   "authors": [
+    "王兰",
+    "赵晓菁",
+    "蒋希冀",
+    "唐健"
+   ],
+   "doi": "10.11819/cpr20160906a",
+   "categories": [
+    "1_理论_工作框架"
+   ],
+   "category": "1_理论_工作框架",
+   "year": 2016,
+   "journal": "城市规划",
+   "id": "2016-王兰-颗粒物分布视角下的健康城市规划研究::section::001"
+  }
+ ]
+}
