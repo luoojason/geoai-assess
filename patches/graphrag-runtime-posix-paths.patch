@@ -1,0 +1,19 @@
+--- /Users/jasonluo08/hcas-kb/extracted/graphrag-english-runtime-20260729-051918/server/graphrag_server.mjs.orig	2026-08-27 09:43:33
++++ /Users/jasonluo08/hcas-kb/extracted/graphrag-english-runtime-20260729-051918/server/graphrag_server.mjs	2026-08-27 09:43:33
+@@ -8,8 +8,14 @@
+ 
+ const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..");
+ const WEB_DIR = join(ROOT, "web");
+-const GRAPH_RAG_EXE = join(ROOT, ".venv-graphrag", "Scripts", "graphrag.exe");
+-const GRAPH_RAG_PYTHON = join(ROOT, ".venv-graphrag", "Scripts", "python.exe");
++// The bundle hardcoded the Windows venv layout (Scripts/*.exe), so on macOS and
++// Linux `ready` could never become true and no query could ever be spawned —
++// the status/graph/evidence routes still worked, which made it look healthy.
++// POSIX venvs put executables in bin/ with no extension.
++const VENV_BIN = process.platform === "win32" ? "Scripts" : "bin";
++const EXE_SUFFIX = process.platform === "win32" ? ".exe" : "";
++const GRAPH_RAG_EXE = join(ROOT, ".venv-graphrag", VENV_BIN, `graphrag${EXE_SUFFIX}`);
++const GRAPH_RAG_PYTHON = join(ROOT, ".venv-graphrag", VENV_BIN, `python${EXE_SUFFIX}`);
+ const PORT = Number(process.argv[2] || 8765);
+ const QUERY_TIMEOUT_MS = 15 * 60 * 1000;
+ const MAX_GRAPH_NODES = 400;

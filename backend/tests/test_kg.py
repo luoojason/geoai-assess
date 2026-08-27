@@ -306,3 +306,22 @@ def test_step4_schema_dedupes_titles_already_known():
     known = hcas._REFERENCE_TITLES[0]
     enum = hcas._step4_schema([known])["properties"]["references"]["items"]["enum"]
     assert enum.count(known) == 1
+
+
+def test_ground_framework_defaults_to_global_search(monkeypatch):
+    """Global needs no DashScope key and suits a corpus-level question.
+
+    Verified live 2026-08-27: a global query answered with a deliberately
+    invalid embedding key, while local search failed 401 against DashScope.
+    Pinned because switching this default silently reintroduces that hard
+    dependency on a key we may never obtain.
+    """
+    seen = {}
+
+    def _capture(request, timeout=None):
+        seen["body"] = json.loads(request.data.decode("utf-8"))
+        return _json_response(_OK_QUERY)
+
+    monkeypatch.setattr(kg, "urlopen", _capture)
+    kg.ground_framework(factors=["greenspace access"])
+    assert seen["body"]["method"] == "global"

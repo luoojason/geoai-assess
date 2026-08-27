@@ -123,6 +123,86 @@ Windows-bound, so **co-hosting the knowledgebase on the same Linux box as HCAS
 is open** — that is the vendor's own deployment pattern 3, and it avoids
 exposing the port entirely.
 
+## Verified live, 2026-08-27
+
+Everything below was measured on this machine against the real runtime, not
+inferred from the guide.
+
+### It is not Windows-only, but it does need a two-line patch
+
+`server/graphrag_server.mjs` hardcoded the Windows venv layout:
+
+```js
+const GRAPH_RAG_EXE = join(ROOT, ".venv-graphrag", "Scripts", "graphrag.exe");
+```
+
+`ready` is gated on `existsSync(GRAPH_RAG_EXE)`, so on macOS or Linux the
+server **starts and serves `status`, `graph`, and `evidence`** — those read the
+parquet files directly — while `ready` can never become true and no query can
+ever be spawned. It looks healthy and is inert. Patched to pick `bin/` and drop
+`.exe` off Windows; with that, `ready: true` and queries run.
+
+This is what makes deployment pattern 3 — the knowledgebase beside HCAS on the
+Linux host — actually available.
+
+### Global search needs no DashScope key
+
+The query config tells the story:
+
+```yaml
+local_search:   embedding_model_id: default_embedding_model   # embeds the query
+global_search:  (none)                                        # maps over reports
+```
+
+Confirmed by running both with a deliberately invalid embedding key:
+
+| | Result |
+|---|---|
+| `--method global` | **Full cited answer in 63 s** (community level 0) |
+| `--method local` | **401 from DashScope** — `invalid_api_key` |
+
+So global search never contacts Alibaba. **One catch:** GraphRAG validates the
+whole config at load, so `DASHSCOPE_API_KEY` must be *present* or the run dies
+with `api_key must be set when auth_method=api_key`. A placeholder satisfies
+it. No Alibaba account and no cost are required for global-only operation.
+
+`ground_framework()` therefore defaults to `global`, against the vendor's
+`local` default, and a test pins that — switching it back silently reintroduces
+a hard dependency on a key we may never get.
+
+### End-to-end through backend/kg.py
+
+Against the live server, a real step-4-shaped question:
+
+- **184 seconds** at the default community level (level 0 took 63 s)
+- **88 source documents** resolved from 592 citation references
+- Answer carried `[Data: Reports (N)]` citations throughout
+
+Two things follow. First, 184 s confirms this cannot sit inside an interactive
+step — the async question is real, not theoretical. Second, and more important:
+
+### ⚠ The returned sources are mostly Chinese
+
+For a **Franklin County, Ohio** question, the top resolved sources were:
+
+```
+健康城市规划的研究热点与展望：基于英文文献计量分析
+景感生态学视角下的健康社区构建
+城市建成环境对母婴健康的影响——研究综述与展望
+Impact of High-Density Urban Built Environment on COPD: Jing'an District, Shanghai
+Improvement of Walk Score from the Perspective of Public Health: Jing'an District, Shanghai
+```
+
+The corpus is 501 English / 444 Chinese / 224 mixed document sections, and the
+retrieval reflects that. Because the reference enum widens to exactly these
+returned titles, a US county assessment would cite Chinese-language studies of
+Shanghai districts.
+
+That may well be defensible — the underlying theory is plausibly transferable,
+and Prof. Wang's team curated the corpus deliberately. But it is a
+**methodology decision for the paper**, not an implementation detail, and it
+should be settled with Prof. Shi and Prof. Wang rather than absorbed silently.
+
 ## The design decision that matters
 
 `_STEP4_SCHEMA` **enum-locks** two things: which theory step 4 may cite, and

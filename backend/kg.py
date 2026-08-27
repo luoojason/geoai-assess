@@ -204,7 +204,7 @@ def query(
 def ground_framework(
     factors: Optional[List[str]] = None,
     place: str = "",
-    method: str = "local",
+    method: str = "global",
     version: Optional[str] = None,
 ) -> Optional[KGAnswer]:
     """Retrieve theory grounding for the step-4 solution framework.
@@ -214,6 +214,19 @@ def ground_framework(
     so it must survive the swap from the hardcoded theory table to the live
     knowledgebase. It does: this returns real corpus answers, and
     :attr:`KGAnswer.source_titles` supplies the enum the schema locks against.
+
+    Defaults to ``global`` search, against the vendor's own ``local`` default,
+    for two measured reasons:
+
+    * Step 4 asks a corpus-level synthesis question ("which theories link these
+      factors to health outcomes"), which is what global search is built for.
+      Local search is for focused lookups of a named entity or relationship.
+    * Global search never embeds the query, so it needs no DashScope key.
+      Verified 2026-08-27: a global query returned a full cited answer with a
+      deliberately invalid embedding key, while the same key made local search
+      fail with a 401 from DashScope. GraphRAG still validates the embedding
+      block at config load, so the key must be present — but it can be a
+      placeholder.
 
     Returns ``None`` when the knowledgebase is absent, and the caller keeps its
     built-in theory list.
