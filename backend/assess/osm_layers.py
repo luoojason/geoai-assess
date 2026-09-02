@@ -14,6 +14,7 @@ import re
 import socket
 import threading
 import time
+from urllib.parse import urlsplit
 
 import geopandas as gpd
 import osmnx as ox
@@ -519,6 +520,15 @@ def _with_overpass_failover(call):
         with _failover_lock:
             ox.settings.overpass_url = nxt
             _failed_over = nxt != _OVERPASS_PRIMARY
+        # Endpoint SELECTION drops a host's black-holed addresses, but selection
+        # runs once and these retries run for the rest of the step's budget — so
+        # without this, every rotation re-played the coin flip against a dead A
+        # record and never learned. Measured 2026-09-01: a 900 s step spent
+        # entirely here, the verdict never refreshed, and the connect timeouts
+        # surfaced to the user as "DNS lookup failed - check the system DNS
+        # settings". The verdict is cached for _ADDR_RECHECK_S, so this is a
+        # dict lookup on all but the first rotation per host per 5 minutes.
+        _learn_dead_addresses(urlsplit(nxt).hostname)
         logger.warning(f"Overpass {used} failed ({exc!r}) — retrying on {nxt}")
         try:
             return call()
@@ -531,6 +541,9 @@ def _with_overpass_failover(call):
             with _failover_lock:
                 ox.settings.overpass_url = after
                 _failed_over = after != _OVERPASS_PRIMARY
+            # Same reasoning as the rotation above: the next call inherits this
+            # endpoint, so it inherits its dead addresses unless we look now.
+            _learn_dead_addresses(urlsplit(after).hostname)
             logger.warning(
                 f"Overpass {nxt} failed too ({exc2!r}) — next request tries {after}"
             )
