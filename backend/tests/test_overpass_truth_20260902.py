@@ -58,6 +58,41 @@ class TestRotationLearnsDeadAddresses:
             f"retry spends a connect timeout on one; learned={learned}"
         )
 
+    def test_the_endpoint_that_just_failed_is_re_probed(self, monkeypatch):
+        """The host we rotate AWAY from is the one with evidence against it.
+
+        Measured 2026-09-02: a live run rotated off overpass-api.de on a
+        ConnectTimeout roughly every other request for twenty minutes and never
+        re-probed it, because the rotation only ever learned about the endpoint
+        it was moving TO. The dead address belonged to the host that had just
+        failed, so the verdict that would have fixed the run was never taken.
+        """
+        from backend.assess import osm_layers as ol
+
+        learned = []
+        monkeypatch.setattr(ol, "_learn_dead_addresses", lambda host: learned.append(host))
+        monkeypatch.setattr(ol, "_budget_expired", lambda: False)
+        monkeypatch.setattr(ol, "_outage_suspected", lambda: False)
+        monkeypatch.setattr(ol.ox.settings, "overpass_url", ol._OVERPASS_PRIMARY)
+
+        calls = {"n": 0}
+
+        def call():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("connection timed out")
+            return "layer"
+
+        ol._with_overpass_failover(call)
+
+        from urllib.parse import urlsplit
+
+        failed_host = urlsplit(ol._OVERPASS_PRIMARY).hostname
+        assert failed_host in learned, (
+            "the endpoint that just timed out must be re-probed — its dead "
+            f"address is why it failed; learned={learned}"
+        )
+
     def test_the_endpoint_left_for_the_next_call_is_learned_too(self, monkeypatch):
         """Both retries are exhausted and the endpoint moves on for the NEXT
         call. That handover has the same problem as the first rotation."""

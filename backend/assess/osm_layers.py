@@ -528,6 +528,14 @@ def _with_overpass_failover(call):
         # surfaced to the user as "DNS lookup failed - check the system DNS
         # settings". The verdict is cached for _ADDR_RECHECK_S, so this is a
         # dict lookup on all but the first rotation per host per 5 minutes.
+        #
+        # `used` FIRST, and it is the one that matters. The host we are leaving
+        # is the one that just produced evidence, and the rotation will come
+        # back round to it — learning only about `nxt` fixed nothing, because
+        # the dead address belonged to the host that failed (measured
+        # 2026-09-02: twenty minutes of rotating off overpass-api.de on
+        # ConnectTimeout without ever re-probing it).
+        _learn_dead_addresses(urlsplit(used).hostname)
         _learn_dead_addresses(urlsplit(nxt).hostname)
         logger.warning(f"Overpass {used} failed ({exc!r}) — retrying on {nxt}")
         try:
