@@ -1229,6 +1229,38 @@ def _bounded(fetch, deadline: float):
     return run
 
 
+_NOT_ATTEMPTED_NOTE = (
+    "not attempted — the step ran out of time while earlier layers were still "
+    "fetching, so this one was never requested. Nothing here says the data "
+    "source failed. Re-run the step: the layers that did arrive are cached and "
+    "return instantly, which frees the time for this one."
+)
+
+
+def _layer_failure_note(began, deadline: float, now: float) -> str:
+    """Why a layer has no data — the honest version.
+
+    `began` is stamped when a POOL WORKER picks the layer up, which is not the
+    same as a request going out. There are more layers than workers, so a layer
+    can be picked up at or after the deadline, find the budget already spent and
+    do nothing at all. Measured 2026-09-01 (Adams County OH): such a layer was
+    reported as "gave up after 0s — the OpenStreetMap server did not answer".
+    Zero seconds is proof the server was never asked, so that sentence is false
+    in the one direction that matters — it blames the data source for a
+    scheduling outcome. That is the Delaware County falsehood in a new place,
+    and the same class of message that sent a field tester after his own DNS.
+    """
+    if began is None or began >= deadline:
+        return _NOT_ATTEMPTED_NOTE
+    return (
+        f"gave up after {int(now - began)}s — the OpenStreetMap server did not "
+        "answer for this area in time. Those servers queue requests when busy, "
+        "so this is usually waiting rather than a fault. Re-run the step: every "
+        "piece that already arrived is cached and returns instantly, so each "
+        "attempt gets further."
+    )
+
+
 def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                 results, errors, all_names, pct_span, started) -> None:
     """One concurrent pass over `names`, updating results/errors/detail in place."""
@@ -1304,26 +1336,13 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                 results[n] = _empty_layer()
                 slot = next(d for d in detail if d["layer"] == n)
                 began = started_at.get(n)
-                if began is None:
-                    # Never requested. Blaming the data source here is what made
-                    # a scheduling problem read as a seven-way outage.
-                    errors[n] = (
-                        "not attempted — the step ran out of time while earlier "
-                        "layers were still fetching, so this one was never "
-                        "requested. Nothing here says the data source failed. "
-                        "Re-run the step: the layers that did arrive are cached "
-                        "and return instantly, which frees the time for this one."
-                    )
+                # Never requested — or picked up so late there was no budget left
+                # to request it with. Blaming the data source in either case is
+                # what made a scheduling problem read as a seven-way outage.
+                errors[n] = _layer_failure_note(began, deadline, time.time())
+                if errors[n] is _NOT_ATTEMPTED_NOTE:
                     slot.pop("elapsed_s", None)     # no fetch, so no fetch time
                 else:
-                    errors[n] = (
-                        f"gave up after {int(time.time() - began)}s — the "
-                        "OpenStreetMap server did not answer for this area in "
-                        "time. Those servers queue requests when busy, so this is "
-                        "usually waiting rather than a fault. Re-run the step: "
-                        "every piece that already arrived is cached and returns "
-                        "instantly, so each attempt gets further."
-                    )
                     slot["elapsed_s"] = round(time.time() - began, 1)
                 slot["status"] = "error"
                 slot["note"] = errors[n]
