@@ -144,7 +144,7 @@ def _clip_to_study_area(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame):
 
 def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
     """A lightweight locator map: the study-area (county) boundary drawn over
-    CartoDB base tiles, fit to the boundary's extent. Shown from step 1 so the
+    OpenStreetMap base tiles, fit to the boundary's extent. Shown from step 1 so the
     Map View carries real context before the analysis runs (Prof. Shi 2026-07-27).
 
     Raises ValueError if study_area is empty or None.
@@ -155,7 +155,7 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
     study_4326 = study_area.to_crs("EPSG:4326")
     west, south, east, north = study_4326.geometry.total_bounds
     centroid = study_4326.geometry.union_all().centroid
-    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=10, tiles="CartoDB positron")
+    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=10, tiles="OpenStreetMap")
 
     fg = folium.FeatureGroup(name=place_name or "Study area", show=True)
     folium.GeoJson(
@@ -240,7 +240,7 @@ def render_assessment_map(
 
     study_4326 = study_area.to_crs("EPSG:4326")
     centroid = study_4326.geometry.union_all().centroid
-    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=13, tiles="CartoDB positron",
+    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=13, tiles="OpenStreetMap",
                     prefer_canvas=True)
 
     # Draw only what was measured (see _clip_to_study_area).
