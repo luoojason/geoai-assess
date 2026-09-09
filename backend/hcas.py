@@ -453,9 +453,22 @@ def _llm_via_claude_cli(system: str, prompt: str, schema: dict, model: str) -> t
             f"array item must match its item type exactly:\n{json.dumps(schema)}{extra}"
         )
         proc = subprocess.run(
-            ["claude", "-p", full, "--output-format", "json",
+            # The prompt goes in on STDIN, never as an argv string. Windows caps
+            # a command line at 32,767 characters and `full` already carries the
+            # JSON schema; once step 4 appends knowledgebase context the pair
+            # crosses that line and CreateProcess fails with
+            # `FileNotFoundError: [WinError 206] The filename or extension is
+            # too long` — a message naming neither the prompt nor the limit.
+            # Measured 2026-09-09: step 4 died here every time with
+            # KG_ENABLED=true while the same build ran 8/8 clean with grounding
+            # off, so it surfaces ONLY on the configuration being demoed. POSIX
+            # hosts allow ~2 MB of argv, which is why the Linux box never showed
+            # it. `system` stays an argument: it is bounded by the step's own
+            # template, and it is `full` that grows without limit.
+            ["claude", "-p", "--output-format", "json",
              "--model", model, "--append-system-prompt", system, "--max-turns", CLI_MAX_TURNS],
-            capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL,
+            input=full,
+            capture_output=True, text=True, timeout=600,
             # text=True alone decodes with the locale codepage — cp1252 on a
             # Windows install — which turned every em dash and curly quote in a
             # model reply into mojibake ("â€”"). Seen in the wizard 2026-08-07.
