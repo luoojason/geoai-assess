@@ -650,7 +650,18 @@ function renderCanvas(){
 function stepTag(n){
   const row = stepRow(n);
   if(n===2) return `<span class="tag">Suggested · review to continue</span>`;
-  if(n===4) return `<span class="tag rag">Knowledge base</span>`;
+  if(n===4){
+    // This badge used to key off the step NUMBER alone, so a run that had
+    // degraded to the built-in theory list still announced "Knowledge base" —
+    // the one thing on screen asserting something untrue. Grounding is provable
+    // from the payload: `knowledgebase` is attached only when the corpus
+    // actually answered, and is absent entirely otherwise.
+    if(!row) return `<span class="tag rag">Knowledge base</span>`;
+    const kb = (row.human_final||row.ai_draft||{}).knowledgebase;
+    const n_src = kb && (kb.source_documents||[]).length;
+    return kb ? `<span class="tag rag">Knowledge base · ${n_src} sources</span>`
+              : `<span class="tag muted">Built-in theory list</span>`;
+  }
   if(n===6) return `<span class="tag muted">Derived from metrics</span>`;
   if(n===7 && row) return `<span class="tag done">Complete</span>`;
   if(n===8) return `<span class="tag muted">Editable draft</span>`;
@@ -1085,14 +1096,45 @@ async function uploadDataFiles(){
 function viewSolution(a){
   const list = (arr)=>(arr||[]).map(x=>`<li>${esc(x)}</li>`).join("");
   const theory = (a.theoretical_basis||[]).map(t=>`<li><b>${esc(t.theory)}</b> — ${esc(t.application)}</li>`).join("");
-  const refs = (a.references||[]).map(r=>`<li>${esc(r)}</li>`).join("");
+
+  // Provenance. The backend has always attached this block when the corpus
+  // answered, and the UI has always thrown it away — so a grounded run and a
+  // degraded one rendered identically. Stating the version, the search method
+  // and the resolved document count is what lets a reader audit the run.
+  const kb = a.knowledgebase;
+  const kbSources = kb ? (kb.source_documents||[]) : [];
+  const provenance = kb
+    ? `<div class="sec"><h4>Grounding</h4><p>Grounded in <b>${kbSources.length}</b>
+         document(s) from the knowledgebase — index <b>${esc(kb.version||"?")}</b>,
+         ${esc(kb.method||"?")} search, ${esc(String(kb.duration_seconds||"?"))}s.</p></div>`
+    : `<div class="sec"><h4>Grounding</h4><p class="muted">Knowledgebase unavailable for this
+         run — the methodology below uses the built-in theory list, exactly as it would
+         with grounding switched off.</p></div>`;
+
+  // References split by provenance. A flat list mixed the app's hardcoded
+  // titles with documents the corpus actually vouched for, so a reader could
+  // not tell which claims were corpus-backed — the very thing the grounding
+  // exists to establish. Corpus membership is decided by the returned source
+  // list, never by guessing from the title.
+  const corpus = new Set(kbSources);
+  const all = a.references||[];
+  const fromKb = all.filter(r=>corpus.has(r));
+  const builtin = all.filter(r=>!corpus.has(r));
+  const refBlock = (title, arr, note) => arr.length
+    ? `<div class="sec"><h4>${title}</h4>${note||""}<ul>${arr.map(r=>`<li>${esc(r)}</li>`).join("")}</ul></div>`
+    : "";
+
   return `<div class="cols" style="align-items:flex-start;">
     <div class="panel" style="flex:2;"><div class="ph">Methodology</div>
       <div class="sec"><h4>Framework</h4><p>${esc(a.framework||"—")}</p></div>
+      ${provenance}
       <div class="sec"><h4>Theoretical basis</h4><ul>${theory||"<li>—</li>"}</ul></div>
       <div class="sec"><h4>Assumptions</h4><ul>${list(a.assumptions)||"<li>—</li>"}</ul></div>
       <div class="sec"><h4>Limitations</h4><ul>${list(a.limitations)||"<li>—</li>"}</ul></div>
-      <div class="sec"><h4>References</h4><ul>${refs||"<li>—</li>"}</ul></div>
+      ${refBlock("References · from the knowledgebase", fromKb,
+          `<p class="muted">Returned by the corpus for this question, not recalled by the model.</p>`)}
+      ${refBlock("References · built-in", builtin)}
+      ${all.length ? "" : `<div class="sec"><h4>References</h4><ul><li>—</li></ul></div>`}
     </div></div>`;
 }
 
