@@ -102,6 +102,24 @@ def _post_json(path: str, payload: Dict[str, Any], timeout: float) -> Any:
         return json.load(response)
 
 
+def _error_detail(exc: HTTPError) -> str:
+    """The runtime's own reason for a failed call, which the status line hides.
+
+    A 502 means GraphRAG exited non-zero, and the server puts the tail of its
+    stderr in the body as ``{"error": ...}``. Without it the warning reads only
+    "Bad Gateway", which is all a live step-4 degradation left behind.
+    """
+    try:
+        body = exc.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+        return str(exc)
+    try:
+        detail = json.loads(body).get("error") or body
+    except (ValueError, AttributeError):
+        detail = body
+    return str(detail)[-1600:] or str(exc)
+
+
 def enabled() -> bool:
     """Whether the operator has pointed HCAS at a knowledgebase at all."""
     return bool(settings.kg_enabled and settings.kg_base_url)
@@ -177,7 +195,7 @@ def query(
                     # Someone else (most likely the browser UI) holds the runtime.
                     time.sleep(settings.kg_busy_backoff_s * (attempt + 1))
                     continue
-                log.warning("knowledgebase query failed (HTTP %s): %s", exc.code, exc)
+                log.warning("knowledgebase query failed (HTTP %s): %s", exc.code, _error_detail(exc))
                 return None
             except (URLError, OSError, ValueError) as exc:
                 log.warning("knowledgebase query failed: %s", exc)

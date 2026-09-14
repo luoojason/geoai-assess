@@ -23,6 +23,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 CLAUDE = os.environ.get("CLAUDE_BIN", r"C:\Users\jluo6\.local\bin\claude.exe")
 MODEL = os.environ.get("SHIM_MODEL", "claude-sonnet-5")
 CALL_TIMEOUT_S = float(os.environ.get("SHIM_TIMEOUT_S", "600"))
+CALL_RETRIES = int(os.environ.get("SHIM_RETRIES", "2"))
+CALL_BACKOFF_S = float(os.environ.get("SHIM_BACKOFF_S", "10"))
 
 app = FastAPI()
 
@@ -53,17 +55,27 @@ def render_prompt(messages) -> str:
 
 
 def call_claude(prompt: str) -> str:
-    completed = subprocess.run(
-        [CLAUDE, "-p", "--model", MODEL],
-        input=prompt.encode("utf-8"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=CALL_TIMEOUT_S,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.decode("utf-8", "replace").strip()[-800:]
-        raise RuntimeError(detail or f"claude exited {completed.returncode}")
-    return completed.stdout.decode("utf-8", "replace").strip()
+    """One `claude -p` call, retried with a spaced backoff on a non-zero exit.
+
+    On 2026-09-13 three concurrent calls exited 1 in the same minute the CLI
+    rewrote its OAuth credentials. GraphRAG retries too, but quickly enough that
+    every attempt lands in the same bad window, and one lost map call fails the
+    whole query. stderr was empty, so the error detail reads both streams.
+    """
+    for attempt in range(CALL_RETRIES + 1):
+        completed = subprocess.run(
+            [CLAUDE, "-p", "--model", MODEL],
+            input=prompt.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=CALL_TIMEOUT_S,
+        )
+        if completed.returncode == 0:
+            return completed.stdout.decode("utf-8", "replace").strip()
+        if attempt < CALL_RETRIES:
+            time.sleep(CALL_BACKOFF_S * (attempt + 1))
+    detail = (completed.stderr + completed.stdout).decode("utf-8", "replace").strip()[-800:]
+    raise RuntimeError(detail or f"claude exited {completed.returncode}")
 
 
 @app.get("/v1/models")

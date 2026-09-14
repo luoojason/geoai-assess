@@ -191,6 +191,21 @@ def test_503_not_ready_returns_none_without_retry(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_server_error_detail_reaches_the_log(monkeypatch, caplog):
+    # A 502 is GraphRAG itself exiting non-zero, and the runtime puts the reason in
+    # the body. Logging only "HTTP Error 502: Bad Gateway" left a live step-4
+    # degradation with nothing to diagnose (2026-09-13).
+    body = json.dumps({"error": "graphrag: config load failed"}).encode("utf-8")
+
+    def _bad_gateway(*a, **k):
+        raise HTTPError("u", 502, "Bad Gateway", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(kg, "urlopen", _bad_gateway)
+    with caplog.at_level("WARNING", logger="backend.kg"):
+        assert kg.query("Which factors link greenspace to health?") is None
+    assert "graphrag: config load failed" in caplog.text
+
+
 def test_answer_without_ok_flag_is_rejected(monkeypatch):
     monkeypatch.setattr(kg, "urlopen", lambda *a, **k: _json_response({"error": "boom"}))
     assert kg.query("Which factors link greenspace to health?") is None
