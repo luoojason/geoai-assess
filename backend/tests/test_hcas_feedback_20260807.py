@@ -331,18 +331,19 @@ class TestOverpassTiling:
             def __init__(self, code):
                 self.status_code = code
 
+        # Rotation order since 2026-09-16: primary, z., lz4., then the other box.
         def fake_post(url, data=None, headers=None, timeout=None):
             tried.append(url)
             if url.startswith(ol._OVERPASS_PRIMARY):
                 raise OSError("connect timeout")
-            if url.startswith(ol._OVERPASS_MIRROR):
+            if url.startswith(ol._OVERPASS_Z):
                 return _R(504)
             return _R(200)
 
         monkeypatch.setattr("requests.post", fake_post)
         try:
             ol._probe_overpass_once()
-            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR2
+            assert ox.settings.overpass_url == ol._OVERPASS_LZ4
             assert len(tried) == 3
         finally:
             ox.settings.overpass_url = old_url

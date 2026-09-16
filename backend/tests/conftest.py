@@ -28,6 +28,7 @@ def _isolate_osm_layer_globals(monkeypatch):
     monkeypatch.setattr(ol, "_dead_addresses", set())
     monkeypatch.setattr(ol, "_addr_checked", {})
     monkeypatch.setattr(ol, "_outage_suspected_flag", False)
+    monkeypatch.setattr(ol, "_probe_expires_at", 0.0)
     monkeypatch.setattr(ol, "_retry_pause", lambda attempt: 0.0)
     ol.clear_deadline()
     try:

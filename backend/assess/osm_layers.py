@@ -30,6 +30,26 @@ logger = logging.getLogger(__name__)
 _OVERPASS_PRIMARY = "https://overpass-api.de/api"
 _OVERPASS_MIRROR = "https://overpass.kumi.systems/api"
 _OVERPASS_MIRROR2 = "https://overpass.private.coffee/api"
+# The two servers BEHIND overpass-api.de, addressed directly. Measured 2026-09-16:
+#
+#   overpass-api.de          -> 162.55.144.139, 65.109.112.52
+#   z.overpass-api.de        -> 162.55.144.139
+#   lz4.overpass-api.de      -> 65.109.112.52
+#   overpass.kumi.systems    -> 193.219.97.30
+#   overpass.private.coffee  -> 193.219.97.30
+#
+# So the old three-endpoint rotation was really TWO machines, and its two
+# "mirrors" were one box under two names: when that box is sick, failing over
+# from one name to the other is failing over to itself. That morning both names
+# read-timed-out at 40 s while z. and lz4. answered the same query in about a
+# second, and Prof. Shi's step 3 had lost every layer an hour earlier.
+#
+# The dead-address filter below only handles a backend that refuses the TCP
+# handshake. A backend that ACCEPTS and then 504s is invisible to it, and the
+# DNS name hands every request to a coin flip between the two — naming them
+# individually is what lets the rotation step off the one that is 504ing.
+_OVERPASS_Z = "https://z.overpass-api.de/api"
+_OVERPASS_LZ4 = "https://lz4.overpass-api.de/api"
 
 # Tried in order, rotating on failure. Three, not two, because on 2026-08-07 a
 # real query measured 21.7 s on the primary, 504 on kumi, and 4.2 s on
@@ -40,7 +60,11 @@ _OVERPASS_MIRROR2 = "https://overpass.private.coffee/api"
 # the same probe in 0.7 s with ZERO ways: it is a Switzerland-only extract, so
 # adding it would turn "wrong server" into "this county has no buildings" —
 # silently, which is the exact failure class this file exists to prevent.
-_OVERPASS_ENDPOINTS = [_OVERPASS_PRIMARY, _OVERPASS_MIRROR, _OVERPASS_MIRROR2]
+#
+# The same-cluster servers come before the other box: they are distinct
+# machines, and on 2026-09-16 they were the ones answering.
+_OVERPASS_ENDPOINTS = [_OVERPASS_PRIMARY, _OVERPASS_Z, _OVERPASS_LZ4,
+                       _OVERPASS_MIRROR2, _OVERPASS_MIRROR]
 
 # --- addresses that will not accept a connection ----------------------------
 # An endpoint hostname publishes several addresses and they are not equally
@@ -321,6 +345,16 @@ ox.settings.overpass_rate_limit = False
 # that is not necessarily better.
 _PROBE_TIMEOUT_S = float(os.environ.get("OSM_PROBE_TIMEOUT_S", "12"))
 _probed = False
+# When the probe's verdict goes stale. It used to be decided ONCE per process
+# and never again — `_probed` was never reset outside the tests — so a single
+# bad minute became a permanent state. Found 2026-09-16 in Prof. Shi's own run:
+# the first step 3 of the day probed during an outage, set the outage flag, and
+# from then on every layer of every later run got one attempt, no rotation, and
+# failed, while the servers had long since recovered. A verdict of "all down" is
+# rechecked after a minute; a working endpoint is trusted for ten.
+_PROBE_TTL_OK_S = float(os.environ.get("OSM_PROBE_TTL_S", "600"))
+_PROBE_TTL_OUTAGE_S = float(os.environ.get("OSM_PROBE_TTL_OUTAGE_S", "60"))
+_probe_expires_at = 0.0
 
 # --- data freshness ---------------------------------------------------------
 # An Overpass mirror can be fast and WRONG. Measured 2026-08-11 against
@@ -387,11 +421,14 @@ def _probe_overpass_once() -> None:
     answered inside the probe window on a link where /interpreter still timed
     out, so the cheap endpoint proves nothing about the one that matters.
     """
-    global _probed, _failed_over, _stale_warning, _outage_suspected_flag
+    global _probed, _failed_over, _stale_warning, _outage_suspected_flag, _probe_expires_at
     with _failover_lock:
-        if _probed:
+        if _probed and time.time() < _probe_expires_at:
             return
         _probed = True
+        # Claimed up front so concurrent layers do not all probe at once; the
+        # real expiry is set when the verdict is in.
+        _probe_expires_at = time.time() + _PROBE_TIMEOUT_S * (len(_OVERPASS_ENDPOINTS) + 1)
     _outage_suspected_flag = False    # this probe decides it afresh
     import requests
 
@@ -443,6 +480,11 @@ def _probe_overpass_once() -> None:
                     f"({'; '.join(reasons)})"
                 )
             _select(url)
+            # A current endpoint answered, so any earlier "forced onto old data"
+            # verdict no longer describes this run.
+            _stale_endpoints.pop(url, None)
+            _stale_warning = None
+            _probe_expires_at = time.time() + _PROBE_TTL_OK_S
             return
         except Exception as exc:
             reasons.append(f"{url} {type(exc).__name__}")
@@ -460,6 +502,7 @@ def _probe_overpass_once() -> None:
             "current data."
         )
         logger.error(f"Overpass: all current endpoints unreachable; {_stale_warning}")
+        _probe_expires_at = time.time() + _PROBE_TTL_OUTAGE_S
         return
     # Every endpoint failed its probe. Leave the URL where it started and let the
     # real call report the failure — an outage is the fetchers' story to tell,
@@ -473,10 +516,12 @@ def _probe_overpass_once() -> None:
     # report the failure honestly, and still enough to recover if the probe was
     # wrong, since the attempt is a real query against a real endpoint.
     _outage_suspected_flag = True
+    _probe_expires_at = time.time() + _PROBE_TTL_OUTAGE_S
     logger.warning(
         f"Overpass: no endpoint answered a probe ({'; '.join(reasons)}) — "
         "treating this as an outage and giving each layer a single attempt "
-        "rather than a full retry cascade"
+        "rather than a full retry cascade; checking again in "
+        f"{_PROBE_TTL_OUTAGE_S:.0f} s"
     )
 
 

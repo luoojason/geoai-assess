@@ -90,6 +90,82 @@ class TestSaveAs:
         assert client.get(f"/hcas/projects/{r.json()['project_id']}", headers=HDRS).json()["meta"]["title"] == "t2"
 
 
+class TestRetrievalRecoversFromAnOutage:
+    """#2: "the retrieval process is slow and often failed". The log of the
+    professors' own run shows why: the first probe of the day found every
+    endpoint down, and that verdict never expired — every later layer of every
+    later run got one attempt and no rotation, long after the servers came back.
+    """
+
+    def _probe(self, monkeypatch, responder):
+        import osmnx as ox
+
+        from backend.assess import osm_layers as ol
+
+        monkeypatch.setattr(ox.settings, "overpass_url", ol._OVERPASS_PRIMARY)
+        monkeypatch.setattr(ol, "_failed_over", False)
+        monkeypatch.setattr(ol, "_stale_endpoints", {})
+        monkeypatch.setattr(ol, "_stale_warning", None)
+        monkeypatch.setattr(ol, "_learn_dead_addresses", lambda host: None)
+        monkeypatch.setattr("requests.post", responder)
+        ol._probe_overpass_once()
+        return ox.settings.overpass_url
+
+    def test_an_outage_verdict_is_rechecked(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return {}
+
+        def down(url, **kw):
+            raise OSError("connect timeout")
+
+        monkeypatch.setattr(ol, "_probed", False)
+        self._probe(monkeypatch, down)
+        assert ol._outage_suspected()
+
+        # Within the recheck window nothing is re-asked…
+        calls = []
+        monkeypatch.setattr("requests.post", lambda url, **kw: calls.append(url) or _R())
+        ol._probe_overpass_once()
+        assert calls == [] and ol._outage_suspected()
+
+        # …and once it lapses the servers get a fresh hearing.
+        monkeypatch.setattr(ol, "_probe_expires_at", 0.0)
+        self._probe(monkeypatch, lambda url, **kw: _R())
+        assert not ol._outage_suspected()
+
+    def test_a_working_endpoint_is_not_reprobed_every_layer(self, monkeypatch):
+        from backend.assess import osm_layers as ol
+
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return {}
+
+        calls = []
+        monkeypatch.setattr(ol, "_probed", False)
+        self._probe(monkeypatch, lambda url, **kw: calls.append(url) or _R())
+        ol._probe_overpass_once()
+        ol._probe_overpass_once()
+        assert len(calls) == 1
+
+    def test_the_rotation_has_more_than_one_machine_behind_it(self):
+        """kumi.systems and private.coffee resolve to the same address, so
+        before this the only real alternative to overpass-api.de was one box."""
+        from urllib.parse import urlsplit
+
+        from backend.assess import osm_layers as ol
+
+        hosts = [urlsplit(e).hostname for e in ol._OVERPASS_ENDPOINTS]
+        assert "z.overpass-api.de" in hosts and "lz4.overpass-api.de" in hosts
+        assert hosts.index("z.overpass-api.de") < hosts.index("overpass.private.coffee")
+
+
 class TestInterface:
     """#5, checked against the page source: these are layout promises, and the
     template is the only place they live."""

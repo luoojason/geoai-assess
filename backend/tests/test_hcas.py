@@ -797,7 +797,8 @@ class TestFetchErrorSurfacing:
 
         try:
             assert ol._with_overpass_failover(flaky) == "ok"
-            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR
+            assert ox.settings.overpass_url == ol._next_endpoint(ol._OVERPASS_PRIMARY)
+            assert ox.settings.overpass_url != ol._OVERPASS_PRIMARY
         finally:
             ox.settings.overpass_url = old_url
             ol._failed_over = False
@@ -847,7 +848,7 @@ class TestFetchErrorSurfacing:
         from backend.assess import osm_layers as ol
 
         old_url = ox.settings.overpass_url
-        ox.settings.overpass_url = ol._OVERPASS_MIRROR      # start mid-rotation
+        ox.settings.overpass_url = ol._OVERPASS_Z           # start mid-rotation
         seen = []
 
         def flaky():
@@ -858,7 +859,7 @@ class TestFetchErrorSurfacing:
 
         try:
             assert ol._with_overpass_failover(flaky) == "ok"
-            assert seen == [ol._OVERPASS_MIRROR, ol._OVERPASS_MIRROR2]  # rotated, retried
+            assert seen == [ol._OVERPASS_Z, ol._OVERPASS_LZ4]  # rotated, retried
         finally:
             ox.settings.overpass_url = old_url
             ol._failed_over = False
@@ -882,7 +883,7 @@ class TestFetchErrorSurfacing:
             with pytest.raises(OSError):
                 ol._with_overpass_failover(dead)
             assert calls["n"] == 2                                  # not three
-            assert ox.settings.overpass_url == ol._OVERPASS_MIRROR2  # rotated onward
+            assert ox.settings.overpass_url == ol._OVERPASS_LZ4      # rotated onward
         finally:
             ox.settings.overpass_url = old_url
             ol._failed_over = False
