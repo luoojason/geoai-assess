@@ -51,17 +51,20 @@
         border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;min-height:0;
         box-shadow:0 1px 2px oklch(0.4 0.03 220/.05), 0 18px 40px -26px oklch(0.4 0.05 220/.35);}
 
-  /* 1 · Header */
-  #hdr{display:flex;align-items:center;gap:var(--sp-3);padding:0 var(--sp-5);height:58px;flex:none;
+  /* 1 · Header
+     Prof. Shi 2026-09-16 #5: the menu (New, Open, …) comes first, on the left,
+     where the eye lands; the system name moves to the right. */
+  #hdr{display:flex;align-items:center;gap:var(--sp-3);padding:0 var(--sp-4);height:58px;flex:none;
        border-bottom:1px solid var(--line);background:var(--head);}
   #logo{width:30px;height:30px;border-radius:8px;background:var(--teal);color:var(--surface);display:flex;
         align-items:center;justify-content:center;font:700 16px var(--display);flex:none;
         box-shadow:inset 0 1px 0 oklch(1 0 0/.2);}
-  #hdr .title{font:600 var(--fs-md)/1.1 var(--display);letter-spacing:-.01em;}
+  #brand{margin-left:auto;display:flex;align-items:center;gap:var(--sp-3);text-align:right;min-width:0;}
+  #hdr .title{font:600 var(--fs-md)/1.1 var(--display);letter-spacing:-.01em;white-space:nowrap;}
   #hdr .sub{font:400 var(--fs-xs)/1 var(--mono);color:var(--faint);margin-top:3px;letter-spacing:.02em;}
-  #nav{margin-left:auto;display:flex;align-items:center;gap:1px;}
-  .navbtn{border:none;background:none;font:500 var(--fs-sm) var(--sans);color:var(--muted);
-          padding:6px 10px;border-radius:7px;transition:background .15s,color .15s;}
+  #nav{display:flex;align-items:center;gap:1px;flex-wrap:wrap;}
+  .navbtn{border:none;background:none;font:600 var(--fs-base) var(--sans);color:var(--ink);
+          padding:7px 11px;border-radius:7px;transition:background .15s,color .15s;}
   .navbtn:hover{background:var(--teal-tint);color:var(--ink);}
   .navbtn.exit{color:var(--red);} .navbtn.exit:hover{background:var(--red-tint);}
   .navsep{color:var(--line-d);font-size:11px;}
@@ -322,6 +325,13 @@
        border:1px solid var(--line-d);border-radius:var(--r-sm);box-sizing:border-box;margin-top:8px;color:var(--ink);background:var(--surface);}
   .modal input:focus,.modal textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint-d);}
   .modal .acts{display:flex;justify-content:flex-end;gap:9px;margin-top:18px;}
+  .modal.wide{max-width:820px;}
+  .notesbox{width:100%;font:400 var(--fs-sm)/1.5 var(--sans);padding:9px 11px;border:1px solid var(--line-d);
+            border-radius:var(--r-sm);color:var(--ink);background:var(--surface);resize:vertical;box-sizing:border-box;}
+  .notesbox.ro{max-height:4.6em;overflow:hidden;color:var(--muted);white-space:pre-wrap;}
+  .notesfull{width:100%;min-height:52vh;max-height:70vh;overflow:auto;font:400 var(--fs-base)/1.65 var(--sans);
+             padding:14px 16px;border:1px solid var(--line-d);border-radius:var(--r-sm);color:var(--ink);
+             background:var(--surface);box-sizing:border-box;white-space:pre-wrap;resize:vertical;margin-top:6px;}
 
   @media (prefers-reduced-motion: reduce){ *{animation-duration:.001ms!important;transition-duration:.001ms!important;} }
 </style>
@@ -331,15 +341,18 @@
 
   <!-- 1 · Header -->
   <div id="hdr">
-    <div id="logo">H</div>
-    <div><div class="title">Healthy Community Assessment System</div><div class="sub">Community health · spatial analysis</div></div>
     <div id="nav">
       <button class="navbtn" onclick="newProject()">New</button><span class="navsep">·</span>
       <button class="navbtn" onclick="openProject()">Open</button><span class="navsep">·</span>
-      <button class="navbtn" onclick="saveProject()">Save</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="saveProject()" title="Download this project as a file">Save</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="saveProjectAs()" title="Start a new project from this one">Save as</button><span class="navsep">·</span>
       <button class="navbtn" onclick="openSettings()">Settings</button><span class="navsep">·</span>
       <button class="navbtn" onclick="showAbout()">About</button>
       <button class="navbtn exit" onclick="exitApp()">Exit</button>
+    </div>
+    <div id="brand">
+      <div><div class="title">Healthy Community Assessment System</div><div class="sub">Community health · spatial analysis</div></div>
+      <div id="logo">H</div>
     </div>
   </div>
 
@@ -637,12 +650,11 @@ function renderCanvas(){
     body = `<div class="warnbar" style="background:var(--amber-tint);color:var(--amber)">⚠<div>
       <b>Out of date.</b> This was prepared before an earlier step changed, so it does not
       reflect the current study area. Re-run this step to bring it up to date.</div></div>` + body;
-  $("canvas").innerHTML = head + body + (row && !defining && n!==8 ? rawEditor() : "");
+  $("canvas").innerHTML = head + body;
   if(defining) loadStates();
   if(n===2 && row) wireFactors();
   if(n===7 && row) wireMapCheck();
   if(n===8 && row) wireReport();
-  wireRaw();
   if(!REDUCED && $("canvas").animate)
     $("canvas").animate([{opacity:0,transform:"translateY(8px)"},{opacity:1,transform:"none"}],
       {duration:240,easing:"cubic-bezier(.22,.68,.24,1)"});
@@ -859,8 +871,8 @@ function viewFactors(a){
         in this order. Un-check a factor to drop it.</div>
     </div>
     <div class="sec" style="margin-top:14px;"><h4>Notes</h4>
-      <input id="f_notes" style="width:100%;font:400 var(--fs-sm) var(--sans);padding:9px 11px;border:1px solid var(--line-d);border-radius:var(--r-sm);color:var(--ink);"
-             value="${esc(a.notes||"")}"></div></div>`;
+      ${notesBlock("step2", a.notes||"", {editable:true, title:"Notes on the factor selection",
+          onSave:v=>{ if(S.edited) S.edited.notes=v; }})}</div></div>`;
 }
 function wireFactors(){
   // Same row order the view just rendered, so index -> factor stays aligned.
@@ -871,7 +883,7 @@ function wireFactors(){
     document.querySelectorAll('.factor').forEach(l=>l.classList.toggle('off',!l.querySelector('input').checked));
   };
   document.querySelectorAll('.factor input').forEach(c=>c.onchange=sync);
-  const nt=$("f_notes"); if(nt) nt.oninput=()=>{ S.edited.notes=nt.value; };
+  const nt=$("notes_step2"); if(nt) nt.oninput=()=>{ S.edited.notes=nt.value; };
 }
 async function reviseFactors(){
   const box=$("f_revise"), hint=$("revisehint"), btn=$("revisebtn");
@@ -1288,7 +1300,7 @@ function viewReport(a){
 }
 function wireReport(){
   const ta=$("report");
-  ta.oninput=()=>{ S.edited.markdown=ta.value; $("rprev").innerHTML=mdToHtml(ta.value); syncRaw(); };
+  ta.oninput=()=>{ S.edited.markdown=ta.value; $("rprev").innerHTML=mdToHtml(ta.value); };
 }
 function downloadReport(){
   const md = (S.edited&&S.edited.markdown)||"";
@@ -1324,34 +1336,45 @@ table{border-collapse:collapse;margin:10px 0} th,td{border:1px solid #ccc;paddin
 
 function viewRaw(){ return `<div class="empty">Generated — see the data below.</div>`; }
 
-/* Universal data editor. Prof. Shi 2026-08-07 #2: "Remove 'Edit underlying data
-   (advanced)' from all pages … If we really want to allow the user to do this,
-   put a button there to open a separate dialogue box for the user to do so."
-   So the textarea no longer sits under every step: a quiet button opens it in a
-   dialog and edits land only on Apply. The (ai_draft, human_final) audit tuple
-   is unaffected. */
-function rawEditor(){
-  return `<div style="margin-top:var(--sp-4);"><button class="linkbtn" onclick="openRawEditor()"
-      title="Inspect or hand-edit this step's underlying data">Edit underlying data…</button></div>`;
+/* "Edit underlying data" is gone entirely. Prof. Shi asked for it off the pages
+   on 2026-08-07 and it was only moved behind a button; on 2026-09-16 he asked
+   again — "this function will be very rarely used by the user" — so it is
+   removed, not hidden. The panels on each step are the way to edit. */
+
+/* Long notes get a reader of their own (Prof. Shi 2026-09-16 #5: "If the
+   content in Notes is long (e.g., in Step 2), provide a button to open a
+   separate window to show the full text"). The box on the page stays short;
+   the dialog shows every word and, where the notes are editable, saves back. */
+const NOTES = {};
+function notesBlock(key, text, o){
+  o = o||{};
+  NOTES[key] = {text: text||"", editable: !!o.editable, title: o.title||"Notes", onSave: o.onSave||null};
+  const long = (text||"").length > 160 || (text||"").split("\n").length > 2;
+  const box = o.editable
+    ? `<textarea id="notes_${esc(key)}" rows="3" class="notesbox">${esc(text||"")}</textarea>`
+    : `<div class="notesbox ro">${esc(text||"—")}</div>`;
+  return `${box}
+    <div style="margin-top:6px;"><button class="linkbtn" onclick="openNotes('${esc(key)}')"
+      title="Show the full text in its own window">${long?"Open full notes ↗":"Open in a window ↗"}</button></div>`;
 }
-function openRawEditor(){
-  modal(`<h3>Underlying data</h3>
-    <p>The raw record for this step. Editing it is for unusual cases — the panels
-    on the page cover normal use. Changes apply when you press Apply.</p>
-    <textarea id="rawjson" style="min-height:280px;font:400 var(--fs-xs)/1.55 var(--mono);">${esc(JSON.stringify(S.edited,null,2))}</textarea>
-    <div id="rawerr" style="color:var(--red);font-size:var(--fs-sm);min-height:18px;"></div>
-    <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
-      <button class="cbtn next" onclick="applyRawEditor()">Apply</button></div>`);
+function openNotes(key){
+  const n = NOTES[key]; if(!n) return;
+  const live = $("notes_"+key);                  // pick up unsaved typing on the page
+  const text = live ? live.value : n.text;
+  modal(`<h3>${esc(n.title)}</h3>
+    ${n.editable
+      ? `<textarea id="notes_full" class="notesfull">${esc(text)}</textarea>`
+      : `<div class="notesfull ro">${esc(text||"—")}</div>`}
+    <div class="acts"><button class="cbtn" onclick="closeModal()">${n.editable?"Cancel":"Close"}</button>
+      ${n.editable?`<button class="cbtn next" onclick="saveNotes('${esc(key)}')">Keep these notes</button>`:""}</div>`, {wide:true});
 }
-function applyRawEditor(){
-  const ta=$("rawjson"); if(!ta) return;
-  try{
-    const parsed=JSON.parse(ta.value);
-    S.edited=parsed; closeModal(); setMsg(""); renderCanvas();
-  }catch(e){ $("rawerr").textContent="Invalid data — "+e.message; }
+function saveNotes(key){
+  const n = NOTES[key], ta = $("notes_full"); if(!n || !ta) return;
+  n.text = ta.value;
+  const live = $("notes_"+key); if(live) live.value = ta.value;
+  if(n.onSave) n.onSave(ta.value);
+  closeModal();
 }
-function wireRaw(){ /* nothing to wire: the editor lives in a dialog now */ }
-function syncRaw(){ /* the dialog reads S.edited when it opens */ }
 
 /* ================= actions ================= */
 /* Reads the definition form. Creates the project, or — when the analyst came
@@ -1603,6 +1626,41 @@ async function saveProject(){
     dl(JSON.stringify(p,null,2),(p.meta.title||"project")+".json","application/json"); }
   catch(e){ setMsg(e.message); }
 }
+/* Save as (Prof. Shi 2026-09-16 #4): start a new project from the current one.
+   Everything confirmed so far — steps, maps and fetched data — is copied, so the
+   new project can change one thing (the area, a factor) without redoing the
+   rest. The original is left exactly as it was. */
+function saveProjectAs(){
+  if(!S.pid){ setMsg("Nothing to save yet — define a project first."); return; }
+  const base = S.project?.meta?.title || "Untitled assessment";
+  modal(`<h3>Save as a new project</h3>
+    <p>Creates a copy of this project — every step, map and dataset so far — under a new name.
+    The original project is not changed.</p>
+    <input id="m_saveas" value="${esc(base+" (copy)")}">
+    <div id="m_saveas_err" style="color:var(--red);font-size:var(--fs-sm);min-height:18px;margin-top:6px;"></div>
+    <div class="acts"><button class="cbtn" onclick="closeModal()">Cancel</button>
+      <button class="cbtn next" id="m_saveas_btn" onclick="doSaveAs()">Save as new project</button></div>`);
+  const inp=$("m_saveas"); if(inp){ inp.select(); inp.onkeydown=e=>{ if(e.key==="Enter") doSaveAs(); }; }
+}
+async function doSaveAs(){
+  const title=($("m_saveas")?.value||"").trim(), btn=$("m_saveas_btn");
+  if(!title){ $("m_saveas_err").textContent="Give the new project a name."; return; }
+  if(btn){ btn.disabled=true; btn.textContent="Copying…"; }
+  try{
+    const r=await api(`/hcas/projects/${S.pid}/copy`,{method:"POST",body:JSON.stringify({title})});
+    const keepStep=S.current;
+    S.pid=r.project_id; S.redefining=false; S.chats={};
+    try{ localStorage.setItem("hcas_last_project", S.pid); }catch(_){}
+    await refresh();
+    selectStep(keepStep);
+    closeModal();
+    statusRun(""); $("msgline").style.color="var(--ok)";
+    $("msgline").textContent=`Saved as “${title}”. You are now working in the new project.`;
+  }catch(e){
+    $("m_saveas_err").textContent=e.message;
+    if(btn){ btn.disabled=false; btn.textContent="Save as new project"; }
+  }
+}
 function openSettings(){
   modal(`<h3>Settings</h3>
     <p>Guidance — shapes how the assistant responds.</p>
@@ -1631,7 +1689,7 @@ function exitApp(){
 function setBusy(b){ S.busy=b; renderCmd(); }
 function statusRun(t){ $("msgline").innerHTML = t?`<span class="spin"></span>${esc(t)}`:""; $("msgline").style.color=t?"var(--muted)":"var(--red)"; }
 function setMsg(t){ $("msgline").textContent=t; $("msgline").style.color="var(--red)"; }
-function modal(html){ $("modal").innerHTML=html; $("veil").classList.add("show");
+function modal(html, o){ $("modal").innerHTML=html; $("modal").classList.toggle("wide", !!(o&&o.wide)); $("veil").classList.add("show");
   const f=$("modal").querySelector("input,textarea"); if(f) setTimeout(()=>f.focus(),30); }
 function closeModal(){ $("veil").classList.remove("show"); }
 $("veil").onclick=e=>{ if(e.target===$("veil")) closeModal(); };

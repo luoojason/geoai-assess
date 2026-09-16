@@ -2137,6 +2137,9 @@ def export_audit_csv(db: Path | None = None) -> str:
     w.writerow([
         "project_id", "title", "step", "status", "drafted_at", "confirmed_at",
         "edited", "edit_seconds", "model", "input_tokens", "output_tokens",
+        # A Save-as copy repeats its source's rows verbatim; the ablation must
+        # drop them rather than count one human review twice.
+        "copied_from",
     ])
     for r in rows:
         meta, data = json.loads(r["meta_json"]), json.loads(r["data_json"])
@@ -2146,6 +2149,7 @@ def export_audit_csv(db: Path | None = None) -> str:
             r["drafted_at"], r["confirmed_at"],
             data.get("edit_delta") is not None, data.get("edit_seconds"),
             data.get("model"), usage.get("input_tokens"), usage.get("output_tokens"),
+            meta.get("copied_from") or "",
         ])
     return out.getvalue()
 
@@ -2521,6 +2525,55 @@ def update_project_scope(
     if geo_changed:
         _clear_project_layer_cache(pid)
     return {"project_id": pid, "scope_changed": scope_changed, "stale_steps": stale}
+
+
+def copy_project(pid: str, title: str | None = None, db: Path | None = None) -> str:
+    """Save as: a new project that starts from everything `pid` has so far.
+
+    Prof. Shi 2026-09-16 #4: "a project can only be saved to itself, i.e., a new
+    project cannot start based on an existing project." Every artifact row keeps
+    its status, so a confirmed step stays confirmed and the copy picks up where
+    the original is. Maps and the per-project data cache are copied too — the
+    point is not having to fetch the same county again.
+
+    The copy records `copied_from`. Its rows repeat the original's audit tuples
+    verbatim, and the HITL study must be able to drop the duplicates rather than
+    count one human review twice; export_audit_csv carries the column.
+    """
+    import shutil
+
+    db = db or DB_PATH
+    new_pid = uuid.uuid4().hex[:12]
+    with _conn(db) as conn:
+        row = conn.execute("SELECT meta_json FROM projects WHERE id = ?", (pid,)).fetchone()
+        if row is None:
+            raise KeyError(pid)
+        meta = json.loads(row["meta_json"])
+        meta["title"] = (title or "").strip() or f"{meta.get('title') or 'Untitled assessment'} (copy)"
+        meta["copied_from"] = pid
+        meta["created_at"] = time.time()
+        conn.execute("INSERT INTO projects VALUES (?, ?)", (new_pid, json.dumps(meta)))
+        conn.execute(
+            "INSERT INTO artifacts (project_id, step, data_json, status, drafted_at, confirmed_at)"
+            " SELECT ?, step, data_json, status, drafted_at, confirmed_at"
+            " FROM artifacts WHERE project_id = ?",
+            (new_pid, pid),
+        )
+        for key, html, created in conn.execute(
+            "SELECT project_id, html, created_at FROM maps WHERE project_id = ? OR project_id LIKE ?",
+            (pid, f"{pid}:%"),
+        ).fetchall():
+            conn.execute(
+                "INSERT OR REPLACE INTO maps VALUES (?, ?, ?)",
+                (new_pid + key[len(pid):], html, created),
+            )
+    src = LAYER_CACHE_DIR / pid
+    if src.is_dir():
+        try:
+            shutil.copytree(src, LAYER_CACHE_DIR / new_pid, dirs_exist_ok=True)
+        except Exception as exc:  # the copy is still whole; it just refetches
+            logger.warning(f"copy_project: layer cache not copied ({exc!r})")
+    return new_pid
 
 
 def list_projects(db: Path | None = None, limit: int = 50) -> list[dict]:

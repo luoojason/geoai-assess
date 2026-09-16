@@ -511,6 +511,20 @@ async def hcas_revise_factors(body: HcasReviseRequest):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+class HcasCopyRequest(BaseModel):
+    title: Optional[str] = None
+
+
+@app.post("/hcas/projects/{pid}/copy", dependencies=_assess_deps)
+async def hcas_copy_project(pid: str, body: HcasCopyRequest):
+    """Save as — a new project that starts from this one (Prof. Shi 2026-09-16 #4)."""
+    try:
+        new_pid = await asyncio.to_thread(hcas.copy_project, pid, body.title)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    return {"project_id": new_pid}
+
+
 @app.get("/hcas/projects", dependencies=_assess_deps)
 async def hcas_list_projects():
     """Saved projects, newest first — what the Open dialog lists.
