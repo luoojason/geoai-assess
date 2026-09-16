@@ -166,9 +166,30 @@ whole config at load, so `DASHSCOPE_API_KEY` must be *present* or the run dies
 with `api_key must be set when auth_method=api_key`. A placeholder satisfies
 it. No Alibaba account and no cost are required for global-only operation.
 
-`ground_framework()` therefore defaults to `global`, against the vendor's
-`local` default, and a test pins that — switching it back silently reintroduces
-a hard dependency on a key we may never get.
+`ground_framework()` therefore defaulted to `global`, against the vendor's
+`local` default, with a test pinning it.
+
+### ⚠ Superseded 2026-09-15: the key arrived, and the default is now `local`
+
+Prof. Wang supplied a DashScope key in `#all-aigis` (api_base
+`dashscope.aliyuncs.com/compatible-mode/v1`, model `text-embedding-v4`). Verified
+directly: 2,048 dimensions, matching the vectors. Installed in `data/v1/.env`; the
+server re-reads that file per query, so swapping it needs no restart.
+
+Measured immediately after, same question, same v2 index:
+
+| | local | global (community level 0) |
+|---|---|---|
+| wall time | 161 s | 131 s |
+| source documents | **3** | **94** of 96 |
+| answer | 6,065 chars | 11,998 chars |
+
+Local is not faster — a one-factor question ran local in 50 s, so local time tracks
+question breadth rather than being uniformly slower. What decides it is the
+**reference enum**: under global at level 0 the admissible set is effectively the
+whole corpus, so the enum-lock stops being a control. `ground_framework()` now
+defaults to `local`, and the test pins that instead. Global stays reachable as the
+keyless fallback if the key lapses.
 
 ### End-to-end through backend/kg.py
 
@@ -266,8 +287,17 @@ degrades from.
 
 ## Open questions for Prof. Shi and Prof. Wang
 
-- Who supplies the DashScope key and the generation endpoint, and does the
-  grant cover them?
+- **Answered 2026-09-15 for embedding**: Prof. Wang supplied the DashScope key.
+  Still open: who pays for it over the life of the project, and **which generation
+  model was "initially outlined"** — the README says the package deliberately does
+  not disclose the model used to build the indexes, and `configure.cmd` asks the
+  operator for one. Generation currently runs on Claude through
+  `claude_openai_shim`. The same DashScope key does serve chat completions
+  (`qwen-plus` and `qwen-max` both answered a test call), so switching generation to
+  the vendor's own stack is available — but it spends Prof. Wang's key on every
+  query and changes who writes the answers, so it is her call and Jason's, not a
+  config detail. **Decided 2026-09-15: generation stays on Claude.** Local search
+  still embeds each question against her key, but that is a few tokens per run.
 - Where should the knowledgebase run — beside HCAS on the Oracle host, or on
   Prof. Wang's machine behind an authenticated gateway?
 - A minutes-long, single-flight query cannot block an interactive step. Should

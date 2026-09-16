@@ -222,7 +222,7 @@ def query(
 def ground_framework(
     factors: Optional[List[str]] = None,
     place: str = "",
-    method: str = "global",
+    method: str = "local",
     version: Optional[str] = None,
 ) -> Optional[KGAnswer]:
     """Retrieve theory grounding for the step-4 solution framework.
@@ -233,18 +233,28 @@ def ground_framework(
     knowledgebase. It does: this returns real corpus answers, and
     :attr:`KGAnswer.source_titles` supplies the enum the schema locks against.
 
-    Defaults to ``global`` search, against the vendor's own ``local`` default,
-    for two measured reasons:
+    Defaults to ``local`` search, which is also the vendor's default.
 
-    * Step 4 asks a corpus-level synthesis question ("which theories link these
-      factors to health outcomes"), which is what global search is built for.
-      Local search is for focused lookups of a named entity or relationship.
-    * Global search never embeds the query, so it needs no DashScope key.
-      Verified 2026-08-27: a global query returned a full cited answer with a
-      deliberately invalid embedding key, while the same key made local search
-      fail with a 401 from DashScope. GraphRAG still validates the embedding
-      block at config load, so the key must be present — but it can be a
-      placeholder.
+    This was ``global`` until 2026-09-15, for one reason that has now expired:
+    local search embeds the question, and there was no DashScope key, so it
+    failed 401 while global answered fine (measured 2026-08-27). Prof. Wang
+    supplied the key on 2026-09-15 and local search works.
+
+    Global remains supported and is one argument away, but it is the wrong
+    default now that there is a choice:
+
+    * **Global does not constrain the reference enum.** At community level 0 it
+      resolves 94 of the 96 papers into ``source_titles``, so the enum step 4
+      locks against is effectively the whole corpus — the control the grounding
+      study rests on stops measuring anything. Local returned 3 papers for the
+      same question, which is a real constraint with real provenance.
+    * **It is not a speed trade.** Measured on the same five-factor question,
+      same v2 index: local 161 s / 3 documents against global 131 s / 94. A
+      one-factor question ran local in 50 s, so local time tracks how broad the
+      question is rather than being uniformly slower.
+
+    Coverage did not suffer at 3 documents: the local answer still covered all
+    five factor domains and an assessment methodology.
 
     Returns ``None`` when the knowledgebase is absent, and the caller keeps its
     built-in theory list.

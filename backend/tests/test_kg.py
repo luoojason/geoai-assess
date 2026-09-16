@@ -323,13 +323,15 @@ def test_step4_schema_dedupes_titles_already_known():
     assert enum.count(known) == 1
 
 
-def test_ground_framework_defaults_to_global_search(monkeypatch):
-    """Global needs no DashScope key and suits a corpus-level question.
+def test_ground_framework_defaults_to_local_search(monkeypatch):
+    """Local is what makes the reference enum a constraint rather than a formality.
 
-    Verified live 2026-08-27: a global query answered with a deliberately
-    invalid embedding key, while local search failed 401 against DashScope.
-    Pinned because switching this default silently reintroduces that hard
-    dependency on a key we may never obtain.
+    This pinned ``global`` until 2026-09-15, when local search had no DashScope
+    key and failed 401. With the key in hand, measured on the same five-factor
+    question: local resolved 3 source documents, global 94 of 96. Step 4 locks
+    its reference enum to exactly these titles, so under global the lock admits
+    the whole corpus and stops being a control. Pinned so the default cannot
+    drift back without that being a deliberate decision about the study.
     """
     seen = {}
 
@@ -339,4 +341,17 @@ def test_ground_framework_defaults_to_global_search(monkeypatch):
 
     monkeypatch.setattr(kg, "urlopen", _capture)
     kg.ground_framework(factors=["greenspace access"])
+    assert seen["body"]["method"] == "local"
+
+
+def test_ground_framework_still_accepts_global(monkeypatch):
+    """Global stays reachable: it is the keyless fallback if the key lapses."""
+    seen = {}
+
+    def _capture(request, timeout=None):
+        seen["body"] = json.loads(request.data.decode("utf-8"))
+        return _json_response(_OK_QUERY)
+
+    monkeypatch.setattr(kg, "urlopen", _capture)
+    kg.ground_framework(factors=["greenspace access"], method="global")
     assert seen["body"]["method"] == "global"
