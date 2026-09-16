@@ -351,9 +351,12 @@ _probed = False
 # the first step 3 of the day probed during an outage, set the outage flag, and
 # from then on every layer of every later run got one attempt, no rotation, and
 # failed, while the servers had long since recovered. A verdict of "all down" is
-# rechecked after a minute; a working endpoint is trusted for ten.
+# rechecked after three minutes; a working endpoint is trusted for ten. Not one
+# minute: a failing probe is five requests and ~60 s of timeouts, and measured
+# the same afternoon a one-minute recheck kept a rate-limited address probing
+# almost continuously, which is how an allowance stays spent.
 _PROBE_TTL_OK_S = float(os.environ.get("OSM_PROBE_TTL_S", "600"))
-_PROBE_TTL_OUTAGE_S = float(os.environ.get("OSM_PROBE_TTL_OUTAGE_S", "60"))
+_PROBE_TTL_OUTAGE_S = float(os.environ.get("OSM_PROBE_TTL_OUTAGE_S", "180"))
 _probe_expires_at = 0.0
 
 # --- data freshness ---------------------------------------------------------
