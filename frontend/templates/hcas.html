@@ -889,12 +889,18 @@ async function refreshArea(w){
   const a = AREA[w];
   if(!a.state_fips || !a.county_fips) return;
   const key = `${a.state_fips}/${a.county_fips}/${a.unit}`;
+  if(a.featuresKey === key && !a.features && a.loading){
+    // Already being fetched by an earlier call — wait for it rather than
+    // drawing (or matching a ZIP code or town against) nothing.
+    try{ await a.loading; }catch(_){}
+  }
   if(a.featuresKey !== key){
     a.features = null; a.featuresKey = key;
     const box = $(`${w}_map`);
     if(box && !a.map) box.innerHTML = `<span class="spin"></span>Loading ${esc(unitWord(a.unit, true))}…`;
     try{
-      const fc = await api(`/hcas/units/${key}`);
+      a.loading = api(`/hcas/units/${key}`);
+      const fc = await a.loading;
       if(a.featuresKey !== key) return;                // the user moved on meanwhile
       a.features = fc;
     }catch(e){
@@ -1107,7 +1113,7 @@ async function resolveArea(){
         what = " Suggesting the block groups for this community…";
       }
       renderScope("project"); renderAreaSum("project"); styleAreaMap("project");
-      hint.innerHTML=`<b>${esc(r.county_name)}, ${esc(r.state_name)}</b> — ${esc(r.interpretation||"resolved")}`
+      hint.innerHTML=`<b>${esc(r.county_name)}, ${esc(r.state_name)}</b> — ${esc(String(r.interpretation||"resolved").replace(/\.?\s*$/,"."))}`
         + (r.caveat?` <span style="color:var(--amber)">${esc(r.caveat)}</span>`:"")
         + what + `<br>Not right? Change the project area below.`;
       if(a.unit==="custom") await suggestBlockGroups("project", text);
