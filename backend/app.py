@@ -387,6 +387,15 @@ async def hcas_wizard(request: Request):
     return templates.TemplateResponse(request, "hcas.html")
 
 
+class HcasAreaSpec(BaseModel):
+    """A base (comparison) area — Prof. Shi 2026-09-16 #3."""
+    state_fips: str
+    county_fips: str
+    areal_unit: Optional[str] = None
+    area_geoids: list[str] = []
+    area_name: str = ""
+
+
 class HcasProjectRequest(BaseModel):
     title: str
     state_fips: str
@@ -395,6 +404,10 @@ class HcasProjectRequest(BaseModel):
     areal_unit: Optional[str] = None
     location_query: str = ""
     notes: str = ""
+    # Sub-county project area (2026-09-16 #1): the selected Census units.
+    area_geoids: list[str] = []
+    area_name: str = ""
+    base: Optional[HcasAreaSpec] = None
 
 
 class HcasScopeRequest(BaseModel):
@@ -405,6 +418,16 @@ class HcasScopeRequest(BaseModel):
     areal_unit: Optional[str] = None
     location_query: Optional[str] = None
     notes: Optional[str] = None
+    area_geoids: Optional[list[str]] = None
+    area_name: Optional[str] = None
+    # Absent keeps the base area; null removes it.
+    base: Optional[HcasAreaSpec] = None
+
+
+class HcasSuggestAreaRequest(BaseModel):
+    text: str
+    state_fips: str
+    county_fips: str
 
 
 class HcasConfirmRequest(BaseModel):
@@ -433,6 +456,12 @@ class HcasReviseRequest(BaseModel):
     place: str = "the study area"
 
 
+@app.get("/hcas/measures", dependencies=_assess_deps)
+async def hcas_measures():
+    """Plain labels, descriptions and sources for every measure (2026-09-16 #6)."""
+    return {"measures": hcas.measure_catalog()}
+
+
 @app.get("/hcas/areal-units", dependencies=_assess_deps)
 async def hcas_areal_units():
     """The reporting units a project may choose (Prof. Shi 2026-08-07 #5)."""
@@ -450,7 +479,8 @@ async def hcas_create_project(body: HcasProjectRequest):
         pid = hcas.create_project(
             body.title, body.state_fips, body.county_fips, body.gate_mode,
             areal_unit=body.areal_unit, location_query=body.location_query,
-            notes=body.notes,
+            notes=body.notes, area_geoids=body.area_geoids, area_name=body.area_name,
+            base=body.base.model_dump() if body.base else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -461,15 +491,54 @@ async def hcas_create_project(body: HcasProjectRequest):
 async def hcas_update_project(pid: str, body: HcasScopeRequest):
     """Re-define a project's scope in place. Marks every drafted step stale."""
     try:
+        kwargs = {}
+        if "base" in body.model_fields_set:
+            kwargs["base"] = body.base.model_dump() if body.base else None
         return hcas.update_project_scope(
             pid, title=body.title, state_fips=body.state_fips,
             county_fips=body.county_fips, areal_unit=body.areal_unit,
             location_query=body.location_query, notes=body.notes,
+            area_geoids=body.area_geoids, area_name=body.area_name, **kwargs,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/hcas/units/{state_fips}/{county_fips}/{unit}", dependencies=_assess_deps)
+async def hcas_units(state_fips: str, county_fips: str, unit: str):
+    """A county's Census units of one kind, as GeoJSON for the area picker map
+    (Prof. Shi 2026-09-16 #1: add or remove block groups interactively)."""
+    try:
+        return await asyncio.to_thread(hcas.units_geojson, state_fips, county_fips, unit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/hcas/suggest-area", dependencies=_assess_deps)
+async def hcas_suggest_area(body: HcasSuggestAreaRequest):
+    """AI-recommended block groups for a community or neighborhood name (#1)."""
+    try:
+        return await asyncio.to_thread(hcas.suggest_area, body.text, body.state_fips,
+                                       body.county_fips)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/hcas/projects/{pid}/basemap", response_class=HTMLResponse, dependencies=_hcas_link_deps)
+async def hcas_project_basemap(pid: str, which: str = "project"):
+    """Locator map of the project's own area — or of its base area."""
+    try:
+        return HTMLResponse(await asyncio.to_thread(hcas.basemap_for_project, pid, which))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.post("/hcas/resolve-area", dependencies=_assess_deps)
@@ -545,10 +614,10 @@ async def hcas_get_project(pid: str):
 
 
 @app.post("/hcas/projects/{pid}/steps/{step}/run", dependencies=_assess_deps)
-async def hcas_run_step(pid: str, step: int):
+async def hcas_run_step(pid: str, step: int, refresh: bool = False):
     try:
         # to_thread: LLM-backed steps block for seconds-to-minutes
-        return {"ai_draft": await asyncio.to_thread(hcas.run_step, pid, step)}
+        return {"ai_draft": await asyncio.to_thread(hcas.run_step, pid, step, None, refresh)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except json.JSONDecodeError as exc:
@@ -638,9 +707,9 @@ async def hcas_chat(pid: str, body: HcasChatRequest):
 
 
 @app.get("/hcas/projects/{pid}/map", response_class=HTMLResponse, dependencies=_hcas_link_deps)
-async def hcas_map(pid: str):
+async def hcas_map(pid: str, which: str = "project"):
     try:
-        return HTMLResponse(hcas.get_map(pid))
+        return HTMLResponse(hcas.get_map(pid, which=which))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

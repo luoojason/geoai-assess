@@ -8,6 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Leaflet for the step-1 area picker; the analysis maps load their own copy. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <style>
   /* HCAS — Xun Shi's layout, wired to the gated 8-step backend.
      Direction: a precise cartographic field instrument. Archivo (titles) +
@@ -333,6 +335,46 @@
              padding:14px 16px;border:1px solid var(--line-d);border-radius:var(--r-sm);color:var(--ink);
              background:var(--surface);box-sizing:border-box;white-space:pre-wrap;resize:vertical;margin-top:6px;}
 
+  /* Project area / base area definition (Prof. Shi 2026-09-16 #1, #3). With a
+     base area the form splits into two similar panels side by side. */
+  .form.wideform{max-width:1180px;}
+  .defgrid{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-4);margin-bottom:var(--sp-4);}
+  .defgrid.compare{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}
+  @media (max-width:1100px){ .defgrid.compare{grid-template-columns:minmax(0,1fr);} }
+  .areapanel{border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-4);background:var(--panel);min-width:0;}
+  .areapanel .ph{font:600 var(--fs-sm) var(--sans);color:var(--ink);text-transform:none;letter-spacing:0;margin-bottom:10px;}
+  .areapanel.base{border-color:color-mix(in oklch,var(--info) 40%,var(--line));}
+  .areapanel .row{gap:var(--sp-3);margin-bottom:var(--sp-3);}
+  .areapanel .fld{min-width:160px;}
+  /* `.form label` styles field captions (small mono caps); these two are
+     sentences a person clicks, so they opt out of it. */
+  .chkline,.form label.chkline{display:flex;align-items:center;gap:9px;font:600 var(--fs-sm) var(--sans);color:var(--ink);
+           margin:4px 0;cursor:pointer;text-transform:none;letter-spacing:0;}
+  .chkline input,.form .chkline input{width:16px;height:16px;accent-color:var(--teal);margin:0;flex:none;padding:0;}
+  .radioline,.form label.radioline{display:flex;align-items:flex-start;gap:8px;font:400 var(--fs-sm) var(--sans);color:var(--ink);
+             margin:6px 0;cursor:pointer;text-transform:none;letter-spacing:0;}
+  .radioline input,.form .radioline input{accent-color:var(--teal);margin:3px 0 0;flex:none;width:auto;padding:0;}
+  .areamap{height:380px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;background:var(--teal-tint);
+           display:flex;align-items:center;justify-content:center;color:var(--faint);font:400 var(--fs-sm) var(--sans);margin-top:10px;}
+  .areasum{font:500 var(--fs-sm) var(--sans);color:var(--ink);margin-top:8px;}
+  .areasum .muted{color:var(--faint);font-weight:400;}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;max-height:120px;overflow:auto;}
+  .chip{display:inline-flex;align-items:center;gap:6px;font:400 var(--fs-xs) var(--sans);color:var(--teal-d);
+        background:var(--teal-tint);border:1px solid var(--teal-tint-d);border-radius:999px;padding:3px 4px 3px 10px;}
+  .chip button{border:none;background:none;color:var(--teal-d);font-size:13px;line-height:1;padding:0 5px;border-radius:50%;}
+  .chip button:hover{background:var(--teal-tint-d);}
+  .cmpbar{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;}
+  .cmpgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--sp-4);align-items:start;}
+  .cmpgrid > div{min-width:0;}
+  .cmpgrid .cols{flex-wrap:wrap!important;}
+  .cmpgrid .panel.tree{width:100%!important;}
+  .cmphead{font:600 var(--fs-sm) var(--sans);color:var(--ink);margin:var(--sp-4) 0 -6px;display:flex;gap:8px;align-items:center;}
+  .cmphead .tag{font-size:10px;}
+  .tag.base{background:var(--info-tint);color:var(--info);}
+  .tag.wait{background:var(--amber-tint);color:var(--amber);}
+  .metric-c .ml{font:400 var(--fs-xs) var(--sans);color:var(--faint);margin-top:3px;line-height:1.35;}
+  table.data td.num{text-align:right;}
+
   @media (prefers-reduced-motion: reduce){ *{animation-duration:.001ms!important;transition-duration:.001ms!important;} }
 </style>
 </head>
@@ -447,10 +489,13 @@ function basemapUrl(){
   const m = S.project?.meta;
   return m && m.state_fips && m.county_fips ? `/hcas/basemap/${m.state_fips}/${m.county_fips}` : "";
 }
-function baseMapFrame(){
-  const u = basemapUrl();
+function baseMapFrame(which){
+  // The project's own area (county, or the selected sub-areas), or its base area.
+  const u = S.pid && S.project?.steps?.some(s=>s.step===1)
+    ? `/hcas/projects/${S.pid}/basemap?which=${which==="base"?"base":"project"}`
+    : basemapUrl();
   return u
-    ? `<iframe class="mapframe" src="${u}" title="Study area base map"></iframe>`
+    ? `<iframe class="mapframe" src="${u}" title="${which==="base"?"Base area":"Study area"} map"></iframe>`
     : `<div class="lab"><div class="eyebrow">Map view</div>
         <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">Run step 1 to locate the study area.</div></div>`;
 }
@@ -524,9 +569,12 @@ function renderCmd(){
 
 /* ================= CANVAS ================= */
 function canvasHead(n){
+  const defining = n===1 && (!S.pid || S.redefining);
   return `<div class="chead"><span class="eyebrow">Step ${n} of 8 · ${esc(PHASE[n-1])}</span>
     <div class="chd"><h2>${esc(STEP_TITLES[n-1])}</h2>${stepTag(n)}</div>
-    <div class="csub">${esc(SUBTITLE[n-1])}</div></div>`;
+    <div class="csub">${esc(SUBTITLE[n-1])}</div>
+    ${defining ? "" : compareToggle()}
+    ${!defining && compareOn() && SHARED_STEP_NOTE[n] ? `<div class="subnote" style="margin-top:4px;">${esc(SHARED_STEP_NOTE[n])}</div>` : ""}</div>`;
 }
 function loadingBody(n){
   return `<div class="loading"><div class="spin-lg"></div>
@@ -683,60 +731,386 @@ function stepTag(n){
 /* step 1 — create form.
    Prof. Shi 2026-08-07: #4 a free-text location box resolved by AI, #5 a real
    areal-unit choice, #6 no Mode option (confirmation is always on), #7 no
-   coordinate-system box (the system determines it). */
+   coordinate-system box (the system determines it).
+
+   Prof. Shi and Prof. Wang 2026-09-16:
+   #1 the area can be smaller than a county — a town, ZIP code, tracts, block
+      groups, or a "Customized" community built from block groups the AI
+      recommends and the analyst adds to or removes from on the map;
+   #3 an optional base area, defined in a second, similar panel beside the
+      first, that every later step is also run for. */
+const AREA = { project: null, base: null, compare: false };
+let STATES = [];
+
+function newAreaState(src){
+  src = src || {};
+  const geoids = (src.area_geoids||[]).slice();
+  return { state_fips: src.state_fips||"", county_fips: src.county_fips||"",
+           unit: src.areal_unit||"", geoids, name: src.area_name||"",
+           mode: geoids.length || src.areal_unit==="custom" ? "selected" : "all",
+           features:null, featuresKey:"", map:null, layer:null, loading:null };
+}
+
 function defineForm(){
-  return `<div class="panel form"><div class="ph">Project setup</div>
+  return `<div class="panel form wideform"><div class="ph">Project setup</div>
     <div class="row">
       <div class="fld"><label>Project title</label><input id="f_title" placeholder="e.g. Riverside County · Health Equity 2026"></div>
-      <div class="fld"><label>Reporting unit</label><select id="f_unit"></select>
-        <div class="hint">Searched for at step 3; if Census publishes none for this area, the system says so.</div></div>
     </div>
     <div class="fld" style="margin-bottom:var(--sp-4);">
       <label>Describe the location (optional)</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <input id="f_where" style="flex:1;min-width:240px;"
-               placeholder="e.g. 03755 · the neighborhood around Dartmouth-Hitchcock · west of Lake Champlain"
+               placeholder="e.g. 03755 · Hanover, NH · the Short North in Columbus · around Dartmouth-Hitchcock"
                onkeydown="if(event.key==='Enter'){event.preventDefault();resolveArea();}">
         <button class="cbtn" id="f_findbtn" onclick="resolveArea()">Find with AI</button>
       </div>
-      <div class="hint" id="f_wherehint">A ZIP code, community, landmark or description — the assistant
-        works out which county contains it and fills in the two boxes below, which you can always override.</div>
+      <div class="hint" id="f_wherehint">A ZIP code, town, community, landmark or description — the assistant
+        finds the county and, for a ZIP code, town or neighborhood, sets up that area below. You can change everything it fills in.</div>
     </div>
-    <div class="row">
-      <div class="fld"><label>State</label><select id="f_state"></select></div>
-      <div class="fld"><label>County (study area)</label><select id="f_county"></select></div>
+    <label class="chkline"><input type="checkbox" id="f_compare" onchange="toggleCompare(this.checked)">
+      Compare with a base area</label>
+    <div class="hint" style="margin:0 0 var(--sp-3) 25px;">A larger area for context (such as the whole county) or a similar
+      community to compare with. Every later step is then also run for the base area and shown side by side.</div>
+    <div class="defgrid" id="f_defgrid">
+      <div class="areapanel" id="ap_project">${areaEditorHtml("project")}</div>
+      <div class="areapanel base" id="ap_base" style="display:none">${areaEditorHtml("base")}</div>
     </div>
     <div class="fld"><label>Notes</label>
       <textarea id="f_tasks" placeholder="e.g. calculate a neighborhood health index; identify priority areas…"></textarea>
-      <div class="hint">The study area is the entire county boundary. Run this step to create the project and locate it.</div>
+      <div class="hint">Run this step to create the project and describe the area.</div>
     </div>
-    <div class="fld"><label>Study area preview</label>
-      <div class="mapview" id="f_mappreview" style="min-height:340px;">
-        <div class="lab"><div class="eyebrow">Map view</div>
-          <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">Select a county to preview its boundary.</div></div>
-      </div></div>
-    </div>`;
+  </div>`;
 }
-/* Free-text location -> county (Prof. Shi 2026-08-07 #4). The resolved county is
-   written into the same two selects the analyst can edit, so the AI never picks
-   a study area that is not visible and overridable on screen. */
+
+function areaEditorHtml(w){
+  return `<div class="ph">${w==="base" ? "Base area" : "Project area"}</div>
+    <div class="row">
+      <div class="fld"><label>State</label><select id="${w}_state"></select></div>
+      <div class="fld"><label>County</label><select id="${w}_county"></select></div>
+    </div>
+    <div class="fld"><label>Reporting unit</label><select id="${w}_unit"></select></div>
+    <div id="${w}_scope" style="margin-top:8px;"></div>
+    <div class="areamap" id="${w}_map">Select a county to see it on the map.</div>
+    <div class="areasum" id="${w}_sum"></div>`;
+}
+
+function toggleCompare(on){
+  AREA.compare = !!on;
+  const grid=$("f_defgrid"), bp=$("ap_base"), cb=$("f_compare");
+  if(cb) cb.checked = AREA.compare;
+  if(grid) grid.classList.toggle("compare", AREA.compare);
+  if(bp) bp.style.display = AREA.compare ? "" : "none";
+  if(AREA.compare && !AREA.base.state_fips){
+    // Start the base area where the project is: the county around it is the
+    // most common "larger area for context".
+    const p = AREA.project;
+    AREA.base = newAreaState({state_fips:p.state_fips, county_fips:p.county_fips, areal_unit:"county"});
+    fillAreaSelects("base");
+  }
+  // Both maps changed size.
+  setTimeout(()=>["project","base"].forEach(w=>{ const a=AREA[w]; if(a&&a.map) a.map.invalidateSize(); }), 60);
+}
+
+let LEAFLET = null;
+function ensureLeaflet(){
+  if(window.L) return Promise.resolve(window.L);
+  if(LEAFLET) return LEAFLET;
+  LEAFLET = new Promise((res, rej)=>{
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js";
+    s.onload=()=>res(window.L); s.onerror=()=>{ LEAFLET=null; rej(new Error("map library blocked")); };
+    document.head.appendChild(s);
+  });
+  return LEAFLET;
+}
+
+function unitWord(unit, plural){
+  const w = {county_subdivision:["town or township","towns and townships"], zcta:["ZIP code area","ZIP code areas"],
+    tract:["census tract","census tracts"], block_group:["block group","block groups"],
+    custom:["block group","block groups"], county:["county","counties"]}[unit] || [unit, unit];
+  return plural ? w[1] : w[0];
+}
+
+async function loadStates(){
+  try{
+    const m = S.project?.meta;           // re-defining an existing project
+    if(!STATES.length) STATES = (await api("/states")).states;
+    if(!AREAL_UNITS.length) await loadUnits();
+    // The form is re-drawn whenever the canvas is (a failed run, a click on the
+    // rail). Keep what the analyst has chosen so far instead of resetting it.
+    const key = S.pid || "new";
+    if(AREA.key !== key || !AREA.project){
+      AREA.key = key;
+      AREA.project = newAreaState(m ? m : {state_fips:"39", county_fips:"", areal_unit:"county"});
+      AREA.base = newAreaState(m?.base || {});
+      AREA.compare = !!m?.base;
+      AREA.fields = {title:m?.title||"", notes:m?.notes||"", where:m?.location_query||""};
+    }else{
+      for(const w of ["project","base"]){ const a=AREA[w]; if(a){ a.map=null; a.layer=null; } }
+    }
+    const f = AREA.fields || {};
+    $("f_title").value = f.title||""; $("f_tasks").value = f.notes||""; $("f_where").value = f.where||"";
+    $("f_title").oninput = e=>{ AREA.fields.title = e.target.value; };
+    $("f_tasks").oninput = e=>{ AREA.fields.notes = e.target.value; };
+    $("f_where").oninput = e=>{ AREA.fields.where = e.target.value; };
+    await fillAreaSelects("project");
+    if(AREA.compare){ await fillAreaSelects("base"); }
+    toggleCompare(AREA.compare);
+  }catch(e){ setMsg(e.message); }
+}
+
+async function fillAreaSelects(w){
+  const a = AREA[w]; if(!a) return;
+  const st=$(`${w}_state`), co=$(`${w}_county`), un=$(`${w}_unit`);
+  if(!st||!co||!un) return;
+  st.innerHTML = STATES.map(s=>`<option value="${s.state_fips}">${esc(s.state_name)}</option>`).join("");
+  st.value = a.state_fips || "39"; a.state_fips = st.value;
+  await loadCountiesFor(w);
+  if(a.county_fips) co.value = a.county_fips;
+  a.county_fips = co.value;
+  un.innerHTML = AREAL_UNITS.map(u=>`<option value="${esc(u.id)}">${esc(u.label)}</option>`).join("");
+  un.value = a.unit || "county"; a.unit = un.value;
+  st.onchange = async ()=>{ a.state_fips=st.value; await loadCountiesFor(w); a.county_fips=co.value;
+                            a.geoids=[]; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+  co.onchange = ()=>{ a.county_fips=co.value; a.geoids=[]; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+  un.onchange = ()=>{ a.unit=un.value; a.geoids=[]; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+  refreshArea(w);
+}
+
+async function loadCountiesFor(w){
+  const {counties} = await api(`/counties/${$(`${w}_state`).value}`);
+  $(`${w}_county`).innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
+}
+
+/* Re-draw one area's controls, map and summary after anything about it changed. */
+async function refreshArea(w){
+  renderScope(w);
+  renderAreaSum(w);
+  const a = AREA[w];
+  if(!a.state_fips || !a.county_fips) return;
+  const key = `${a.state_fips}/${a.county_fips}/${a.unit}`;
+  if(a.featuresKey !== key){
+    a.features = null; a.featuresKey = key;
+    const box = $(`${w}_map`);
+    if(box && !a.map) box.innerHTML = `<span class="spin"></span>Loading ${esc(unitWord(a.unit, true))}…`;
+    try{
+      const fc = await api(`/hcas/units/${key}`);
+      if(a.featuresKey !== key) return;                // the user moved on meanwhile
+      a.features = fc;
+    }catch(e){
+      if(a.featuresKey !== key) return;
+      a.features = null;
+      if(box){ if(a.map){ a.map.remove(); a.map=null; }
+        box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+      return;
+    }
+    renderScope(w); renderAreaSum(w);
+  }
+  drawAreaMap(w);
+}
+
+function featureIndex(a){
+  const idx = {};
+  (a.features?.features||[]).forEach(f=>{ idx[f.properties.GEOID] = f.properties; });
+  return idx;
+}
+
+function renderScope(w){
+  const a = AREA[w], box = $(`${w}_scope`); if(!box) return;
+  const one = unitWord(a.unit), many = unitWord(a.unit, true);
+  if(a.unit === "county"){
+    box.innerHTML = `<div class="hint">The whole county is the ${w==="base"?"base":"project"} area.</div>`;
+    return;
+  }
+  const idx = featureIndex(a);
+  const chips = a.geoids.length ? `<div class="chips">${a.geoids.map(g=>
+      `<span class="chip">${esc(idx[g]?.name || g)}<button title="Remove" onclick="toggleUnit('${w}','${esc(g)}')">×</button></span>`).join("")}</div>` : "";
+  if(a.unit === "custom"){
+    box.innerHTML = `<div class="fld"><label>Community or neighborhood</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input id="${w}_name" style="flex:1;min-width:180px;" value="${esc(a.name)}"
+                 placeholder="e.g. Short North · German Village · Hanover downtown"
+                 oninput="AREA['${w}'].name=this.value"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();suggestBlockGroups('${w}');}">
+          <button class="cbtn" id="${w}_suggestbtn" onclick="suggestBlockGroups('${w}')">Suggest block groups with AI</button>
+        </div>
+        <div class="hint" id="${w}_suggesthint">The AI recommends the block groups that make up the community.
+          Click block groups on the map to add or remove them.</div></div>
+      ${a.geoids.length ? `<div class="hint" style="margin-top:6px;">${a.geoids.length} block group${a.geoids.length===1?"":"s"} selected
+        · <button class="linkbtn" onclick="clearUnits('${w}')">clear</button></div>` : ""}`;
+    return;
+  }
+  const opts = (a.features?.features||[]).map(f=>f.properties)
+    .filter(p=>!a.geoids.includes(p.GEOID))
+    .sort((x,y)=>String(x.name).localeCompare(String(y.name), undefined, {numeric:true}))
+    .map(p=>`<option value="${esc(p.GEOID)}">${esc(p.name)}</option>`).join("");
+  box.innerHTML = `
+    <label class="radioline"><input type="radio" name="${w}_mode" ${a.mode==="all"?"checked":""}
+        onchange="setMode('${w}','all')">
+      <span>Whole county — results broken down by each ${esc(one)}</span></label>
+    <label class="radioline"><input type="radio" name="${w}_mode" ${a.mode==="selected"?"checked":""}
+        onchange="setMode('${w}','selected')">
+      <span>Only the ${esc(many)} I choose</span></label>
+    ${a.mode==="selected" ? `<div style="margin:6px 0 0 24px;">
+        <select id="${w}_add" onchange="if(this.value){toggleUnit('${w}',this.value);}" style="max-width:100%;">
+          <option value="">${a.features ? `Add a ${esc(one)}…` : "Loading…"}</option>${opts}</select>
+        <div class="hint">Or click them on the map.</div>${chips}</div>` : ""}`;
+}
+
+function setMode(w, mode){
+  const a = AREA[w]; a.mode = mode;
+  if(mode === "all") a.geoids = [];
+  renderScope(w); renderAreaSum(w); styleAreaMap(w);
+}
+function clearUnits(w){ AREA[w].geoids = []; renderScope(w); renderAreaSum(w); styleAreaMap(w); }
+function toggleUnit(w, geoid){
+  const a = AREA[w];
+  if(a.unit === "county") return;
+  if(a.mode !== "selected") a.mode = "selected";
+  const i = a.geoids.indexOf(geoid);
+  if(i >= 0) a.geoids.splice(i, 1); else a.geoids.push(geoid);
+  renderScope(w); renderAreaSum(w); styleAreaMap(w);
+}
+
+function renderAreaSum(w){
+  const a = AREA[w], box = $(`${w}_sum`); if(!box) return;
+  if(!a.features){ box.innerHTML = ""; return; }
+  if(a.unit === "county" || (a.mode === "all" && a.unit !== "custom")){
+    const n = (a.features.features||[]).length;
+    box.innerHTML = a.unit === "county" ? `Whole county`
+      : `Whole county <span class="muted">· ${n.toLocaleString()} ${esc(unitWord(a.unit, n!==1))} in the breakdown</span>`;
+    return;
+  }
+  const idx = featureIndex(a);
+  const sel = a.geoids.map(g=>idx[g]).filter(Boolean);
+  if(!sel.length){
+    box.innerHTML = `<span class="muted">No ${esc(unitWord(a.unit, true))} selected yet.</span>`;
+    return;
+  }
+  const km2 = sel.reduce((t,p)=>t+(+p.area_km2||0), 0);
+  const pops = sel.map(p=>p.population);
+  const pop = pops.every(v=>v!=null) ? pops.reduce((t,v)=>t+v,0) : null;
+  box.innerHTML = `${sel.length} ${esc(unitWord(a.unit, sel.length!==1))} · ${km2.toLocaleString(undefined,{maximumFractionDigits:2})} km²`
+    + (pop!=null ? ` · ${pop.toLocaleString()} people <span class="muted">(2020 Census)</span>` : "");
+}
+
+async function drawAreaMap(w){
+  const a = AREA[w], box = $(`${w}_map`);
+  if(!box || !a.features) return;
+  let L;
+  try{ L = await ensureLeaflet(); }
+  catch(_){
+    box.innerHTML = `<span>The map library could not load (cdn.jsdelivr.net blocked) — choose areas from the list instead.</span>`;
+    return;
+  }
+  if(!a.map || a.map.getContainer() !== box){
+    box.innerHTML = ""; box.style.display = "block";
+    a.map = L.map(box, {zoomControl:true, attributionControl:true});
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(a.map);
+  }
+  if(a.layer){ a.layer.remove(); a.layer = null; }
+  const selectable = a.unit !== "county";
+  a.layer = L.geoJSON(a.features, {
+    style: f=>unitStyle(a, f.properties.GEOID),
+    onEachFeature: (f, lyr)=>{
+      const p = f.properties;
+      lyr.bindTooltip(`${esc(p.name)}${p.population!=null?` · ${(+p.population).toLocaleString()} people`:""}`, {sticky:true});
+      if(selectable){
+        lyr.on("click", ()=>toggleUnit(w, p.GEOID));
+        lyr.on("mouseover", ()=>lyr.setStyle({weight:2.5}));
+        lyr.on("mouseout", ()=>lyr.setStyle(unitStyle(a, p.GEOID)));
+      }
+    },
+  }).addTo(a.map);
+  try{ a.map.fitBounds(a.layer.getBounds(), {padding:[8,8]}); }catch(_){}
+  setTimeout(()=>a.map && a.map.invalidateSize(), 50);
+}
+function unitStyle(a, geoid){
+  if(a.unit === "county")
+    return {color:"#0f766e", weight:2, fillColor:"#0d9488", fillOpacity:0.08};
+  const on = a.geoids.includes(geoid);
+  const whole = a.mode === "all" && a.unit !== "custom";
+  return on ? {color:"#0f766e", weight:1.6, fillColor:"#0d9488", fillOpacity:0.45}
+    : {color: whole ? "#0f766e" : "#64748b", weight: whole ? 0.8 : 0.6,
+       fillColor:"#0d9488", fillOpacity: whole ? 0.10 : 0.02};
+}
+function styleAreaMap(w){
+  const a = AREA[w]; if(!a.layer) return;
+  a.layer.eachLayer(l=>l.setStyle(unitStyle(a, l.feature.properties.GEOID)));
+}
+
+async function suggestBlockGroups(w, textOverride){
+  const a = AREA[w];
+  const text = (textOverride || $(`${w}_name`)?.value || a.name || "").trim();
+  const hint = $(`${w}_suggesthint`), btn = $(`${w}_suggestbtn`);
+  if(!text){ if(hint) hint.textContent = "Type the community or neighborhood name first."; return; }
+  a.name = text;
+  if(btn){ btn.disabled = true; btn.textContent = "Suggesting…"; }
+  if(hint) hint.innerHTML = '<span class="spin"></span>Asking the AI which block groups make up this community…';
+  try{
+    const r = await api("/hcas/suggest-area", {method:"POST",
+      body: JSON.stringify({text, state_fips:a.state_fips, county_fips:a.county_fips})});
+    a.mode = "selected";
+    a.geoids = r.geoids || [];
+    if(r.place && !textOverride) a.name = r.place;
+    renderScope(w); renderAreaSum(w); styleAreaMap(w);
+    const h = $(`${w}_suggesthint`);
+    if(h) h.innerHTML = r.geoids?.length
+      ? `<b>${r.geoids.length} block group${r.geoids.length===1?"":"s"} suggested</b> — ${esc(r.method_text||"")}.`
+        + (r.caveat ? ` <span style="color:var(--amber)">${esc(r.caveat)}</span>` : "")
+        + `<br>Click block groups on the map to add or remove them.`
+      : `<span style="color:var(--red)">${esc(r.caveat || "No block groups could be suggested.")}</span>`;
+    if(a.layer && r.geoids?.length){
+      const sel = []; a.layer.eachLayer(l=>{ if(a.geoids.includes(l.feature.properties.GEOID)) sel.push(l); });
+      if(sel.length) try{ a.map.fitBounds(L.featureGroup(sel).getBounds(), {padding:[30,30], maxZoom:15}); }catch(_){}
+    }
+  }catch(e){
+    const h = $(`${w}_suggesthint`);
+    if(h) h.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  }finally{
+    const b = $(`${w}_suggestbtn`); if(b){ b.disabled = false; b.textContent = "Suggest block groups with AI"; }
+  }
+}
+
+/* Free-text location -> county, and for a ZIP code, town or community the
+   matching kind of area (Prof. Shi 2026-08-07 #4, 2026-09-16 #1). Everything
+   it fills in stays visible and editable in the project-area panel. */
 async function resolveArea(){
   const box=$("f_where"), hint=$("f_wherehint"), btn=$("f_findbtn");
   const text=(box?.value||"").trim();
-  if(!text){ hint.textContent="Type a place first — ZIP code, community, landmark…"; return; }
+  if(!text){ hint.textContent="Type a place first — ZIP code, town, community, landmark…"; return; }
   btn.disabled=true; btn.textContent="Finding…";
   hint.innerHTML='<span class="spin"></span>Asking the assistant…';
   try{
     const r=await api("/hcas/resolve-area",{method:"POST",body:JSON.stringify({text})});
     if(r.resolved){
       const wb=document.getElementById('f_where'); if(wb) wb.style.borderColor="";
-      $("f_state").value=r.state_fips;
-      await loadCounties();
-      $("f_county").value=r.county_fips;
-      updateFormPreview();
+      const a = AREA.project;
+      a.state_fips=r.state_fips; a.county_fips=r.county_fips; a.geoids=[];
+      a.unit = {zip:"zcta", town:"county_subdivision", community:"custom"}[r.scale] || "county";
+      a.mode = a.unit==="county" ? "all" : "selected";
+      a.featuresKey="";
+      await fillAreaSelects("project");
+      await refreshArea("project");
+      let what = "";
+      if(a.unit==="zcta"){
+        const hit = (a.features?.features||[]).find(f=>f.properties.GEOID===r.zip);
+        if(hit){ a.geoids=[r.zip]; what = ` Project area set to ZIP code ${esc(r.zip)}.`; }
+        else what = ` ZIP code ${esc(r.zip||"")} was not found near this county — pick the ZIP area on the map.`;
+      }else if(a.unit==="county_subdivision"){
+        const norm = s=>String(s||"").toLowerCase().replace(/\b(town|city|township|village|borough|cdp|plantation|charter)\b/g,"").replace(/[^a-z]/g,"");
+        const hit = (a.features?.features||[]).find(f=>norm(f.properties.name)===norm(r.town));
+        if(hit){ a.geoids=[hit.properties.GEOID]; what = ` Project area set to ${esc(hit.properties.name)}.`; }
+        else what = ` Pick ${esc(r.town||"the town")} on the map.`;
+      }else if(a.unit==="custom"){
+        what = " Suggesting the block groups for this community…";
+      }
+      renderScope("project"); renderAreaSum("project"); styleAreaMap("project");
       hint.innerHTML=`<b>${esc(r.county_name)}, ${esc(r.state_name)}</b> — ${esc(r.interpretation||"resolved")}`
         + (r.caveat?` <span style="color:var(--amber)">${esc(r.caveat)}</span>`:"")
-        + `<br>Not right? Change the State and County boxes below.`;
+        + what + `<br>Not right? Change the project area below.`;
+      if(a.unit==="custom") await suggestBlockGroups("project", text);
     }else{
       resolveFailed(hint, r.caveat||"Could not place that.");
     }
@@ -750,59 +1124,65 @@ async function resolveArea(){
    and the project was created there. */
 function resolveFailed(hint, why){
   hint.innerHTML = `<span style="color:var(--red);font-weight:600;">Could not place that location.</span>`
-    + ` ${esc(why)}<br><b>The State and County boxes below were not changed</b> —`
-    + ` they still show <b>${esc(document.getElementById('f_state')?.selectedOptions[0]?.textContent||'')},`
-    + ` ${esc(document.getElementById('f_county')?.selectedOptions[0]?.textContent||'')}</b>.`
-    + ` Set them yourself, or try describing the location differently.`;
+    + ` ${esc(why)}<br><b>The project area below was not changed</b> —`
+    + ` it still shows <b>${esc(document.getElementById('project_state')?.selectedOptions[0]?.textContent||'')},`
+    + ` ${esc(document.getElementById('project_county')?.selectedOptions[0]?.textContent||'')}</b>.`
+    + ` Set it yourself, or try describing the location differently.`;
   const box = document.getElementById('f_where');
   if(box) box.style.borderColor = "var(--red)";
 }
 
 async function loadUnits(sel){
   try{
-    const {units, default:def} = await api("/hcas/areal-units");
+    const {units} = await api("/hcas/areal-units");
     AREAL_UNITS = units;
-    const el=$("f_unit"); if(!el) return;
-    el.innerHTML = units.map(u=>`<option value="${esc(u.id)}">${esc(u.label)}</option>`).join("");
-    el.value = sel || def;
-  }catch(e){ /* selects stay empty; create falls back to the server default */ }
+  }catch(e){ /* the form shows an empty list; creating falls back to the server default */ }
 }
 let AREAL_UNITS = [];
-function updateFormPreview(){
-  const s=$("f_state"), c=$("f_county"), box=$("f_mappreview");
-  if(!box || !s || !c || !s.value || !c.value) return;
-  box.innerHTML = `<iframe class="mapframe" src="/hcas/basemap/${s.value}/${c.value}" title="County boundary preview"></iframe>`;
-}
-async function loadStates(){
-  try{
-    const m = S.project?.meta;           // re-defining an existing project
-    const {states} = await api("/states");
-    $("f_state").innerHTML = states.map(s=>`<option value="${s.state_fips}">${esc(s.state_name)}</option>`).join("");
-    $("f_state").value = m?.state_fips || "39";
-    await loadCounties();
-    if(m?.county_fips) $("f_county").value = m.county_fips;
-    if(m?.title) $("f_title").value = m.title;
-    if(m?.notes) $("f_tasks").value = m.notes;
-    if(m?.location_query) $("f_where").value = m.location_query;
-    await loadUnits(m?.areal_unit);
-    $("f_state").onchange = async ()=>{ await loadCounties(); updateFormPreview(); };
-    $("f_county").onchange = updateFormPreview;
-    updateFormPreview();
-  }catch(e){ setMsg(e.message); }
-}
-async function loadCounties(){
-  const {counties} = await api(`/counties/${$("f_state").value}`);
-  $("f_county").innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
+
+/* The area as the server stores it, or an error message for the analyst. */
+function areaPayload(w){
+  const a = AREA[w];
+  if(!a || !a.state_fips || !a.county_fips) return {error:"Choose a state and county."};
+  const selected = a.unit === "custom" || (a.unit !== "county" && a.mode === "selected");
+  if(selected && !a.geoids.length){
+    return {error: a.unit === "custom"
+      ? `Select at least one block group for the ${w==="base"?"base":"project"} area — use “Suggest block groups with AI” or click them on the map.`
+      : `Choose at least one ${unitWord(a.unit)} for the ${w==="base"?"base":"project"} area, or pick “Whole county”.`};
+  }
+  if(a.unit === "custom" && !(a.name||"").trim()) a.name = "Custom area";
+  return {state_fips:a.state_fips, county_fips:a.county_fips, areal_unit:a.unit||"county",
+          area_geoids: selected ? a.geoids.slice() : [], area_name: a.unit==="custom" ? a.name : ""};
 }
 
 /* step 1 — study area (live base map since 2026-07-27).
    Prof. Shi 2026-08-07 #10: FIPS codes out, descriptive Census figures in.
    Anything the Census could not give us is listed as missing with the reason,
-   never filled in with a plausible number. */
+   never filled in with a plausible number.
+   2026-09-16: an area smaller than its county leads with the area's own size
+   and 2020 population; the county's figures follow as context. With a base
+   area and comparison on, the two are shown side by side. */
 function num(v, digits){ return v==null?null:(+v).toLocaleString(undefined,{maximumFractionDigits:digits==null?0:digits}); }
 function viewIntake(a){
-  const p = a.profile||{};
-  const rows = [
+  const one = intakePanel(a, "project");
+  if(!a.base) return one;
+  if(!compareOn()) return one + compareHint();
+  return `<div class="cmpgrid"><div>${cmpHead("project")}${one}</div>
+    <div>${cmpHead("base")}${intakePanel(a.base, "base")}</div></div>`;
+}
+function intakePanel(a, which){
+  const p = a.profile||{}, pa = a.project_area||{};
+  const sub = pa.kind === "units" || pa.kind === "custom";
+  const rows = sub ? [
+    ["Area", esc(pa.label||a.place_name||"—")],
+    ["Made of", `${num(pa.count)} ${esc(pa.count===1 ? (pa.unit_label||"area") : (pa.unit_label_plural||pa.unit_label||"areas"))}`],
+    ["Size", pa.area_km2!=null?`${num(pa.area_km2,2)} km²`:null],
+    ["Population", pa.population!=null?`${num(pa.population)} <span class="subnote" style="display:inline">(2020 Census)</span>`
+      : (pa.population_partial!=null?`at least ${num(pa.population_partial)}`:null)],
+    ["In county", esc(a.county_place_name||"")],
+    ["County population", num(p.population)],
+    ["County median income", p.median_household_income_usd!=null?`$${num(p.median_household_income_usd)}`:null],
+  ] : [
     ["Place", esc(a.place_name||"—")],
     ["Total area", p.total_area_km2!=null?`${num(p.total_area_km2)} km² (land ${num(p.land_area_km2)} km²)`:null],
     ["Total population", num(p.population)],
@@ -812,25 +1192,66 @@ function viewIntake(a){
     ["Median age", num(p.median_age,1)],
     ["Reporting unit", esc(unitLabel(a.areal_unit))],
     ["Extent", "Entire county boundary"],
-  ].filter(r=>r[1]!=null);
+  ];
+  const shown = rows.filter(r=>r[1]!=null);
   const missing = Object.entries(p.unavailable||{});
-  const sources = [p.source_boundary, p.source_acs, p.source_population]
+  const sources = [pa.source, p.source_boundary, p.source_acs, p.source_population]
     .filter(Boolean).filter((v,i,arr)=>arr.indexOf(v)===i);
-  return `<div class="panel"><div class="ph">Study area</div>
+  const narrow = which === "base" || compareOn() && a.base;
+  return `<div class="panel"><div class="ph">${which==="base"?"Base area":"Study area"}</div>
     <div class="cols" style="align-items:stretch;">
-      <div style="flex:none;width:320px;">
-        <dl class="kv">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+      <div style="flex:none;width:${narrow?"100%":"320px"};">
+        <dl class="kv">${shown.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+        ${pa.population_note?`<div class="subnote">${esc(pa.population_note)}</div>`:""}
         ${sources.length?`<div class="subnote">Source: ${esc(sources.join(" · "))}</div>`:""}
         ${missing.length?`<div class="subnote" style="margin-top:10px;">Not available:<ul style="margin:4px 0;padding-left:16px;">
           ${missing.map(([k,v])=>`<li><b>${esc(k)}</b> — ${esc(v)}</li>`).join("")}</ul></div>`:""}
+        ${which==="project" && a.notes ? `<div class="sec" style="margin-top:12px;"><h4>Notes</h4>
+          ${notesBlock("step1", a.notes, {title:"Project notes"})}</div>` : ""}
       </div>
-      <div class="mapview" style="flex:1;">${baseMapFrame()}</div>
+      <div class="mapview" style="flex:1;min-width:260px;">${baseMapFrame(which)}</div>
     </div></div>`;
 }
 function unitLabel(id){
   const u = AREAL_UNITS.find(u=>u.id===id);
   return u ? u.label : (id||"Census tract");
 }
+
+/* ---- base-area comparison (Prof. Shi 2026-09-16 #3) ----
+   "In all the other steps, provide an option 'Compare with the base area'."
+   The choice is remembered per project; it only shows or hides — the base
+   area is always computed once one is defined, so switching is instant. */
+function hasBase(){ return !!S.project?.meta?.base; }
+function compareOn(){
+  if(!hasBase()) return false;
+  try{ return localStorage.getItem("hcas_compare_"+S.pid) !== "off"; }catch(_){ return true; }
+}
+function setCompare(on){
+  try{ localStorage.setItem("hcas_compare_"+S.pid, on ? "on" : "off"); }catch(_){}
+  renderCanvas();
+}
+function compareToggle(){
+  if(!hasBase() || !S.pid) return "";
+  return `<label class="chkline" style="margin-top:10px;"><input type="checkbox" ${compareOn()?"checked":""}
+    onchange="setCompare(this.checked)"> Compare with the base area</label>`;
+}
+function compareHint(){ return ""; }
+function cmpHead(which){
+  const s1 = stepRow(1); const a = s1 ? (s1.human_final||s1.ai_draft||{}) : {};
+  const name = which==="base" ? (a.base?.place_name || "Base area") : (a.place_name || "Project area");
+  return `<div class="cmphead"><span class="tag ${which==="base"?"base":"done"}">${which==="base"?"Base area":"Project area"}</span>${esc(name)}</div>`;
+}
+/* Steps whose output is the method, not data about an area. */
+const SHARED_STEP_NOTE = {
+  2:"The factors chosen here are used for both areas, so the two can be compared like for like. The comparison appears at steps 3, 5, 7 and 8.",
+  4:"The methodology is shared by both areas. The comparison appears at steps 3, 5, 7 and 8.",
+  6:"This workflow runs for the project area and the base area alike. The comparison appears at steps 3, 5, 7 and 8.",
+};
+
+/* Plain labels for measures (Prof. Shi 2026-09-16 #6: no internal names). */
+let MEASURES = {};
+function measureLabel(id){ return (MEASURES[id]&&MEASURES[id].label) || String(id||"").replace(/_/g," "); }
+async function loadMeasures(){ try{ MEASURES = (await api("/hcas/measures")).measures || {}; }catch(_){} }
 
 /* step 2 — factors (editable toggles).
    The rows are the CURRENT list (checked, in order) followed by any factor from
@@ -851,8 +1272,11 @@ function viewFactors(a){
     const f = r.f;
     return `<label class="factor ${r.on?'':'off'}" data-i="${i}">
       <input type="checkbox" ${r.on?'checked':''} data-i="${i}">
-      <div><span class="fname">${esc(f.factor)}</span><span class="metric">${esc(f.metric)}</span>
-        <div class="rat">${esc(f.rationale||"")}</div></div>
+      <div><span class="fname">${esc(f.factor)}</span>${f.metric==="needs_data"
+          ? `<span class="tag wait" style="margin-left:9px;">Awaiting data</span>`
+          : `<span class="metric" title="${esc((MEASURES[f.metric]||{}).description||f.metric)}">${esc(measureLabel(f.metric))}</span>`}
+        <div class="rat">${esc(f.rationale||"")}</div>
+        ${f.metric==="needs_data" && f.data_needed ? `<div class="rat"><b>Data needed:</b> ${esc(f.data_needed)}</div>` : ""}</div>
     </label>`;
   }).join("");
   // Prof. Shi 2026-08-07 #11: asking for a change used to re-run the whole step
@@ -1021,42 +1445,94 @@ function toggleMapLayer(label, visible){
 
 /* step 3 — data */
 function viewData(a){
-  const list = layerListPanel(a.layers||[], a.study_area, {toggles:false});
-  const ho = a.health_outcomes||{};
-  const errs = (a.layers||[]).filter(l=>l.error);
-  const warn = errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> —
-    the flagged layers are empty. Any metric that needs one is reported as <i>not measured</i> rather than as zero,
-    and no recommendation is derived from it. ${esc(errs[0].error)}
-    <br><b>Re-running is cheap</b> — every layer that already arrived is cached and returns instantly, so each attempt gets further. You can also confirm and continue with what you have.</div></div>`:"";
-  const rows = (ho.measures||[]).map(m=>{
-    const flag = m.county_pct>m.us_pct ? '<span class="above">above US</span>' : '<span class="below">below US</span>';
-    return `<tr><td>${esc(m.label)}</td><td>${m.county_pct}% ${flag}</td><td>${m.us_pct}%</td></tr>`;
-  }).join("");
-  // Prof. Shi 2026-08-07 #5: report the outcome of the reporting-unit search,
-  // whether or not the data exists.
   // Stale-mirror warning: the layers arrived, but they are old. Amber, above
   // everything, because every figure downstream inherits the age.
   const stale = a.data_freshness_warning
     ? `<div class="warnbar" style="background:var(--amber-tint);color:var(--amber)">⚠<div>
         <b>These map features are out of date.</b> ${esc(a.data_freshness_warning)}</div></div>` : "";
-  const au = a.areal_unit;
-  const unitbar = au ? `<div class="warnbar" style="${au.available
-      ? "background:var(--ok-tint);color:var(--ok)" : "background:var(--amber-tint);color:var(--amber)"}">
-      ${au.available?"✓":"⚠"}<div><b>Reporting unit — ${esc(au.label||au.unit)}:</b> ${esc(au.note||"")}</div></div>` : "";
+  // Prof. Shi 2026-09-16 #2: saved data is reused, and can be fetched again on demand.
+  const refetch = `<div class="cmpbar"><button class="cbtn" onclick="runStep({refresh:true})" ${S.busy?"disabled":""}
+      title="Download every map layer again instead of reusing the saved copy">Re-fetch data ↻</button>
+    <span class="hint">Downloaded map data is saved and reused — by this project and by any other covering the same
+      area — for 30 days, so reopening a project does not fetch it again. Re-fetch downloads it fresh.</span></div>`;
+  const waiting = awaitingPanel(a.awaiting_data);
+  if(a.base && compareOn()){
+    return `${stale}${refetch}${waiting}<div class="cmpgrid">
+      <div>${cmpHead("project")}${dataCompact(a, "project")}</div>
+      <div>${cmpHead("base")}${dataCompact(a.base, "base")}</div></div>`;
+  }
+  const list = layerListPanel(a.layers||[], a.study_area, {toggles:false});
   // Prof. Shi's layout: layers left · map upper-right · tables beneath the map
-  return `${stale}${warn}${unitbar}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+  return `${stale}${layerWarn(a)}${unitBar(a)}${refetch}${waiting}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
     <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Data layers</div>${list}
       <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       ${dataDownloadLink(a)}
       ${dataUploadPanel()}
-      <div class="panel"><div class="ph">Study area map</div>
-        <div class="mapview">${baseMapFrame()}</div></div>
+      <div class="panel"><div class="ph">${a.study_area?.kind==="units"||a.study_area?.kind==="custom"?"Project area map":"Study area map"}</div>
+        <div class="mapview">${baseMapFrame("project")}</div></div>
       <div id="layerinfo"></div>
-      <div class="panel"><div class="ph">${esc(ho.source||"Health outcomes")}</div>
-        ${rows?`<table class="data"><thead><tr><th>Measure</th><th>County</th><th>US</th></tr></thead><tbody>${rows}</tbody></table>`
-              :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div>
+      ${tablesPanel(a.tables)}
+      ${outcomesPanel(a.health_outcomes)}
     </div></div>`;
+}
+function layerWarn(a){
+  const errs = (a.layers||[]).filter(l=>l.error);
+  return errs.length?`<div class="warnbar">⚠<div><b>${errs.length} data source${errs.length>1?"s":""} could not be reached</b> —
+    the flagged layers are empty. Any metric that needs one is reported as <i>not measured</i> rather than as zero,
+    and no recommendation is derived from it. ${esc(errs[0].error)}
+    <br><b>Re-running is cheap</b> — every layer that already arrived is cached and returns instantly, so each attempt gets further. You can also confirm and continue with what you have.</div></div>`:"";
+}
+// Prof. Shi 2026-08-07 #5: report the outcome of the reporting-unit search,
+// whether or not the data exists.
+function unitBar(a){
+  const au = a.areal_unit;
+  return au ? `<div class="warnbar" style="${au.available
+      ? "background:var(--ok-tint);color:var(--ok)" : "background:var(--amber-tint);color:var(--amber)"}">
+      ${au.available?"✓":"⚠"}<div><b>Reporting unit — ${esc(au.label||au.unit)}:</b> ${esc(au.note||"")}</div></div>` : "";
+}
+/* One area's data as a single column, for the side-by-side comparison. */
+function dataCompact(a, which){
+  const rows = (a.layers||[]).map(l=>`<tr><td>${esc(l.name||l.layer)}${l.error?' <span style="color:var(--red)">⚠</span>':""}</td>
+      <td class="num">${l.error?'<span style="color:var(--red)">unavailable</span>':(+l.feature_count).toLocaleString()}</td></tr>`).join("");
+  return `${layerWarn(a)}${unitBar(a)}
+    <div class="panel"><div class="ph">Map</div><div class="mapview">${baseMapFrame(which)}</div></div>
+    <div class="panel"><div class="ph">Map layers</div>${rows?`<table class="data"><tbody>${rows}</tbody></table>`
+      :'<div class="empty" style="padding:10px;">No map layers needed.</div>'}</div>
+    ${tablesPanel(a.tables)}${outcomesPanel(a.health_outcomes)}`;
+}
+function tablesPanel(tables){
+  if(!tables || !tables.length) return "";
+  return `<div class="panel"><div class="ph">Community data</div>
+    <table class="data"><tbody>${tables.map(t=>`<tr><td>${esc(t.name)}<div class="subnote">${esc(t.level)}</div></td>
+      <td>${t.error?`<span style="color:var(--red)">⚠ ${esc(t.error)}</span>`:`✓ ${esc(t.note||"available")}`}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function outcomesPanel(ho){
+  ho = ho || {};
+  const area = ho.level === "project_area";
+  const pct = v => v==null ? '<span style="color:var(--faint)">—</span>' : `${v}%`;
+  const rows = (ho.measures||[]).map(m=>{
+    const ref = area ? m.area_pct : m.county_pct;
+    const flag = ref!=null && m.us_pct!=null ? (ref>m.us_pct ? ' <span class="above">above US</span>' : ' <span class="below">below US</span>') : "";
+    return area
+      ? `<tr><td>${esc(m.label)}</td><td>${pct(m.area_pct)}${flag}</td><td>${pct(m.county_pct)}</td><td>${pct(m.us_pct)}</td></tr>`
+      : `<tr><td>${esc(m.label)}</td><td>${m.county_pct}%${flag}</td><td>${m.us_pct}%</td></tr>`;
+  }).join("");
+  const head = area ? "<th>Measure</th><th>Area</th><th>County</th><th>US</th>" : "<th>Measure</th><th>County</th><th>US</th>";
+  return `<div class="panel"><div class="ph">${esc(ho.source||"Health outcomes")}</div>
+    ${ho.area_note?`<div class="subnote" style="margin-bottom:6px;">${esc(ho.area_note)}</div>`:""}
+    ${rows?`<table class="data"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>
+      ${area&&ho.note?`<div class="subnote">${esc(ho.note)}</div>`:""}`
+      :`<div class="empty" style="padding:14px;">${esc(ho.note||"No outcomes this run.")}</div>`}</div>`;
+}
+/* Factors kept though no connected data measures them yet (2026-09-16 #6). */
+function awaitingPanel(list){
+  if(!list || !list.length) return "";
+  return `<div class="panel"><div class="ph">Factors awaiting data</div>
+    <div class="subnote" style="margin:0 0 8px;">No connected data source measures these yet. They stay in the
+      assessment, and the report lists them as not measured, so the gap is never hidden.</div>
+    <ul style="margin:0;padding-left:18px;">${list.map(f=>`<li style="font-size:var(--fs-sm);margin:3px 0;"><b>${esc(f.factor)}</b>${
+      f.data_needed?` — ${esc(f.data_needed)}`:""}</li>`).join("")}</ul></div>`;
 }
 
 /* Bring-your-own-data (Xun Shi 2026-08-14, #all-aigis): download whatever this
@@ -1152,6 +1628,10 @@ function viewSolution(a){
 
 /* step 5 — database */
 function viewDatabase(a){
+  if(a.base && compareOn()){
+    return `<div class="cmpgrid"><div>${cmpHead("project")}${databaseCompact(a,"project")}</div>
+      <div>${cmpHead("base")}${databaseCompact(a.base,"base")}</div></div>`;
+  }
   const list = layerListPanel(a.layers||[], a.study_area_detail, {toggles:false});
   // Prof. Shi's map-step layout: layers left · map upper-right · details beneath
   return `<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
@@ -1159,52 +1639,142 @@ function viewDatabase(a){
       <div class="subnote">Right-click a layer for its attribute table &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       <div class="panel"><div class="ph">Study area map</div>
-        <div class="mapview">${baseMapFrame()}</div></div>
+        <div class="mapview">${baseMapFrame("project")}</div></div>
       <div id="layerinfo"></div>
-      <div class="panel"><div class="ph">Details</div>
-        <dl class="kv"><dt>CRS</dt><dd class="mono">${esc(a.crs||"")}</dd>
-        <dt>Study area</dt><dd>${esc(a.study_area||"")}</dd>
-        <dt>Extent</dt><dd class="mono" style="font-size:11px;">${(a.extent_bbox_4326||[]).map(x=>(+x).toFixed(2)).join(", ")}</dd>
-        <dt>Storage</dt><dd>${esc(a.storage||"")}</dd></dl></div>
+      ${databaseDetails(a)}
+      ${tablesPanel(a.tables)}
     </div></div>`;
+}
+function databaseDetails(a){
+  return `<div class="panel"><div class="ph">Details</div>
+    <dl class="kv"><dt>CRS</dt><dd class="mono">${esc(a.crs||"")}</dd>
+    <dt>Study area</dt><dd>${esc(a.study_area||"")}</dd>
+    <dt>Extent</dt><dd class="mono" style="font-size:11px;">${(a.extent_bbox_4326||[]).map(x=>(+x).toFixed(2)).join(", ")}</dd>
+    <dt>Storage</dt><dd>${esc(a.storage||"")}</dd></dl></div>`;
+}
+function databaseCompact(a, which){
+  const rows = (a.layers||[]).map(l=>`<tr><td>${esc(l.name||l.layer)}</td><td class="num">${
+    l.error?'<span style="color:var(--red)">unavailable</span>':(+l.feature_count).toLocaleString()}</td></tr>`).join("");
+  return `<div class="panel"><div class="ph">Map</div><div class="mapview">${baseMapFrame(which)}</div></div>
+    ${databaseDetails(a)}
+    <div class="panel"><div class="ph">Layers</div>${rows?`<table class="data"><tbody>${rows}</tbody></table>`:'<div class="empty" style="padding:10px;">None.</div>'}</div>
+    ${tablesPanel(a.tables)}`;
 }
 
 /* step 6 — workflow */
 function viewWorkflow(a){
   const steps = (a.steps||[]).map((s,i)=>{
-    const lbl = s.action==="compute" ? `compute <b>${esc(s.metric)}</b>`
-      : s.action==="generate_interventions" ? "generate interventions"
-      : s.action==="assemble_report" ? "assemble report" : esc(s.action);
-    return `<li><span class="n">${i+1}</span><span>${lbl}${s.layers?` · ${esc((s.layers||[]).join(", "))}`:""}</span></li>`;
+    let lbl;
+    if(s.action==="compute"){
+      const src = s.layers&&s.layers.length ? ` · from ${esc(s.layers.join(", "))}` : (s.source?` · from ${esc(s.source)}`:"");
+      lbl = `compute <b>${esc(measureLabel(s.metric))}</b>${src}`;
+    }else if(s.action==="awaiting_data"){
+      lbl = `<span class="tag wait" style="font-size:10px;">awaiting data</span> <b>${esc(s.factor)}</b>${s.data_needed?` — needs ${esc(s.data_needed)}`:""}`;
+    }else if(s.action==="compare_with_base"){
+      lbl = "compare every result with the <b>base area</b>";
+    }else if(s.action==="generate_interventions"){ lbl = "generate interventions"; }
+    else if(s.action==="assemble_report"){ lbl = "assemble report"; }
+    else lbl = esc(s.action);
+    return `<li><span class="n">${i+1}</span><span>${lbl}</span></li>`;
   }).join("");
   return `<div class="panel"><div class="ph">Workflow</div>
     <ul class="flow">${steps||"<li>—</li>"}</ul></div>`;
 }
 
 /* step 7 — analysis results */
-function viewExecution(a){
+const RESULT_LABELS = {
+  building_coverage_ratio:"Building coverage (share of area)", greenspace_coverage_ratio:"Green space (share of area)",
+  greenspace_area_m2:"Green space area (m²)", road_density_km_per_km2:"Road density (km per km²)",
+  far:"Floor area ratio", levels_tagged_pct:"Buildings with a height tag (%)",
+  parking_coverage_ratio:"Parking (share of area)", pedestrian_density_km_per_km2:"Sidewalks and paths (km per km²)",
+  transit_stop_count:"Transit stops", transit_stop_density_per_km2:"Transit stops per km²",
+  facility_count:"Community facilities", facility_density_per_km2:"Community facilities per km²",
+  land_use_mix:"Land-use mix (0 = one use, 1 = even mix)", land_use_categories:"Land-use categories",
+  near_major_road_exposure:"Buildings within 150 m of a major road (%)", industrial_land_share:"Industrial land (% of area)",
+};
+function resultLabel(k, details){
+  if(RESULT_LABELS[k]) return RESULT_LABELS[k];
+  const d = (details||{})[k];
+  return measureLabel(k) + (d && d.unit ? ` (${d.unit})` : "");
+}
+function fmtVal(v){
+  return v===null||v===undefined ? null
+    : typeof v==="number" ? (+v).toLocaleString(undefined,{maximumFractionDigits:3}) : String(v);
+}
+function metricCards(a){
+  const det = a.measure_details||{};
+  return Object.entries(a.metrics||{}).map(([k,v])=>{
+    const d = det[k];
+    const why = v==null && d && d.not_measured ? d.not_measured : "";
+    return `<div class="metric-c" title="${esc(k)}"><div class="mn">${esc(resultLabel(k, det))}</div>
+      <div class="mv"${v==null?' style="color:var(--warn,#dd6b20);font-style:italic;font-size:12px;"':''}>${
+        v==null ? "not measured" : esc(fmtVal(v))}</div>
+      ${d ? `<div class="ml">${esc(d.level||"")}${d.source?` · ${esc(d.source)}`:""}${d.us!=null?` · US ${esc(fmtVal(d.us))}`:""}</div>` : ""}
+      ${why ? `<div class="ml">${esc(why)}</div>` : ""}</div>`;
+  }).join("");
+}
+function runWarnings(a){
   // null = the layer this metric needs failed to fetch. Never render it as a
   // number; "not measured" and 0 are different claims about a community.
-  const metrics = Object.entries(a.metrics||{}).map(([k,v])=>`
-    <div class="metric-c"><div class="mn">${esc(k)}</div>
-      <div class="mv"${v===null||v===undefined?' style="color:var(--warn,#dd6b20);font-style:italic;font-size:12px;"':''}>${
-        v===null||v===undefined?"not measured"
-        :typeof v==="number"?(+v).toLocaleString(undefined,{maximumFractionDigits:3}):esc(v)}</div></div>`).join("");
-  const ivs = (a.interventions||[]).map(iv=>`
+  const errs = a.fetch_errors||{};
+  const errKeys = Object.keys(errs);
+  const warn = errKeys.length?`<div class="warnbar">⚠<div><b>Data sources failed during this run:</b> ${errKeys.map(esc).join(", ")} — ${esc(errs[errKeys[0]])}</div></div>`:"";
+  const terrs = Object.entries(a.table_errors||{});
+  const twarn = terrs.length?`<div class="warnbar">⚠<div><b>Community data unavailable this run:</b> ${terrs.map(([k,v])=>esc(v)).join(" · ")}</div></div>`:"";
+  const note = a.map_note?`<div class="warnbar">⚠<div>${esc(a.map_note)}</div></div>`:"";
+  const um = a.unmeasured_metrics||[];
+  const unmeasured = um.length?`<div class="warnbar">⚠<div><b>Not measured this run:</b> ${um.map(k=>esc(resultLabel(k, a.measure_details))).join(", ")} — shown as "not measured", not as 0. No recommendation was generated from them, so an absent finding here means unknown, not fine.</div></div>`:"";
+  return warn + twarn + note + unmeasured;
+}
+function interventionsHtml(a){
+  return (a.interventions||[]).map(iv=>`
     <div class="iv ${esc(iv.severity||"")}"><span class="sev">${esc(iv.severity||"")}</span>
       <div class="cat">${esc(iv.category)}</div>
       <div class="fin">${esc(iv.finding)}</div>
       <div class="fin"><b>→</b> ${esc(iv.recommendation)} <span style="color:var(--ghost)">(${esc(iv.standard||"")})</span></div></div>`).join("");
-  const errs = a.fetch_errors||{};
-  const errKeys = Object.keys(errs);
-  const warn = errKeys.length?`<div class="warnbar">⚠<div><b>Data sources failed during this run:</b> ${errKeys.map(esc).join(", ")} — ${esc(errs[errKeys[0]])}</div></div>`:"";
-  const note = a.map_note?`<div class="warnbar">⚠<div>${esc(a.map_note)}</div></div>`:"";
-  const um = a.unmeasured_metrics||[];
-  const unmeasured = um.length?`<div class="warnbar">⚠<div><b>Not measured this run:</b> ${um.map(esc).join(", ")} — shown as "not measured", not as 0. No recommendation was generated from them, so an absent finding here means unknown, not fine.</div></div>`:"";
-  const map = a.map_available
-    ? `<iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe>`
+}
+function mapFrame(a, which){
+  const q = which==="base" ? "?which=base" : "";
+  return a.map_available
+    ? `<iframe class="mapframe" src="/hcas/projects/${S.pid}/map${q}" title="${which==="base"?"Base area":"Assessment"} map"></iframe>`
     : `<div class="lab"><div class="eyebrow">Map view</div>
         <div class="mono" style="color:var(--faint);font-size:12px;margin-top:5px;">The map could not be rendered this run.</div></div>`;
+}
+function comparisonPanel(a){
+  const comp = a.comparison||{};
+  const keys = Object.keys(comp);
+  if(!keys.length) return "";
+  const det = a.measure_details||{};
+  const cell = v => v==null ? '<span style="color:var(--faint)">not measured</span>' : esc(fmtVal(v));
+  const rows = keys.map(k=>{
+    const r = comp[k];
+    const diff = r.difference==null ? '<span style="color:var(--faint)">—</span>'
+      : `${r.difference>0?"+":""}${esc(fmtVal(r.difference))}`;
+    return `<tr><td>${esc(resultLabel(k, det))}</td><td class="num">${cell(r.project)}</td><td class="num">${cell(r.base)}</td><td class="num">${diff}</td></tr>`;
+  }).join("");
+  return `<div class="panel"><div class="ph">Project area compared with the base area</div>
+    <div style="overflow-x:auto;"><table class="data"><thead><tr><th>Measure</th><th>Project area</th><th>Base area</th><th>Difference</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <div class="subnote">Both areas were computed with the same confirmed workflow and data sources. Difference = project area minus base area.
+      County-wide measures are equal when both areas are in the same county.</div></div>`;
+}
+function viewExecution(a){
+  const waiting = awaitingPanel(a.awaiting_data);
+  if(a.base && compareOn()){
+    const b = a.base;
+    return `${runWarnings(a)}${comparisonPanel(a)}${waiting}<div class="cmpgrid">
+      <div>${cmpHead("project")}<div class="panel"><div class="ph">Map view${a.map_available?` · <a href="/hcas/projects/${S.pid}/map" target="_blank" style="text-transform:none;letter-spacing:0;">open ↗</a>`:""}</div>
+          <div class="mapview">${mapFrame(a,"project")}</div></div>
+        <div class="panel"><div class="ph">Metrics</div><div class="metricgrid">${metricCards(a)||'<div class="empty">No metrics.</div>'}</div></div>
+        ${byUnitPanel(a.by_unit)}
+        <div class="panel"><div class="ph">Recommendations</div>${interventionsHtml(a)||'<div class="empty">None.</div>'}</div></div>
+      <div>${cmpHead("base")}${runWarnings(b)}<div class="panel"><div class="ph">Map view${b.map_available?` · <a href="/hcas/projects/${S.pid}/map?which=base" target="_blank" style="text-transform:none;letter-spacing:0;">open ↗</a>`:""}</div>
+          <div class="mapview">${mapFrame(b,"base")}</div></div>
+        <div class="panel"><div class="ph">Metrics</div><div class="metricgrid">${metricCards(b)||'<div class="empty">No metrics.</div>'}</div></div>
+        ${byUnitPanel(b.by_unit)}
+        <div class="panel"><div class="ph">Recommendations</div>${interventionsHtml(b)||'<div class="empty">None.</div>'}</div></div>
+    </div>`;
+  }
   // Layer list built from the confirmed step-3 inventory (the analysis map draws
   // these). Visibility checkboxes drive the map's own layer control. landuse has
   // no map layer, so it shows without a toggle.
@@ -1212,17 +1782,17 @@ function viewExecution(a){
   const inv = s3 ? (s3.human_final||s3.ai_draft||{}) : {};
   const list = layerListPanel(inv.layers||[], inv.study_area, {toggles:!!a.map_available});
   // Prof. Shi's layout: layer list left · map upper-right · metrics + recs beneath
-  return `${warn}${note}${unmeasured}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
+  return `${runWarnings(a)}${waiting}<div class="cols" style="align-items:stretch;flex-wrap:nowrap;">
     <div class="panel tree" style="width:280px;flex:none;"><div class="ph">Layers</div>${list}
       <div class="subnote">Toggle a layer's checkbox to show/hide it; right-click for attributes &amp; properties.</div></div>
     <div class="stack" style="flex:1;">
       <div class="panel"><div class="ph">Map view${a.map_available?` · <a href="/hcas/projects/${S.pid}/map" target="_blank" style="text-transform:none;letter-spacing:0;">open full map ↗</a>`:""}</div>
-        <div class="mapview">${map}</div></div>
+        <div class="mapview">${mapFrame(a,"project")}</div></div>
       <div id="layerinfo"></div>
       <div class="panel"><div class="ph">Metrics</div>
-        <div class="metricgrid">${metrics||'<div class="empty">No metrics.</div>'}</div></div>
+        <div class="metricgrid">${metricCards(a)||'<div class="empty">No metrics.</div>'}</div></div>
       ${byUnitPanel(a.by_unit)}
-      <div class="panel"><div class="ph">Recommendations</div>${ivs||'<div class="empty">None.</div>'}</div>
+      <div class="panel"><div class="ph">Recommendations</div>${interventionsHtml(a)||'<div class="empty">None.</div>'}</div>
     </div></div>`;
 }
 
@@ -1283,11 +1853,14 @@ function wireMapCheck(){
 function viewReport(a){
   const s7 = stepRow(7);
   const mapOk = s7 && (s7.human_final||s7.ai_draft||{}).map_available;
-  const mapPanel = mapOk
+  const baseOk = s7 && ((s7.human_final||s7.ai_draft||{}).base||{}).map_available;
+  const mapPanel = (mapOk
     ? `<div class="panel" style="margin-top:14px;"><div class="ph">Study area map (included in the report)</div>
         <div class="mapview">
           <iframe class="mapframe" src="/hcas/projects/${S.pid}/map" title="Assessment map"></iframe></div></div>`
-    : `<div class="subnote" style="margin-top:14px;">No map available — re-run step 7 to include one in the report.</div>`;
+    : `<div class="subnote" style="margin-top:14px;">No map available — re-run step 7 to include one in the report.</div>`)
+    + (baseOk ? `<div class="panel" style="margin-top:14px;"><div class="ph">Base area map (included in the report)</div>
+        <div class="mapview"><iframe class="mapframe" src="/hcas/projects/${S.pid}/map?which=base" title="Base area map"></iframe></div></div>` : "");
   return `<div class="cols" style="align-items:flex-start;">
     <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Editable draft (Markdown)</div>
       <textarea id="report">${esc(a.markdown||"")}</textarea>
@@ -1324,12 +1897,20 @@ async function downloadHtmlReport(btn){
     ? `<h2>Study area map</h2><iframe style="width:100%;height:520px;border:1px solid #ccc;border-radius:8px" srcdoc="${
         mapHtml.replace(/&/g,"&amp;").replace(/"/g,"&quot;")}"></iframe>`
     : "";
+  let baseBlock = "";
+  if(s7 && ((s7.human_final||s7.ai_draft||{}).base||{}).map_available){
+    try{ const r=await fetch(`/hcas/projects/${S.pid}/map?which=base`,{headers:HDRS});
+      if(r.ok){ const h=await r.text();
+        baseBlock = `<h2>Base area map</h2><iframe style="width:100%;height:520px;border:1px solid #ccc;border-radius:8px" srcdoc="${
+          h.replace(/&/g,"&amp;").replace(/"/g,"&quot;")}"></iframe>`; } }
+    catch(_){}
+  }
   const title = esc(S.project?.meta.title||"HCAS report");
   const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222}
 h1,h2,h3{font-family:Georgia,'Times New Roman',serif;line-height:1.25}
 table{border-collapse:collapse;margin:10px 0} th,td{border:1px solid #ccc;padding:5px 10px;font-size:14px} th{background:#f4f4f4}</style></head>
-<body>${mdToHtml(md)}${mapBlock}</body></html>`;
+<body>${mdToHtml(md)}${mapBlock}${baseBlock}</body></html>`;
   dl(doc, (S.project?.meta.title||"report")+".html", "text/html");
   if(btn){ btn.disabled=false; btn.textContent="Download HTML (with map) ↧"; }
 }
@@ -1381,9 +1962,14 @@ function saveNotes(key){
    back to re-define it (Prof. Shi 2026-08-07 #8) — updates it in place, which
    marks everything drafted from the old scope stale. */
 async function ensureProject(){
-  const form={ title:($("f_title").value||"Untitled assessment"),
-               state_fips:$("f_state").value, county_fips:$("f_county").value,
-               areal_unit:($("f_unit")?.value||null),
+  const area = areaPayload("project");
+  if(area.error) throw new Error(area.error);
+  let base = null;
+  if(AREA.compare){
+    base = areaPayload("base");
+    if(base.error) throw new Error(base.error);
+  }
+  const form={ title:($("f_title").value||"Untitled assessment"), ...area, base,
                location_query:($("f_where")?.value||""), notes:($("f_tasks")?.value||"") };
   if(S.pid){
     if(S.redefining){
@@ -1418,8 +2004,9 @@ function upsertLocalDraft(n, draft){
   if(!row){ row={step:n}; S.project.steps.push(row); S.project.steps.sort((a,b)=>a.step-b.step); }
   if(row.status!=="confirmed"){ row.status="drafted"; row.ai_draft=draft; }
 }
-async function runStep(){
+async function runStep(opts){
   if(S.busy) return;
+  const refresh = !!(opts && opts.refresh);
   // Pin the step being run. Everything after the await used to read S.current,
   // which the user can change by clicking another step mid-run — so a finished
   // draft could be written onto whatever step they had navigated to, and then
@@ -1433,7 +2020,7 @@ async function runStep(){
       await ensureProject();  // reads the definition form — before it is replaced
     if(S.current===step) renderCanvasLoading(step);  // only if that step is still on screen
     startProgress(step);
-    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${step}/run`,{method:"POST"});
+    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${step}/run${refresh?"?refresh=true":""}`,{method:"POST"});
     S.running=null;                          // the run is over; re-renders show the result now
     upsertLocalDraft(step, ai_draft);        // survive a failed refresh so nav restores it
     if(S.current===step){                    // only touch the editor if it is still on screen
@@ -1493,7 +2080,7 @@ function prevStep(){
   // project (Prof. Shi 2026-08-07 #8) rather than stepping to a step 0.
   if(S.current===1){
     if(!stepRow(1)) return;
-    S.redefining=true; setMsg("");
+    S.redefining=true; setMsg(""); AREA.key=null;
     renderCanvas(); renderCmd();
     return;
   }
@@ -1535,7 +2122,7 @@ async function sendChat(){
 /* ================= header actions ================= */
 function newProject(){
   S.pid=null; S.current=1; S.project=null; S.edited=null; S.chats={}; S.draftShownAt=null;
-  S.redefining=false;
+  S.redefining=false; AREA.key=null;
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd(); setMsg("");
 }
 /* Open dialog lists saved projects. Work was always persisted step by step, but
@@ -1602,7 +2189,7 @@ async function doOpen(id){
   id = (typeof id === "string" && id) ? id : ($("m_pid")?.value||"").trim();
   if(!id) return;
   try{
-    S.pid=id; S.redefining=false; await refresh();
+    S.pid=id; S.redefining=false; AREA.key=null; await refresh();
     localStorage.setItem("hcas_last_project", id);
     // Land on the furthest step that exists, not back at step 1.
     const steps=(S.project?.steps||[]).map(s=>s.step);
@@ -1673,7 +2260,8 @@ function openSettings(){
 function saveSettings(){ S.sys=$("m_sys").value||DEFAULT_SYS; renderBar(); closeModal(); }
 function showAbout(){
   modal(`<h3>Healthy Community Assessment System</h3>
-    <p>A step-by-step assessment of community health for a US county, combining public data,
+    <p>A step-by-step assessment of community health for a US county or a community within one — optionally
+    compared with a base area — combining public data,
     spatial analysis, and modeling. Each step is prepared for you and confirmed before the next
     begins — you can edit anything along the way. The panel on the right answers questions as you work.</p>
     <p class="mono" style="font-size:12px;color:var(--faint);">Xun Shi (Dartmouth) · Wang's team (Tongji)</p>
@@ -1751,6 +2339,7 @@ newProject();
 // Unit labels are needed by the step-1 view too (e.g. after Open project), not
 // only by the create form, so fetch the list once at start.
 loadUnits();
+loadMeasures().then(()=>{ if(S.pid) renderCanvas(); });
 
 /* Offer to pick up the last project. Closing the tab never lost work — every
    confirmed step is on disk — but you had to know the 12-character id to get

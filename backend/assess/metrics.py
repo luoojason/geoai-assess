@@ -288,3 +288,84 @@ def compute_facility_access(
     count = len(_inside(facilities, study_area))
     density = float(count / area_km2) if area_km2 > 0 else 0.0
     return {"facility_count": count, "facility_density_per_km2": density}
+
+
+# --- environmental exposure proxies (Prof. Shi and Prof. Wang, 2026-09-16 #6) --
+# Asked to "add pollution data", the system had nothing to add. Two exposures
+# are measurable from layers step 3 already fetches, so they cost no new source:
+# how many homes and workplaces sit next to a major road — the standard
+# near-roadway exposure distance for traffic air pollution, and a fair proxy for
+# traffic noise — and how much of the area is industrial land, a quarry or a
+# landfill. Both are proxies, and their descriptions say so.
+
+MAJOR_ROAD_CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link",
+                      "primary", "primary_link"}
+NEAR_ROAD_M = 150.0
+INDUSTRIAL_LANDUSE = {"industrial", "quarry", "landfill"}
+
+
+def _is_major(value) -> bool:
+    """OSM `highway` on a merged graph edge can be a list ("['primary', 'secondary']")."""
+    if isinstance(value, (list, tuple, set)):
+        return any(_is_major(v) for v in value)
+    s = str(value or "")
+    if s.startswith("["):
+        return any(c in s for c in (f"'{m}'" for m in MAJOR_ROAD_CLASSES))
+    return s in MAJOR_ROAD_CLASSES
+
+
+def compute_near_major_road_exposure(
+    buildings: gpd.GeoDataFrame,
+    roads: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+    distance_m: float = NEAR_ROAD_M,
+) -> dict[str, float | None]:
+    """{'near_major_road_exposure': % of buildings in the area whose centre lies
+    within `distance_m` of a motorway, trunk or primary road}.
+
+    None, not 0, when the area has no buildings: a share of nothing is not a
+    finding that nobody is exposed.
+    """
+    key = "near_major_road_exposure"
+    if buildings.empty:
+        return {key: None}
+    if buildings.crs != study_area.crs:
+        buildings = buildings.to_crs(study_area.crs)
+    inside = _inside(buildings, study_area)
+    if inside.empty:
+        return {key: None}
+    if roads.empty or "highway" not in roads.columns:
+        return {key: 0.0}
+    if roads.crs != study_area.crs:
+        roads = roads.to_crs(study_area.crs)
+    major = roads[roads["highway"].map(_is_major)]
+    if major.empty:
+        return {key: 0.0}
+    zone = major.geometry.buffer(distance_m).union_all()
+    centres = inside.geometry.representative_point()
+    near = int(centres.intersects(zone).sum())
+    return {key: round(100.0 * near / len(inside), 4)}
+
+
+def compute_industrial_land_share(
+    landuse: gpd.GeoDataFrame,
+    study_area: gpd.GeoDataFrame,
+) -> dict[str, float]:
+    """{'industrial_land_share': % of the study area mapped as industrial land,
+    a quarry or a landfill}."""
+    key = "industrial_land_share"
+    if landuse.empty or "landuse" not in landuse.columns:
+        return {key: 0.0}
+    if landuse.crs != study_area.crs:
+        landuse = landuse.to_crs(study_area.crs)
+    area_total = study_area.geometry.area.sum()
+    if area_total <= 0:
+        return {key: 0.0}
+    hits = landuse[landuse["landuse"].isin(INDUSTRIAL_LANDUSE)]
+    if hits.empty:
+        return {key: 0.0}
+    # Overlapping polygons (a quarry drawn inside industrial land) are counted
+    # once: dissolve before measuring.
+    merged = gpd.GeoDataFrame(geometry=[hits.geometry.union_all()], crs=landuse.crs)
+    covered = float(_clipped_area(merged.geometry, study_area).sum())
+    return {key: round(min(100.0 * covered / area_total, 100.0), 4)}

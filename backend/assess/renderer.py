@@ -142,7 +142,8 @@ def _clip_to_study_area(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame):
         return gdf
 
 
-def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
+def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "",
+                    subtitle: str = "Study area · full county boundary") -> str:
     """A lightweight locator map: the study-area (county) boundary drawn over
     OpenStreetMap base tiles, fit to the boundary's extent. Shown from step 1 so the
     Map View carries real context before the analysis runs (Prof. Shi 2026-07-27).
@@ -180,7 +181,7 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "") -> str:
             box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 13px;
             font-family: sans-serif;
         "><b>{place_name}</b><br>
-        <span style="color:#555">Study area · full county boundary</span></div>
+        <span style="color:#555">{subtitle}</span></div>
         """
         m.get_root().html.add_child(folium.Element(label_html))
 

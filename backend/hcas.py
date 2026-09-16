@@ -118,8 +118,19 @@ STEPS = [
     (8, "report", "Report assembly", "deterministic"),
 ]
 
-# The metric registry the LLM selects from — mirrors backend/assess/metrics.py.
-# Steps 2 and 6 prompt against this; step 7 executes against the same names.
+# The measures step 2 selects from — the built-environment ones mirror
+# backend/assess/metrics.py. Steps 2 and 6 prompt against this; step 7 executes
+# against the same names.
+#
+# Until 2026-09-16 this was nine OpenStreetMap measures and nothing else, so
+# step 2 listed pollution, housing, income, food, health care, safety and
+# broadband as things it "cannot yet measure", and a request to "add pollution
+# data" or "demographic and socioeconomic factors" was refused (Prof. Shi and
+# Prof. Wang's feedback #6). The community measures below come from public CDC,
+# County Health Rankings and EPA data (backend/assess/indicators.py); the two
+# exposure proxies are computed from map layers step 3 already fetches.
+from backend.assess.indicators import INDICATORS as _INDICATORS
+
 METRICS = {
     "building_coverage_ratio": "building footprint area / study area (0-1)",
     "greenspace_coverage": "greenspace area_m2 and ratio of study area",
@@ -130,9 +141,45 @@ METRICS = {
     "transit_access": "transit stop count and density per km2",
     "facility_access": "community facility count and density per km2 (hospitals, clinics, pharmacies, schools, libraries, groceries)",
     "land_use_mix": "normalized Shannon entropy of OSM landuse polygon areas (0 = single use, 1 = even mix)",
+    "near_major_road_exposure": "% of buildings within 150 m of a motorway, trunk or primary road — proxy for traffic air pollution and noise exposure (OpenStreetMap)",
+    "industrial_land_share": "% of the area mapped as industrial land, quarry or landfill — proxy for industrial pollution sources (OpenStreetMap)",
+    **{name: f"{d['desc']} [{d['unit']}; source: {d['source'].upper()}]"
+       for name, d in _INDICATORS.items()},
 }
 
-# Which OSM layers each metric needs (step 3 fetches the union).
+# Measure groups, in the order step 2's prompt presents them.
+METRIC_DOMAINS = {
+    "Built environment (OpenStreetMap, measured for the area)": [
+        "building_coverage_ratio", "greenspace_coverage", "road_density_km_per_km2", "far",
+        "parking_coverage_ratio", "pedestrian_density_km_per_km2", "transit_access",
+        "facility_access", "land_use_mix"],
+    "Environmental exposure and pollution": [
+        "near_major_road_exposure", "industrial_land_share", "air_pollution_pm25",
+        "unhealthy_air_days", "median_aqi", "drinking_water_violation"],
+    "Socioeconomic and demographic conditions (census tracts, combined for the area)": [
+        "poverty_rate", "unemployment_rate", "no_high_school_diploma", "income_inequality",
+        "minority_share", "older_adults_share", "disability_rate", "limited_english",
+        "social_vulnerability"],
+    "Housing": ["housing_cost_burden", "crowded_housing", "severe_housing_problems",
+                "housing_insecurity"],
+    "Food, transport and digital access": [
+        "food_insecurity", "food_environment_index", "limited_healthy_food_access",
+        "no_vehicle_households", "lack_of_transportation", "no_internet_households"],
+    "Health care access and capacity": [
+        "uninsured_rate", "lack_of_health_insurance", "routine_checkup",
+        "primary_care_physicians", "mental_health_providers"],
+    "Safety, activity and social cohesion": [
+        "injury_deaths", "motor_vehicle_crash_deaths", "exercise_opportunities",
+        "social_associations", "loneliness"],
+}
+
+# A factor the analyst or the AI considers important but no connected data
+# source can measure yet. It is KEPT in the factor list — never refused — and
+# carried through to the report as awaiting data.
+NEEDS_DATA = "needs_data"
+
+# Which OSM layers each metric needs (step 3 fetches the union). Community
+# measures need none; they come from tables (METRIC_SOURCES).
 METRIC_LAYERS = {
     "building_coverage_ratio": ["buildings"],
     "greenspace_coverage": ["greenspace"],
@@ -143,7 +190,74 @@ METRIC_LAYERS = {
     "transit_access": ["transit_stops"],
     "facility_access": ["facilities"],
     "land_use_mix": ["landuse"],
+    "near_major_road_exposure": ["buildings", "roads"],
+    "industrial_land_share": ["landuse"],
+    **{name: [] for name in _INDICATORS},
 }
+
+# Which public table each community measure is read from.
+METRIC_SOURCES = {name: d["source"] for name, d in _INDICATORS.items()}
+
+# What a planner reads instead of an identifier (Prof. Shi 2026-09-16: "Not sure
+# what this 'Registry' is" — the wizard showed raw names like greenspace_coverage).
+METRIC_LABELS = {
+    "building_coverage_ratio": "Building coverage",
+    "greenspace_coverage": "Green space coverage",
+    "road_density_km_per_km2": "Road density",
+    "far": "Floor area ratio",
+    "parking_coverage_ratio": "Parking coverage",
+    "pedestrian_density_km_per_km2": "Sidewalk and path density",
+    "transit_access": "Transit stops",
+    "facility_access": "Community facilities",
+    "land_use_mix": "Land-use mix",
+    "near_major_road_exposure": "Homes near major roads",
+    "industrial_land_share": "Industrial land",
+    "poverty_rate": "Poverty", "unemployment_rate": "Unemployment",
+    "housing_cost_burden": "Housing cost burden", "no_high_school_diploma": "No high school diploma",
+    "uninsured_rate": "No health insurance (all ages)", "no_vehicle_households": "Households without a vehicle",
+    "no_internet_households": "Households without broadband", "older_adults_share": "Residents 65 and over",
+    "disability_rate": "Disability", "limited_english": "Limited English",
+    "minority_share": "Racial and ethnic minority residents", "crowded_housing": "Crowded housing",
+    "social_vulnerability": "Social vulnerability (percentile)",
+    "food_insecurity": "Food insecurity", "housing_insecurity": "Housing insecurity",
+    "lack_of_transportation": "Lack of reliable transportation",
+    "lack_of_health_insurance": "No health insurance (adults 18–64)",
+    "routine_checkup": "Routine checkup in the past year", "loneliness": "Loneliness",
+    "air_pollution_pm25": "Fine particle air pollution (PM2.5)",
+    "drinking_water_violation": "Drinking water violation",
+    "severe_housing_problems": "Severe housing problems",
+    "food_environment_index": "Food environment index",
+    "limited_healthy_food_access": "Limited access to healthy food",
+    "primary_care_physicians": "Primary care physicians",
+    "mental_health_providers": "Mental health providers",
+    "exercise_opportunities": "Access to exercise opportunities",
+    "injury_deaths": "Injury deaths", "motor_vehicle_crash_deaths": "Motor vehicle crash deaths",
+    "social_associations": "Social associations", "income_inequality": "Income inequality",
+    "unhealthy_air_days": "Unhealthy air days", "median_aqi": "Median air quality index",
+    NEEDS_DATA: "Awaiting data",
+}
+
+
+def measure_catalog() -> dict:
+    """Every measure with its plain label, description, topic and source — for
+    the wizard, so no screen has to show an internal identifier."""
+    from backend.assess.indicators import INDICATORS, SOURCES
+
+    domain_of = {m: d for d, ms in METRIC_DOMAINS.items() for m in ms}
+    out = {}
+    for m, desc in METRICS.items():
+        ind = INDICATORS.get(m)
+        out[m] = {
+            "label": METRIC_LABELS.get(m, m.replace("_", " ").capitalize()),
+            "description": ind["desc"] if ind else desc,
+            "unit": ind["unit"] if ind else None,
+            "domain": domain_of.get(m, "Other"),
+            "source": SOURCES[ind["source"]]["short"] if ind else "OpenStreetMap",
+        }
+    out[NEEDS_DATA] = {"label": METRIC_LABELS[NEEDS_DATA], "description":
+                       "Kept in the assessment; no connected data source measures it yet.",
+                       "unit": None, "domain": "Awaiting data", "source": None}
+    return out
 
 # The flat result keys each registry metric contributes to step 7's metrics
 # dict — mirrors _metric_computers(). Used to work out which published numbers
@@ -159,7 +273,15 @@ METRIC_RESULT_KEYS = {
     "transit_access": ["transit_stop_count", "transit_stop_density_per_km2"],
     "facility_access": ["facility_count", "facility_density_per_km2"],
     "land_use_mix": ["land_use_mix", "land_use_categories"],
+    "near_major_road_exposure": ["near_major_road_exposure"],
+    "industrial_land_share": ["industrial_land_share"],
+    **{name: [name] for name in _INDICATORS},
 }
+
+
+def _metric_layers(metric: str) -> list[str]:
+    """Layers a metric needs; none for a community measure or a factor awaiting data."""
+    return METRIC_LAYERS.get(metric, [])
 
 
 def _unmeasured_metric_keys(failed_layers) -> list[str]:
@@ -192,33 +314,73 @@ LAYER_META = {
 def _layer_meta(name: str) -> tuple[str, str, str]:
     return LAYER_META.get(name, (name.replace("_", " ").title(), "OpenStreetMap", "vector"))
 
+def _measure_catalog() -> str:
+    """The available measures, grouped by topic, as the model sees them."""
+    lines = []
+    listed = set()
+    for domain, names in METRIC_DOMAINS.items():
+        lines.append(f"{domain}:")
+        for n in names:
+            lines.append(f"- {n}: {METRICS[n]}")
+            listed.add(n)
+    rest = [n for n in METRICS if n not in listed]
+    if rest:
+        lines.append("Other:")
+        lines.extend(f"- {n}: {METRICS[n]}" for n in rest)
+    return "\n".join(lines)
+
+
+# How a factor with no connected data is to be handled, shared by step 2 and by
+# the "Change the list" box so the two can never disagree.
+_NEEDS_DATA_RULE = (
+    f"If a factor is important for this community's health but none of the measures "
+    f"below can represent it (for example noise measured directly, crime, water quality "
+    f"at the tap, or local survey data), STILL INCLUDE IT: set its metric to "
+    f"\"{NEEDS_DATA}\" and say in `data_needed` what data would measure it and where such "
+    f"data usually comes from. Never leave out or refuse an important factor because it "
+    f"cannot be measured yet. For every other factor, `data_needed` is the empty string."
+)
+
+# Plain words only in anything a planner reads. Prof. Shi (2026-09-16): "Not sure
+# what this 'Registry' is" — the word came straight out of this prompt.
+_PLAIN_WORDS_RULE = (
+    "Write every rationale and note for urban planners and public-health researchers: "
+    "never say \"registry\", \"schema\", \"enum\" or name internal identifiers; call them "
+    "\"the available measures\" or \"the data connected to this system\"."
+)
+
 _STEP2_SYSTEM = (
     "You are the methodology engine of HCAS, a healthy-community assessment system "
     "used by urban-planning researchers. Given a study area, select the health-relevant "
-    "factors to assess and map each to exactly one metric from the registry below. "
-    "Choose metrics ONLY from the registry. Ground rationales in healthy-cities / "
-    "social-determinants-of-health reasoning. Note: the metric set is an early subset; "
-    "flag important factors the registry cannot yet measure in `notes`.\n\n"
-    "METRIC REGISTRY:\n"
-    + "\n".join(f"- {name}: {desc}" for name, desc in METRICS.items())
+    "factors to assess and map each to exactly one of the available measures below. "
+    "Cover the determinants of health broadly — the built environment, environmental "
+    "exposure and pollution, socioeconomic conditions, housing, food and transport "
+    "access, health care, and safety and social cohesion — choosing the measures that "
+    "best fit this particular area rather than every measure. Ground rationales in "
+    "healthy-cities / social-determinants-of-health reasoning. Measures marked county-wide "
+    "describe the whole county, not a smaller project area; say so in the rationale when "
+    "the study area is smaller than its county. "
+    + _NEEDS_DATA_RULE + " " + _PLAIN_WORDS_RULE
+    + " Use `notes` for caveats about the selection as a whole.\n\n"
+    "AVAILABLE MEASURES:\n" + _measure_catalog()
 )
+
+_FACTOR_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "factor": {"type": "string"},
+        "metric": {"type": "string", "enum": [*METRICS, NEEDS_DATA]},
+        "rationale": {"type": "string"},
+        "data_needed": {"type": "string"},
+    },
+    "required": ["factor", "metric", "rationale", "data_needed"],
+    "additionalProperties": False,
+}
 
 _STEP2_SCHEMA = {
     "type": "object",
     "properties": {
-        "factors": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "factor": {"type": "string"},
-                    "metric": {"type": "string", "enum": list(METRICS)},
-                    "rationale": {"type": "string"},
-                },
-                "required": ["factor", "metric", "rationale"],
-                "additionalProperties": False,
-            },
-        },
+        "factors": {"type": "array", "items": _FACTOR_ITEM_SCHEMA},
         "notes": {"type": "string"},
     },
     "required": ["factors", "notes"],
@@ -263,24 +425,17 @@ def _conn(db: Path):
 # Step runners — all 8 are real; 2 and 4 call the LLM, the rest compute
 # ---------------------------------------------------------------------------
 
-def _run_step_1(meta: dict) -> dict:
-    """Typed study-area artifact. bbox-first union so a China pivot is a new
-    kind, not a rewrite (ponytail: only us_county implemented).
-
-    Carries a descriptive Census profile (area, population, income where a key
-    is configured) — Prof. Shi 2026-08-07 #10: FIPS codes are not information a
-    reader needs, and "I tried to ask AI what the population of the specified
-    county and it said this is not available from the current data". Putting the
-    profile ON the artifact is what makes the assistant able to answer, since it
-    reads the step artifact and nothing else.
-    """
+def _area_intake(spec: dict, pid: str | None, which: str) -> dict:
+    """Step 1's description of one area: the county's Census profile, and — for
+    an area smaller than the county — the selected units, their combined area
+    and 2020 population, with the union polygon stored for every later step."""
     import os
 
     from backend.gis.profile import DEFAULT_AREAL_UNIT, county_profile
 
     from backend.assess import places
 
-    state, county = meta["state_fips"], meta["county_fips"]
+    state, county = spec["state_fips"], spec["county_fips"]
     lat, lon = centroid_of_county(state, county)
     key = os.environ.get("CENSUS_API_KEY") or None
     # PLACES carries the county total population and needs no key, so the
@@ -291,20 +446,63 @@ def _run_step_1(meta: dict) -> dict:
     except Exception as exc:  # never let a descriptive extra fail the step
         logger.warning(f"county_profile failed: {exc!r}")
         profile = {"unavailable": {"profile": f"could not be fetched ({type(exc).__name__})."}}
+    county_place = build_place_name(state, county)
+    unit = spec.get("areal_unit") or DEFAULT_AREAL_UNIT
     out = {
         "kind": "us_county",
         "state_fips": state,
         "county_fips": county,
-        "place_name": build_place_name(state, county),
+        "place_name": county_place,
+        "county_place_name": county_place,
         "centroid": [lat, lon],
         "extent": "Entire county boundary",
-        "areal_unit": meta.get("areal_unit", DEFAULT_AREAL_UNIT),
+        "areal_unit": unit,
         "profile": profile,
+        "project_area": {"kind": "county", "unit": unit, "label": county_place,
+                         "text": f"{county_place} — entire county boundary"},
     }
+    if _is_sub_county(spec):
+        # Fails the step on purpose when the boundaries cannot be had: the
+        # alternative is analysing the whole county under the name of a
+        # neighbourhood.
+        built = _build_area(spec)
+        if pid:
+            _store_area(pid, which, built["polygon"])
+        summary = built["summary"]
+        c = built["polygon"].to_crs("EPSG:4326").geometry.union_all().representative_point()
+        out.update({
+            "kind": "us_sub_county",
+            "place_name": summary["label"],
+            "centroid": [c.y, c.x],
+            "extent": summary["text"],
+            "project_area": summary,
+        })
+    return out
+
+
+def _run_step_1(meta: dict, pid: str | None = None) -> dict:
+    """Typed study-area artifact. bbox-first union so a China pivot is a new
+    kind, not a rewrite (ponytail: only us_county implemented).
+
+    Carries a descriptive Census profile (area, population, income where a key
+    is configured) — Prof. Shi 2026-08-07 #10: FIPS codes are not information a
+    reader needs, and "I tried to ask AI what the population of the specified
+    county and it said this is not available from the current data". Putting the
+    profile ON the artifact is what makes the assistant able to answer, since it
+    reads the step artifact and nothing else.
+
+    Since 2026-09-16 the area may be smaller than the county (a town, ZIP code,
+    tracts, block groups, or a named community built from block groups), and a
+    second, "base" area may be defined for comparison; it is described the same
+    way under `base`.
+    """
+    out = _area_intake(_area_spec({"meta": meta}), pid, "project")
     if meta.get("location_query"):
         out["location_query"] = meta["location_query"]
     if meta.get("notes"):
         out["notes"] = meta["notes"]
+    if meta.get("base"):
+        out["base"] = _area_intake(meta["base"], pid, "base")
     return out
 
 
@@ -856,16 +1054,174 @@ def _county_geometry(state_fips: str, county_fips: str):
     return geom
 
 
-def _resolve_study_area(project: dict):
+# --- project areas smaller than a county (Prof. Shi 2026-09-16 #1) -----------
+_units_cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
+_units_lock = threading.Lock()
+UNITS_CACHE_S = 6 * 3600
+
+
+def _unit_features(state_fips: str, county_fips: str, unit: str):
+    """The county's Census units of one kind (EPSG:4326, GEOID/NAME/POP100),
+    cached for a few hours — the area picker, step 1 and step 7 all ask for the
+    same polygons. Raises RuntimeError in plain language when Census cannot be
+    reached, because an area cannot be built from boundaries nobody has."""
+    from backend.gis import areas
+    from backend.gis import profile as gis_profile
+
+    gunit = areas.geometry_unit(unit)
+    key = (state_fips, county_fips, gunit)
+    with _units_lock:
+        hit = _units_cache.get(key)
+        if hit and time.time() - hit[0] < UNITS_CACHE_S:
+            return hit[1]
+    try:
+        gdf = gis_profile.fetch_areal_unit_geometries(state_fips, county_fips, gunit)
+    except Exception as exc:
+        logger.warning(f"unit boundaries {key} failed: {exc!r}")
+        gdf = None
+    if gdf is None or gdf.empty:
+        raise RuntimeError(
+            "The Census boundary service (TIGERweb) did not return the "
+            f"{gunit.replace('_', ' ')} boundaries for this county. Check the connection "
+            "and try again."
+        )
+    gdf = gdf.copy()
+    pops = areas.unit_populations(state_fips, county_fips, gunit,
+                                  geoids=list(gdf["GEOID"].astype(str)))
+    gdf["POP100"] = gdf["GEOID"].astype(str).map(pops)
+    with _units_lock:
+        _units_cache[key] = (time.time(), gdf)
+    return gdf
+
+
+def _area_spec(project: dict, which: str = "project") -> dict | None:
+    """The area definition for the project itself or for its base area."""
+    meta = project["meta"]
+    if which == "base":
+        return meta.get("base") or None
+    return {k: meta.get(k) for k in ("state_fips", "county_fips", "areal_unit",
+                                     "area_geoids", "area_name")}
+
+
+def _is_sub_county(spec: dict | None) -> bool:
+    return bool(spec) and (bool(spec.get("area_geoids")) or spec.get("areal_unit") == "custom")
+
+
+def _area_path(pid: str, which: str) -> Path:
+    return LAYER_CACHE_DIR / pid / f"area.{which}.geojson"
+
+
+def _unit_label(unit: str, plural: bool = False) -> str:
+    from backend.gis.profile import AREAL_UNITS
+
+    names = {"county_subdivision": ("town or township", "towns and townships"),
+             "zcta": ("ZIP code area", "ZIP code areas"),
+             "tract": ("census tract", "census tracts"),
+             "block_group": ("block group", "block groups"),
+             "custom": ("block group", "block groups"),
+             "county": ("county", "counties")}
+    s, p = names.get(unit, ((AREAL_UNITS.get(unit) or {}).get("label", unit),) * 2)
+    return p if plural else s
+
+
+def _build_area(spec: dict) -> dict:
+    """Everything a sub-county area needs, from its GEOIDs: the union polygon
+    (EPSG:5070), the selected units, and the figures step 1 reports."""
+    from backend.gis import areas
+
+    state, county, unit = spec["state_fips"], spec["county_fips"], spec["areal_unit"]
+    units = _unit_features(state, county, unit)
+    chosen = areas.select(units, spec.get("area_geoids") or [])
+    polygon = areas.union_area(chosen)
+    pops = {str(g): int(p) for g, p in zip(chosen["GEOID"], chosen["POP100"])
+            if p is not None and p == p}
+    summary = areas.describe_selection(chosen, pops, _unit_label(unit))
+    county_place = build_place_name(state, county)
+    n = summary["count"]
+    if unit == "custom":
+        name = spec.get("area_name") or "Custom area"
+        label = f"{name}, {county_place}"
+        text = f"{name} — {n} {_unit_label('block_group', n != 1)} selected in {county_place}"
+    elif n == 1:
+        unit_name = str(chosen.iloc[0].get("NAME") or chosen.iloc[0]["GEOID"])
+        label = f"{unit_name}, {county_place}"
+        text = f"{unit_name} ({_unit_label(unit)}) in {county_place}"
+    else:
+        label = f"{n} {_unit_label(unit, True)} in {county_place}"
+        text = label
+    summary.update({
+        "unit_label_plural": _unit_label(unit, True),
+        "kind": "custom" if unit == "custom" else "units",
+        "unit": unit,
+        "geoids": [str(g) for g in chosen["GEOID"]],
+        "names": [str(x) for x in chosen.get("NAME", chosen["GEOID"])],
+        "name": spec.get("area_name") or "",
+        "label": label,
+        "text": text,
+        "source": "US Census TIGERweb boundaries; 2020 Census population",
+    })
+    return {"polygon": polygon, "units": chosen, "summary": summary}
+
+
+def _store_area(pid: str, which: str, polygon) -> None:
+    path = _area_path(pid, which)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(polygon.to_crs("EPSG:4326").to_json())
+
+
+def _load_area(project: dict, which: str):
+    """The stored union polygon (EPSG:5070) for a sub-county area; rebuilt from
+    the GEOIDs if the file is gone (a copied or pre-2026-09-16 project)."""
+    import geopandas as gpd
+
+    path = _area_path(project["id"], which)
+    if path.exists():
+        try:
+            return gpd.read_file(path).to_crs("EPSG:5070")
+        except Exception as exc:
+            logger.warning(f"stored area {path} unreadable, rebuilding: {exc!r}")
+    built = _build_area(_area_spec(project, which))
+    _store_area(project["id"], which, built["polygon"])
+    return built["polygon"]
+
+
+def _resolve_study_area(project: dict, which: str = "project"):
     """Return (study_area_5070, bbox_4326, describe: dict). Uses the real county
     polygon when the boundary is reachable, else falls back to the legacy 5km
     disc around the centroid so a run never hard-fails on a boundary outage.
 
     `describe` carries what the artifact and UI need: a human string, the kind
-    ('county' | 'disc'), FIPS, and (county path only) area in km²."""
-    meta = project["meta"]
+    ('county' | 'disc' | 'units' | 'custom'), FIPS, and area in km².
+
+    A sub-county area (2026-09-16) has no disc fallback: it is exactly the
+    units the analyst chose, and a 5 km disc would silently measure somewhere
+    else. Its polygon is stored at step 1, so later steps need no network for it.
+    `which="base"` resolves the comparison area the same way.
+    """
+    spec = _area_spec(project, which)
+    if _is_sub_county(spec):
+        polygon = _load_area(project, which)
+        bbox = [float(x) for x in polygon.to_crs("EPSG:4326").total_bounds]
+        s1 = _confirmed(project, 1) if any(s["step"] == 1 for s in project["steps"]) else {}
+        summary = ((s1.get("base") or {}) if which == "base" else s1).get("project_area") or {}
+        return polygon, bbox, {
+            "kind": "custom" if spec["areal_unit"] == "custom" else "units",
+            "text": summary.get("text") or f"{len(spec['area_geoids'])} selected "
+                                            f"{_unit_label(spec['areal_unit'], True)}",
+            "fips": f"{spec['state_fips']}{spec['county_fips']}",
+            "area_km2": round(float(polygon.geometry.area.sum()) / 1_000_000, 2),
+            "unit": spec["areal_unit"],
+            "geoids": list(spec["area_geoids"]),
+        }
+    if which == "base":
+        if not spec:
+            raise ValueError("this project has no base area")
+        meta = spec
+    else:
+        meta = project["meta"]
     state, county = meta["state_fips"], meta["county_fips"]
-    place = _confirmed(project, 1).get("place_name", "the study area")
+    place = (build_place_name(state, county) if which == "base"
+             else _confirmed(project, 1).get("place_name", "the study area"))
     geom = _county_geometry(state, county)
     if geom is not None and not geom.empty:
         bbox = [float(x) for x in geom.to_crs("EPSG:4326").total_bounds]
@@ -876,7 +1232,8 @@ def _resolve_study_area(project: dict):
             "fips": f"{state}{county}",
             "area_km2": area_km2,
         }
-    lat, lon = _confirmed(project, 1)["centroid"]
+    lat, lon = (centroid_of_county(state, county) if which == "base"
+                else _confirmed(project, 1)["centroid"])
     disc = _study_area(lat, lon)
     return disc, _bbox_from_centroid(lat, lon), {
         "kind": "disc",
@@ -892,6 +1249,34 @@ def _resolve_study_area(project: dict):
 # not re-hit the boundary service on every reload.
 _basemap_cache: dict[tuple[str, str], str] = {}
 _basemap_lock = threading.Lock()
+
+
+def basemap_for_project(pid: str, which: str = "project", db: Path | None = None) -> str:
+    """Locator map of a project's own area — the county, or the selected
+    sub-areas drawn over it. A sub-county project used to show the whole county
+    on every step, which is exactly the "fixed to the whole county" impression
+    the 2026-09-16 feedback describes."""
+    project = get_project(pid, db=db)
+    spec = _area_spec(project, which)
+    if not spec:
+        raise KeyError(f"project {pid} has no {which} area")
+    if not _is_sub_county(spec):
+        return basemap_for_county(spec["state_fips"], spec["county_fips"])
+    from backend.assess.renderer import render_base_map
+
+    polygon = _load_area(project, which)
+    s1 = next((s for s in project["steps"] if s["step"] == 1), None)
+    art = (s1.get("human_final") or s1.get("ai_draft") or {}) if s1 else {}
+    summary = ((art.get("base") or {}) if which == "base" else art).get("project_area") or {}
+    import html as _html
+
+    n = len(spec.get("area_geoids") or [])
+    return render_base_map(
+        polygon,
+        _html.escape(summary.get("label") or build_place_name(spec["state_fips"], spec["county_fips"])),
+        subtitle=("Base area" if which == "base" else "Project area")
+                 + f" · {n} selected {_unit_label(spec['areal_unit'], n != 1)}",
+    )
 
 
 def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None) -> str:
@@ -969,11 +1354,16 @@ def _fetched_layer_path(pid: str, layer: str, bbox) -> Path:
     return _project_cache_dir(pid) / f"{layer}.{_bbox_key(bbox)}.geojson"
 
 
-def _cached_layer(pid: str, layer: str, bbox):
+def _cached_layer(pid: str, layer: str, bbox, refresh: bool = False):
     """A GeoDataFrame already on disk for this layer, if any, plus which kind
     it was: user upload beats an auto-fetch cache, and an auto-fetch cache is
     scoped to this exact bbox — redefine the study area and it is a plain
-    cache miss, no invalidation bookkeeping required."""
+    cache miss, no invalidation bookkeeping required.
+
+    After the project's own cache comes the SHARED one (see _shared_layer), so
+    a county any project has already fetched is not fetched again. `refresh`
+    skips both automatic caches — never an upload, which the user put there on
+    purpose."""
     import geopandas as gpd
 
     user_path = _user_layer_path(pid, layer)
@@ -982,28 +1372,174 @@ def _cached_layer(pid: str, layer: str, bbox):
             return gpd.read_file(user_path), "user"
         except Exception as exc:
             logger.warning(f"uploaded layer {layer} for {pid} unreadable: {exc!r}")
+    if refresh:
+        return None, None
     fetched_path = _fetched_layer_path(pid, layer, bbox)
     if fetched_path.exists():
         try:
             return gpd.read_file(fetched_path), "fetched"
         except Exception as exc:
             logger.warning(f"cached layer {layer} for {pid} unreadable: {exc!r}")
+    shared = _shared_layer(layer, bbox)
+    if shared is not None:
+        gdf, fetched_at = shared
+        _note_shared_use(pid, layer, bbox, gdf, fetched_at)
+        return gdf, "shared"
     return None, None
+
+
+_manifest_lock = threading.Lock()
 
 
 def _save_fetched_layer(pid: str, layer: str, bbox, gdf) -> None:
     """Best-effort: a cache directory the process can't write to should not
-    fail the run, only skip the cache for next time."""
+    fail the run, only skip the cache for next time.
+
+    Called from the fetch worker threads since 2026-09-16, so the manifest's
+    read-modify-write is locked — two layers finishing together would otherwise
+    each write a manifest missing the other."""
     try:
         gdf.to_file(_fetched_layer_path(pid, layer, bbox), driver="GeoJSON")
-        manifest = _read_manifest(pid)
-        manifest.setdefault("layers", {})[layer] = {
-            "kind": "fetched", "feature_count": int(len(gdf)), "crs": str(gdf.crs),
-            "at": time.time(), "bbox_key": _bbox_key(bbox),
-        }
-        _write_manifest(pid, manifest)
+        with _manifest_lock:
+            manifest = _read_manifest(pid)
+            manifest.setdefault("layers", {})[layer] = {
+                "kind": "fetched", "feature_count": int(len(gdf)), "crs": str(gdf.crs),
+                "at": time.time(), "bbox_key": _bbox_key(bbox),
+            }
+            _write_manifest(pid, manifest)
     except Exception as exc:
         logger.warning(f"could not cache fetched layer {layer} for {pid}: {exc!r}")
+    _save_shared_layer(layer, bbox, gdf)
+
+
+# --- shared layer cache ------------------------------------------------------
+# Prof. Shi 2026-09-16 #2: "Save the retrieved data locally, so that they don't
+# have to be re-retrieved when the user comes back to the same project." The
+# per-project cache above already did that for one project id — but the same
+# counties come back under NEW projects all the time (the Delaware County
+# buildings file sat, byte-identical, in four project folders on this machine),
+# and every one of those paid the full Overpass fetch again.
+#
+# So a successful fetch is also filed here by layer and bounding box, and any
+# project reuses it — including a smaller area INSIDE it: a neighbourhood
+# project in a county that is already cached reads the county's layer and keeps
+# the part that meets its own box, with no network at all.
+#
+# GeoPackage, not GeoJSON: measured 2026-09-16 on a real 7,391-building layer,
+# 32 MB and 1.5 s to read as GeoJSON against 3 MB and 0.3 s as GeoPackage.
+# Entries expire (HCAS_SHARED_CACHE_DAYS, default 30) so OpenStreetMap edits do
+# reach new runs; Re-fetch at step 3 ignores the cache on demand.
+SHARED_CACHE_DAYS = float(_os.environ.get("HCAS_SHARED_CACHE_DAYS", "30"))
+_shared_lock = threading.Lock()
+
+
+def _shared_dir(layer: str) -> Path:
+    d = LAYER_CACHE_DIR / "_shared" / layer
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _shared_index(layer: str) -> dict:
+    p = _shared_dir(layer) / "index.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _bbox_contains(outer, inner, tol: float = 1e-6) -> bool:
+    return (outer[0] <= inner[0] + tol and outer[1] <= inner[1] + tol
+            and outer[2] >= inner[2] - tol and outer[3] >= inner[3] - tol)
+
+
+def _shared_layer(layer: str, bbox):
+    """(GeoDataFrame, fetched_at) from the shared cache covering `bbox`, or None.
+
+    The smallest unexpired entry that CONTAINS the requested box wins, cut down
+    to the features that meet the box. Anything unreadable is a miss, never an
+    error: the worst a broken cache can do is cost a fetch."""
+    import geopandas as gpd
+    from shapely.geometry import box as _box
+
+    now = time.time()
+    try:
+        with _shared_lock:
+            index = _shared_index(layer)
+        best = None
+        for key, e in index.items():
+            if now - float(e.get("at", 0)) > SHARED_CACHE_DAYS * 86400:
+                continue
+            if not _bbox_contains(e["bbox"], bbox):
+                continue
+            area = (e["bbox"][2] - e["bbox"][0]) * (e["bbox"][3] - e["bbox"][1])
+            if best is None or area < best[0]:
+                best = (area, key, e)
+        if best is None:
+            return None
+        _, key, entry = best
+        path = _shared_dir(layer) / f"{key}.gpkg"
+        if not path.exists():
+            return None
+        gdf = gpd.read_file(path)
+        if gdf.crs is None:
+            gdf = gdf.set_crs(entry.get("crs") or "EPSG:5070")
+        if [round(c, 5) for c in entry["bbox"]] != [round(c, 5) for c in bbox] and len(gdf):
+            clip = gpd.GeoSeries([_box(*bbox)], crs="EPSG:4326").to_crs(gdf.crs).iloc[0]
+            gdf = gdf.iloc[gdf.sindex.query(clip, predicate="intersects")].copy()
+        return gdf, float(entry.get("at", now))
+    except Exception as exc:
+        logger.warning(f"shared cache read for {layer} failed, fetching instead: {exc!r}")
+        return None
+
+
+def _gpkg_safe(gdf):
+    """GeoPackage stores scalars only. OSM rows carry lists (a way's `nodes`)
+    and mixed-type tag columns, so anything that is not a plain scalar is kept
+    as text rather than failing the write."""
+    import pandas as pd
+
+    out = gdf.copy()
+    for col in out.columns:
+        if col == out.geometry.name:
+            continue
+        s = out[col]
+        if s.dtype == object:
+            out[col] = s.map(lambda v: v if (v is None or isinstance(v, str)
+                                            or (isinstance(v, float) and pd.isna(v)))
+                             else str(v))
+    return out
+
+
+def _save_shared_layer(layer: str, bbox, gdf) -> None:
+    try:
+        key = _bbox_key(bbox)
+        path = _shared_dir(layer) / f"{key}.gpkg"
+        tmp = path.with_suffix(".tmp.gpkg")
+        _gpkg_safe(gdf).to_file(tmp, driver="GPKG")
+        _os.replace(tmp, path)
+        with _shared_lock:
+            index = _shared_index(layer)
+            index[key] = {"bbox": [float(c) for c in bbox], "at": time.time(),
+                          "feature_count": int(len(gdf)), "crs": str(gdf.crs)}
+            (_shared_dir(layer) / "index.json").write_text(json.dumps(index, indent=1))
+    except Exception as exc:
+        logger.warning(f"could not add {layer} to the shared cache: {exc!r}")
+
+
+def _note_shared_use(pid: str, layer: str, bbox, gdf, fetched_at: float) -> None:
+    """Record in the project's manifest that a layer came from the shared cache,
+    so the data list and the download both know it exists."""
+    try:
+        with _manifest_lock:
+            manifest = _read_manifest(pid)
+            manifest.setdefault("layers", {})[layer] = {
+                "kind": "shared", "feature_count": int(len(gdf)), "crs": str(gdf.crs),
+                "at": fetched_at, "bbox_key": _bbox_key(bbox),
+                "bbox": [float(c) for c in bbox],
+            }
+            _write_manifest(pid, manifest)
+    except Exception as exc:
+        logger.warning(f"manifest note for shared {layer} failed: {exc!r}")
 
 
 def list_data_bundle(pid: str, db: Path | None = None) -> dict:
@@ -1027,6 +1563,13 @@ def export_data_bundle(pid: str, db: Path | None = None) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for layer, info in layers.items():
+            if info.get("kind") == "shared":
+                # Reused from another project's fetch: nothing sits in this
+                # project's folder, so export what the step actually read.
+                hit = _shared_layer(layer, info.get("bbox") or []) if info.get("bbox") else None
+                if hit is not None:
+                    zf.writestr(f"{layer}.geojson", hit[0].to_json())
+                continue
             if info.get("kind") == "user":
                 src = _user_layer_path(pid, layer)
             else:
@@ -1122,7 +1665,8 @@ def clear_data_override(pid: str, layer: str, db: Path | None = None) -> dict:
 
 
 def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
-                  pct_span: tuple[float, float] = (2.0, 100.0)) -> tuple[dict, dict, list]:
+                  pct_span: tuple[float, float] = (2.0, 100.0),
+                  refresh: bool = False) -> tuple[dict, dict, list]:
     """Fetch `names` concurrently under a wall-clock budget.
 
     Returns (results, errors, detail). A layer that has not returned when the
@@ -1166,7 +1710,7 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
     pending = []
     reused = 0
     for n in names:
-        gdf, kind = _cached_layer(pid, n, bbox)
+        gdf, kind = _cached_layer(pid, n, bbox, refresh=refresh)
         if gdf is None:
             pending.append(n)
             continue
@@ -1175,8 +1719,8 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
         slot = next(d for d in detail if d["layer"] == n)
         slot["status"] = "done"
         slot["count"] = int(len(gdf))
-        slot["note"] = ("using the data you uploaded" if kind == "user"
-                         else "already fetched this run — reused, not re-fetched")
+        slot["note"] = _REUSE_NOTES.get(kind, _REUSE_NOTES["fetched"])
+        slot["cached"] = kind
         if kind == "user":
             slot["source"] = "Your uploaded data"
     if reused:
@@ -1210,10 +1754,94 @@ def _fetch_layers(pid: str, step: int, names: list, bbox, budget_s: float,
             set_progress_detail(pid, step, detail)
             time.sleep(min(3.0, max(remaining - 5, 0)))
         _fetch_pass(pid, step, pending, bbox, deadline, fetchers, detail,
-                    results, errors, names, pct_span, started)
+                    results, errors, names, pct_span, started, refresh=refresh)
         pending = [n for n in pending if n in errors]
 
     return results, errors, detail
+
+
+_REUSE_NOTES = {
+    "user": "using the data you uploaded",
+    "fetched": "already fetched for this project — reused, not re-fetched",
+    "shared": "saved from an earlier download of this area — reused, not re-fetched",
+    "inflight": "downloaded moments ago for this area — reused, not re-fetched",
+}
+
+# One download per (layer, area) at a time, process-wide. A background prefetch
+# and a step can both want the same layer; the second waits for the first and
+# reads its result from the cache instead of opening another request.
+_inflight: dict[str, tuple[threading.Event, float]] = {}
+_inflight_lock = threading.Lock()
+
+class _SlotPool:
+    """Overpass hands out about two query slots per client address. Layer
+    workers were capped at two PER RUN, which was right while only one run
+    fetched at a time — a background prefetch beside a step, or two users at
+    once, would open four and turn the allowance into 429s. So the cap is
+    process-wide.
+
+    A plain semaphore would reintroduce the starvation fixed on 2026-08-11: an
+    abandoned fetch can sit in a socket read long after its step gave up, and
+    it would keep its slot while the NEXT run starved. A slot therefore counts
+    only until its holder's deadline; past that it is free to be reissued.
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._held: dict[int, float] = {}
+        self._next = 0
+
+    def _limit(self) -> int:
+        return max(1, int(_os.environ.get("OSM_LAYER_WORKERS", "2")))
+
+    def acquire(self, deadline: float) -> int | None:
+        with self._cond:
+            while True:
+                now = time.time()
+                for token, d in list(self._held.items()):
+                    if d <= now:
+                        del self._held[token]
+                if len(self._held) < self._limit():
+                    self._next += 1
+                    self._held[self._next] = deadline
+                    return self._next
+                if now >= deadline:
+                    return None
+                soonest = min(self._held.values())
+                self._cond.wait(timeout=max(0.05, min(deadline, soonest) - now))
+
+    def release(self, token: int | None) -> None:
+        if token is None:
+            return
+        with self._cond:
+            self._held.pop(token, None)
+            self._cond.notify_all()
+
+
+_overpass_slots = _SlotPool()
+
+
+def _claim_inflight(key: str, deadline: float) -> tuple[bool, threading.Event, float]:
+    """(am I the downloader, the event to wait on, until when it is worth waiting).
+
+    An owner past its own deadline is a download its step already abandoned —
+    it may sit in a socket read for another minute — so it is replaced rather
+    than waited on. Its eventual release cannot evict the new owner."""
+    with _inflight_lock:
+        held = _inflight.get(key)
+        if held is None or held[1] <= time.time():
+            ev = threading.Event()
+            _inflight[key] = (ev, deadline)
+            return True, ev, deadline
+        return False, held[0], held[1]
+
+
+def _release_inflight(key: str, ev: threading.Event) -> None:
+    with _inflight_lock:
+        held = _inflight.get(key)
+        if held is not None and held[0] is ev:
+            del _inflight[key]
+    ev.set()
 
 
 def _bounded(fetch, deadline: float):
@@ -1274,12 +1902,25 @@ def _layer_failure_note(began, deadline: float, now: float) -> str:
     )
 
 
+_NO_SLOT = object()   # a worker that never got an Overpass slot before the deadline
+
+
 def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
-                results, errors, all_names, pct_span, started) -> None:
-    """One concurrent pass over `names`, updating results/errors/detail in place."""
+                results, errors, all_names, pct_span, started, refresh=False) -> None:
+    """One concurrent pass over `names`, updating results/errors/detail in place.
+
+    Each worker owns its whole layer since 2026-09-16: it records its own
+    failures in a private scope, saves its own successful result to the caches,
+    and hands the step (gdf, error, how). Errors used to live in one
+    process-wide registry popped by fetcher name, which was safe only while a
+    single run fetched at a time. With a background prefetch beside a step, a
+    step draining that registry could swallow the prefetch's failure — and the
+    prefetch would then cache an EMPTY layer as a real one, to be reused as
+    "0 features" by every later run.
+    """
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout, as_completed
 
-    from backend.assess.netdiag import pop_fetch_error
+    from backend.assess.netdiag import collect_fetch_errors
 
     lo, hi = pct_span
     budget_s = max(deadline - time.time(), 1)
@@ -1297,28 +1938,55 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
     started_at: dict[str, float] = {}
     start_lock = threading.Lock()
 
-    def _mark_start(name, fetch):
-        def run(bbox):
+    def work(name):
+        fetch = fetchers[name]
+        key = f"{name}|{_bbox_key(bbox)}"
+        owner, ev, until = _claim_inflight(key, deadline)
+        if not owner:
+            # Exactly this layer, for exactly this area, is already downloading
+            # (a prefetch, or another user). Wait for it and read its result.
+            ev.wait(timeout=max(min(deadline, until) - time.time(), 0))
+            gdf, _kind = _cached_layer(pid, name, bbox)
+            if gdf is not None:
+                return gdf, None, "inflight"
+            owner, ev, _ = _claim_inflight(key, deadline)   # it failed: try it ourselves
+        try:
+            token = _overpass_slots.acquire(deadline)
+            if token is None:
+                return None, _NO_SLOT, None
             with start_lock:
                 started_at[name] = time.time()
-            return fetch(bbox)
-        return run
+            try:
+                with collect_fetch_errors() as errs:
+                    g = _bounded(fetch, deadline)(tuple(bbox))
+            finally:
+                _overpass_slots.release(token)
+            err = errs.get(getattr(fetch, "__name__", "")) or next(iter(errs.values()), None)
+            # Cache only a clean result that arrived inside the budget. A fetch
+            # the step had already given up on may have stopped part-way through
+            # its tiles, and a partial layer must not be filed as the whole one.
+            if err is None and time.time() < deadline:
+                _save_fetched_layer(pid, name, bbox, g)
+            return g, err, "fetched"
+        finally:
+            if owner:
+                _release_inflight(key, ev)
 
     try:
-        futures = {ex.submit(_mark_start(n, _bounded(fetchers[n], deadline)),
-                             tuple(bbox)): n
-                   for n in names}
+        futures = {ex.submit(work, n): n for n in names}
         done = len([n for n in all_names if n in results and n not in errors])
         try:
             for fut in as_completed(futures, timeout=budget_s):
                 n = futures[fut]
+                how = None
                 try:
-                    g = fut.result()
+                    g, err, how = fut.result()
                 except Exception as exc:  # a fetcher is not supposed to raise
                     logger.warning(f"{n} fetcher raised: {exc!r}")
                     g = _empty_layer()
-                    errors[n] = f"the data source failed unexpectedly ({type(exc).__name__})."
-                err = pop_fetch_error(getattr(fetchers[n], "__name__", ""))
+                    err = f"the data source failed unexpectedly ({type(exc).__name__})."
+                if err is _NO_SLOT:
+                    g, err = _empty_layer(), _NOT_ATTEMPTED_NOTE
                 if err:
                     errors[n] = err
                 else:
@@ -1326,17 +1994,19 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
                 results[n] = g
                 done += 1
                 slot = next(d for d in detail if d["layer"] == n)
-                slot["elapsed_s"] = round(time.time() - started_at.get(n, started), 1)
+                if err is _NOT_ATTEMPTED_NOTE:
+                    slot.pop("elapsed_s", None)
+                else:
+                    slot["elapsed_s"] = round(time.time() - started_at.get(n, started), 1)
                 if n in errors:
                     slot["status"] = "error"
                     slot["note"] = errors[n]
                 else:
                     slot["status"] = "done"
                     slot["count"] = int(len(g))
-                    # A real fetch, not a timeout/error: cache it so a later
-                    # step (or a re-run) for this same project reuses it
-                    # instead of asking Overpass/Census again.
-                    _save_fetched_layer(pid, n, bbox, g)
+                    if how == "inflight":
+                        slot["note"] = _REUSE_NOTES["inflight"]
+                        slot["cached"] = "inflight"
                 set_progress_detail(pid, step, detail)
                 set_progress(pid, step, lo + (hi - lo) * done / max(len(all_names), 1),
                              f"map layers {done}/{len(all_names)} · {_layer_meta(n)[0]} "
@@ -1370,16 +2040,202 @@ def _fetch_pass(pid, step, names, bbox, deadline, fetchers, detail,
         ex.shutdown(wait=False, cancel_futures=True)
 
 
-def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
+# --- community data tables (Prof. Shi and Prof. Wang 2026-09-16 #6) ------------
+
+def _tables_dir() -> Path:
+    d = LAYER_CACHE_DIR / "_shared" / "tables"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _fetch_table(source: str, spec: dict):
+    """One public table for an area's county. Raises in plain language."""
+    from backend.assess import indicators as ind
+
+    state, county = spec["state_fips"], spec["county_fips"]
+    if source == "svi":
+        return ind.svi_tracts(state, county, _tables_dir())
+    if source == "places":
+        return ind.places_tracts(state, county, _tables_dir())
+    if source == "chr":
+        return ind.chr_counties(_tables_dir())
+    if source == "aqi":
+        return ind.aqi_counties(_tables_dir())
+    raise KeyError(source)
+
+
+def _fetch_tables(sources, spec: dict) -> tuple[dict, dict]:
+    """(tables by source, plain-language errors by source)."""
     from backend.assess.netdiag import friendly_net_reason
 
-    factors = _confirmed(project, 2)["factors"]
-    names = sorted({layer for f in factors for layer in METRIC_LAYERS[f["metric"]]})
-    study_area, bbox, describe = _resolve_study_area(project)
-    pid = project["id"]
+    tables, errors = {}, {}
+    for src in sources:
+        try:
+            tables[src] = _fetch_table(src, spec)
+        except Exception as exc:
+            logger.warning(f"community data {src} failed: {exc!r}")
+            if isinstance(exc, (LookupError, RuntimeError)) and not isinstance(exc, KeyError):
+                errors[src] = str(exc)
+            else:
+                errors[src] = f"could not be downloaded — {friendly_net_reason(exc)}"
+    return tables, errors
 
+
+def _table_inventory(sources, tables, errors, spec) -> list[dict]:
+    from backend.assess import indicators as ind
+
+    out = []
+    for src in sources:
+        meta = ind.SOURCES[src]
+        entry = {"source": src, "name": meta["name"], "level": meta["level"]}
+        if src in errors:
+            entry["error"] = errors[src]
+        else:
+            data = tables[src]
+            if src in ("svi", "places"):
+                entry["rows"] = len(data)
+                entry["note"] = f"{len(data)} census tracts in the county"
+            elif src == "chr":
+                have = f"{spec['state_fips']}{spec['county_fips']}" in data
+                entry["note"] = (f"{data.get('_year', '')} release" + ("" if have else
+                                 " — this county is not in the data"))
+            elif src == "aqi":
+                c = lookup_county(spec["state_fips"], spec["county_fips"]) or {}
+                key = ind.aqi_key(data, c.get("state_name", ""), c.get("county_name", ""))
+                entry["note"] = (f"{data.get('_year', '')} summary" + ("" if key else
+                                 " — no EPA air monitor in this county, so its air-quality "
+                                 "measures cannot be reported"))
+        out.append(entry)
+    return out
+
+
+def _tract_shares(spec: dict, polygon=None) -> dict[str, float] | None:
+    """Fraction of each census tract's population inside the area.
+
+    None means the whole county (every tract counts in full). A block-group
+    area is exact: the selected block groups' 2020 population over their tract's.
+    Tracts are whole by construction. A town or ZIP code is split by land area,
+    the best available without finer population data.
+    """
+    if not _is_sub_county(spec):
+        return None
+    state, county, unit = spec["state_fips"], spec["county_fips"], spec["areal_unit"]
+    geoids = [str(g) for g in spec.get("area_geoids") or []]
+    if unit == "tract":
+        return {g: 1.0 for g in geoids}
+    tracts = _unit_features(state, county, "tract")
+    tract_pop = {str(g): p for g, p in zip(tracts["GEOID"], tracts["POP100"]) if p == p and p}
+    if unit in ("block_group", "custom"):
+        bgs = _unit_features(state, county, "block_group")
+        bg_pop = {str(g): p for g, p in zip(bgs["GEOID"], bgs["POP100"]) if p == p}
+        shares: dict[str, float] = {}
+        for g in geoids:
+            t = g[:11]
+            if t in tract_pop and g in bg_pop:
+                shares[t] = shares.get(t, 0.0) + bg_pop[g] / tract_pop[t]
+        return {t: min(s, 1.0) for t, s in shares.items()}
+    if polygon is None:
+        return {}
+    t5070 = tracts.to_crs("EPSG:5070")
+    area = polygon.geometry.union_all()
+    shares = {}
+    for g, geom in zip(t5070["GEOID"], t5070.geometry):
+        if geom is None or geom.is_empty or not geom.intersects(area):
+            continue
+        frac = geom.intersection(area).area / geom.area if geom.area else 0.0
+        if frac > 0.001:
+            shares[str(g)] = min(frac, 1.0)
+    return shares
+
+
+def _indicator_values(metrics, spec: dict, tables: dict, table_errors: dict,
+                      polygon=None) -> tuple[dict, dict]:
+    """(values, details) for the community measures in `metrics`.
+
+    A measure whose table failed is None and named in details as not measured —
+    never a number. County-level measures carry `level: county` so every screen
+    and the report can say they describe the whole county.
+    """
+    from backend.assess import indicators as ind
+
+    values, details = {}, {}
+    wanted = [m for m in metrics if m in ind.INDICATORS]
+    if not wanted:
+        return values, details
+    shares = None
+    if any(ind.INDICATORS[m]["source"] in ("svi", "places") for m in wanted):
+        try:
+            shares = _tract_shares(spec, polygon)
+        except Exception as exc:
+            logger.warning(f"tract shares failed: {exc!r}")
+            shares = {}
+    geoid = f"{spec['state_fips']}{spec['county_fips']}"
+    c = lookup_county(spec["state_fips"], spec["county_fips"]) or {}
+    for m in wanted:
+        d = ind.INDICATORS[m]
+        src = d["source"]
+        meta = ind.SOURCES[src]
+        info = {"source": meta["short"], "unit": d["unit"], "level": meta["level"]}
+        if src in table_errors or src not in tables:
+            values[m] = None
+            info["not_measured"] = table_errors.get(src, "the data source was not fetched")
+            details[m] = info
+            continue
+        table = tables[src]
+        if src in ("svi", "places"):
+            use = shares if shares is not None else {t: 1.0 for t in table}
+            v, coverage = ind.aggregate(table, d["field"], use)
+            info["coverage"] = round(coverage, 3)
+            info["level"] = ("population-weighted from census tracts"
+                             + (" overlapping the area" if shares is not None else " in the county"))
+            if v is None:
+                info["not_measured"] = ("no tract estimate covers most of the area's residents"
+                                        if use else "the area could not be matched to census tracts")
+            values[m] = None if v is None else round(v * d.get("scale", 1), 4)
+        elif src == "chr":
+            v = ind.county_value(table, geoid, d["field"], d.get("scale", 1))
+            us = ind.county_value(table, "00000", d["field"], d.get("scale", 1))
+            info["level"] = "county-wide"
+            info["year"] = table.get("_year")
+            if us is not None:
+                info["us"] = round(us, 4)
+            if v is None:
+                info["not_measured"] = "County Health Rankings publishes no value for this county"
+            values[m] = None if v is None else round(v, 4)
+        elif src == "aqi":
+            key = ind.aqi_key(table, c.get("state_name", ""), c.get("county_name", ""))
+            v = (table.get(key) or {}).get(d["field"]) if key else None
+            info["level"] = "county-wide (EPA monitors)"
+            info["year"] = table.get("_year")
+            if v is None:
+                info["not_measured"] = ("no EPA air-quality monitor reports for this county"
+                                        if not key else "EPA reports no value for this county")
+            values[m] = None if v is None else round(float(v), 4)
+        details[m] = info
+    return values, details
+
+
+# --- step 3 --------------------------------------------------------------------
+
+def _factor_metrics(factors) -> list[str]:
+    return [f["metric"] for f in factors if f.get("metric") in METRICS]
+
+
+def _step3_area(project: dict, which: str, names: list, sources: list,
+                pct_span: tuple[float, float]) -> dict:
+    """Step 3's inventory for one area (the project's own, or its base area)."""
+    from backend.assess.netdiag import friendly_net_reason
+
+    study_area, bbox, describe = _resolve_study_area(project, which)
+    spec = _area_spec(project, which)
+    pid = project["id"]
+    lo, hi = pct_span
+    # Only the bounding box of THIS area is fetched — Prof. Shi 2026-09-16 #2,
+    # "retrieve the data only for the defined project area". For a neighbourhood
+    # that is a few square kilometres instead of the county.
     results, errs_by_layer, detail = _fetch_layers(
-        pid, 3, names, bbox, LAYER_FETCH_BUDGET_S, pct_span=(2.0, 88.0)
+        pid, 3, names, bbox, LAYER_FETCH_BUDGET_S, pct_span=(lo, lo + (hi - lo) * 0.8),
+        refresh=bool(project.get("_refresh")),
     )
     gdfs = [results[n] for n in names]
     # Failed fetches surface in the artifact (Prof. Shi's blocked-network test:
@@ -1401,53 +2257,77 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
             "source": source,
             "geom_type": geom_type,
             **({"fetch_seconds": slot["elapsed_s"]} if slot.get("elapsed_s") is not None else {}),
+            **({"reused": slot["cached"]} if slot.get("cached") else {}),
             **({"error": err} if err else {}),
         })
 
+    set_progress(pid, 3, lo + (hi - lo) * 0.82, "community data — CDC, County Health Rankings, EPA…")
+    tables, table_errors = _fetch_tables(sources, spec)
+    table_inventory = _table_inventory(sources, tables, table_errors, spec)
+
     from backend.assess import places
 
-    meta = project["meta"]
-    set_progress(pid, 3, 90, "county health outcomes — CDC PLACES…")
+    state, county = spec["state_fips"], spec["county_fips"]
+    set_progress(pid, 3, lo + (hi - lo) * 0.9, "health outcomes — CDC PLACES…")
     try:
-        outcomes = places.fetch_health_outcomes(meta["state_fips"], meta["county_fips"])
+        outcomes = places.fetch_health_outcomes(state, county)
     except Exception as exc:  # CDC being down shouldn't block the OSM layers
         logging.getLogger(__name__).warning(f"PLACES fetch failed: {exc!r}")
         outcomes = {"source": "CDC PLACES", "measures": [],
                     "note": f"unavailable this run: {friendly_net_reason(exc)}"}
+    if describe["kind"] in ("units", "custom") and outcomes.get("measures"):
+        outcomes = _area_outcomes(spec, study_area, outcomes)
 
     # The study area as a first-class layer of record, so its attribute table
     # (FIPS, area, population) and properties can be shown like any other layer.
     study_layer = {
         "kind": describe["kind"],
-        "name": "Study area",
+        "name": "Project area" if describe["kind"] in ("units", "custom") else "Study area",
         "fips": describe.get("fips"),
         "crs": "EPSG:5070 (CONUS Albers Equal Area)",
         "extent_4326": bbox,
-        "source": "US Census TIGERweb county boundaries"
-                  if describe["kind"] == "county" else "Derived 5 km centroid buffer",
+        "source": {"county": "US Census TIGERweb county boundaries",
+                   "disc": "Derived 5 km centroid buffer"}.get(
+                       describe["kind"], "US Census TIGERweb boundaries of the selected areas"),
         "geom_type": "polygon",
     }
     if describe.get("area_km2") is not None:
         study_layer["area_km2"] = describe["area_km2"]
     if describe.get("radius_m") is not None:
         study_layer["radius_m"] = describe["radius_m"]
-    pop = (outcomes or {}).get("total_population")
-    if pop is not None:
-        study_layer["population"] = pop
+    if describe["kind"] in ("units", "custom"):
+        s1 = _confirmed(project, 1)
+        pa = ((s1.get("base") or {}) if which == "base" else s1).get("project_area") or {}
+        if pa.get("population") is not None:
+            study_layer["population"] = pa["population"]
+        study_layer["units"] = len(spec.get("area_geoids") or [])
+    else:
+        pop = (outcomes or {}).get("total_population")
+        if pop is not None:
+            study_layer["population"] = pop
 
     # Prof. Shi 2026-08-07 #5: the reporting unit is the user's choice, and when
     # its data does not exist the system must SAY so after searching — which is
     # what this does: a real Census query, then a plain-language verdict.
-    from backend.gis.profile import DEFAULT_AREAL_UNIT, areal_unit_availability
+    from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT, areal_unit_availability
 
-    set_progress(pid, 3, 95, "searching for the chosen reporting unit…")
-    unit = meta.get("areal_unit", DEFAULT_AREAL_UNIT)
-    areal = areal_unit_availability(meta["state_fips"], meta["county_fips"], unit)
-    if areal.get("available") and unit != "county":
-        areal["note"] += (
-            " The metrics are reported for the whole county AND tabulated for each "
-            "of these units at step 7."
-        )
+    unit = spec.get("areal_unit", DEFAULT_AREAL_UNIT)
+    if describe["kind"] in ("units", "custom"):
+        n_sel = len(spec.get("area_geoids") or [])
+        label = (AREAL_UNITS.get(unit) or {}).get("label", unit)
+        areal = {"unit": unit, "label": label, "available": True, "count": n_sel,
+                 "source": "US Census TIGERweb",
+                 "note": (f"The area is {n_sel} selected {_unit_label(unit, n_sel != 1)}. "
+                          + ("Results are reported for the area as a whole and for each of them "
+                             "at step 7." if n_sel > 1 else "Results are reported for it at step 7."))}
+    else:
+        set_progress(pid, 3, lo + (hi - lo) * 0.96, "searching for the chosen reporting unit…")
+        areal = areal_unit_availability(state, county, unit)
+        if areal.get("available") and unit != "county":
+            areal["note"] += (
+                " The metrics are reported for the whole county AND tabulated for each "
+                "of these units at step 7."
+            )
 
     artifact = {
         "kind": "layer_inventory",
@@ -1455,8 +2335,70 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
         "study_area": study_layer,
         "areal_unit": areal,
         "layers": inventory,
+        "tables": table_inventory,
         "health_outcomes": outcomes,
     }
+    if describe["kind"] == "disc":
+        artifact["radius_m"] = 5000  # back-compat for the disc-fallback path
+    return artifact
+
+
+def _area_outcomes(spec: dict, study_area, county_outcomes: dict) -> dict:
+    """PLACES outcomes for an area smaller than its county: tract estimates,
+    population-weighted, in CRUDE prevalence beside the county's and the US's
+    crude figures (see places.fetch_crude_outcomes for why never age-adjusted)."""
+    from backend.assess import indicators as ind
+    from backend.assess import places
+
+    try:
+        rows = ind.places_tracts(spec["state_fips"], spec["county_fips"], _tables_dir(),
+                                 fields=list(places.MEASURES))
+        shares = _tract_shares(spec, study_area) or {}
+        county_crude, us_crude = places.fetch_crude_outcomes(spec["state_fips"], spec["county_fips"])
+    except Exception as exc:
+        logger.warning(f"area health outcomes failed: {exc!r}")
+        return {**county_outcomes, "area_note": (
+            "Estimates for the project area itself could not be computed this run, so the "
+            "figures below are for the whole county.")}
+    measures = []
+    for mid, label in places.MEASURES.items():
+        v, coverage = ind.aggregate(rows, mid, shares)
+        if v is None and mid not in county_crude:
+            continue
+        measures.append({"id": mid, "label": label,
+                         "area_pct": None if v is None else round(v, 1),
+                         "county_pct": county_crude.get(mid), "us_pct": us_crude.get(mid)})
+    return {
+        "source": "CDC PLACES (BRFSS model-based estimates, crude %)",
+        "level": "project_area",
+        "total_population": county_outcomes.get("total_population"),
+        "measures": measures,
+        "note": ("Project-area figures combine the census-tract estimates for the tracts the area "
+                 "covers, weighted by the residents inside it. Every column is crude prevalence, "
+                 "so the three can be compared directly; tract estimates are modelled, not surveyed "
+                 "in each tract."),
+    }
+
+
+def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
+    factors = _confirmed(project, 2)["factors"]
+    metrics = _factor_metrics(factors)
+    names = sorted({layer for m in metrics for layer in _metric_layers(m)})
+    from backend.assess.indicators import sources_for
+
+    sources = sources_for(metrics)
+    has_base = bool(project["meta"].get("base"))
+    span = (2.0, 60.0) if has_base else (2.0, 96.0)
+    artifact = _step3_area(project, "project", names, sources, span)
+    if has_base:
+        # The base area gets exactly the same data, so step 7 can compare like
+        # with like (Prof. Shi 2026-09-16 #3).
+        artifact["base"] = _step3_area(project, "base", names, sources, (60.0, 96.0))
+    waiting = [f for f in factors if f.get("metric") == NEEDS_DATA]
+    if waiting:
+        artifact["awaiting_data"] = [
+            {"factor": f.get("factor", ""), "data_needed": f.get("data_needed", "")} for f in waiting
+        ]
     # If the run was forced onto an out-of-date Overpass mirror, the features
     # are old and every number derived from them is old with them. Carry that
     # onto the artifact so it reaches the screen and the report — a stale
@@ -1466,8 +2408,6 @@ def _run_step_3(project: dict) -> tuple[dict, str | None, dict | None]:
     stale = stale_data_warning()
     if stale:
         artifact["data_freshness_warning"] = stale
-    if describe["kind"] == "disc":
-        artifact["radius_m"] = 5000  # back-compat for the disc-fallback path
     return artifact, None, None
 
 
@@ -1521,11 +2461,14 @@ _STEP4_SYSTEM = (
     "review and edit. Ground the framework ONLY in the theories below, and cite ONLY "
     "from the reference database below (by exact title). Be honest in assumptions and "
     "limitations: OSM completeness varies, FAR carries a levels_tagged_pct honesty flag, "
-    "the metric registry measures the built environment, and any county health outcomes "
-    "provided are model-based county-level estimates. Those outcomes cover the same "
-    "extent as the county study area, but they are modelled rather than measured and "
-    "carry no variation within the county — so they cannot be attributed to any part of "
-    "it, and environment-outcome links are ecological association, not causation.\n\n"
+    "map-derived measures describe the built environment, community measures from census "
+    "tracts are population-weighted averages of survey or model estimates, county-wide "
+    "measures describe the whole county rather than a smaller study area, factors "
+    "awaiting data are not measured at all, and any county health outcomes provided are "
+    "model-based county-level estimates. Those outcomes are modelled rather than measured "
+    "and carry no variation within the county — so they cannot be attributed to any part "
+    "of it, and environment-outcome links are ecological association, not causation. "
+    + _PLAIN_WORDS_RULE + "\n\n"
     "THEORIES (the knowledgebase):\n"
     + "\n".join(f"- {t['name']}: {t['summary']} [{t['source']}]" for t in KG_THEORIES)
     + "\n\nREFERENCE DATABASE:\n"
@@ -1604,17 +2547,46 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
     factors = _confirmed(project, 2)["factors"]
     step3 = _confirmed(project, 3)
     inventory = step3["layers"]
-    outcome_rows = (step3.get("health_outcomes") or {}).get("measures") or []
-    outcomes_block = (
-        "\n\nCounty health outcomes (CDC PLACES, age-adjusted prevalence — modelled at "
-        "county level, with no variation within the county):\n"
-        + "\n".join(
-            f"- {m['label']}: {m['county_pct']}% (US: {m['us_pct']}%)"
-            for m in outcome_rows
+    outcomes = step3.get("health_outcomes") or {}
+    outcome_rows = outcomes.get("measures") or []
+    if outcome_rows and outcomes.get("level") == "project_area":
+        outcomes_block = (
+            "\n\nHealth outcomes (CDC PLACES, crude prevalence — project area combined from "
+            "census-tract model estimates):\n"
+            + "\n".join(
+                f"- {m['label']}: area {m.get('area_pct')}%, county {m.get('county_pct')}%, "
+                f"US {m.get('us_pct')}%" for m in outcome_rows
+            )
         )
-        if outcome_rows
-        else ""
+    elif outcome_rows:
+        outcomes_block = (
+            "\n\nCounty health outcomes (CDC PLACES, age-adjusted prevalence — modelled at "
+            "county level, with no variation within the county):\n"
+            + "\n".join(
+                f"- {m['label']}: {m['county_pct']}% (US: {m['us_pct']}%)"
+                for m in outcome_rows
+            )
+        )
+    else:
+        outcomes_block = ""
+    tables_block = "".join(
+        f"\n- {t['name']} ({t['level']})" + (f": not available — {t['error']}" if t.get("error") else "")
+        for t in step3.get("tables") or []
     )
+    if tables_block:
+        tables_block = "\n\nCommunity data sources:" + tables_block
+    waiting = [f for f in factors if f.get("metric") == NEEDS_DATA]
+    waiting_block = (
+        "\n\nFactors kept in the assessment but awaiting data (not measured):\n"
+        + "\n".join(f"- {f['factor']}: needs {f.get('data_needed') or 'a data source'}" for f in waiting)
+        if waiting else ""
+    )
+    base_block = ""
+    if project["meta"].get("base"):
+        b1 = (_confirmed(project, 1).get("base") or {})
+        base_block = (f"\n\nComparison (base) area: {b1.get('place_name', 'defined')} — every "
+                      "measure is also computed for it, so the framework should say how the two "
+                      "areas will be compared.")
     # Best-effort knowledgebase grounding. It is off unless an operator points
     # HCAS at a running instance, and a query can take minutes, so say so on the
     # progress line and carry on with the built-in theories if it does not answer.
@@ -1636,10 +2608,13 @@ def _run_step_4(project: dict) -> tuple[dict, str | None, dict | None]:
         + "\n".join(f"- {f['factor']} -> {f['metric']}: {f['rationale']}" for f in factors)
         + "\n\nCollected data layers:\n"
         + "\n".join(f"- {l['layer']}: {l['feature_count']} features" for l in inventory)
+        + tables_block
         + outcomes_block
-        + "\n\nDraft the solution framework for this assessment. Where county health "
-        "outcomes exceed the US benchmark, connect them to the relevant built-"
-        "environment factors."
+        + waiting_block
+        + base_block
+        + "\n\nDraft the solution framework for this assessment. Where health "
+        "outcomes exceed the US benchmark, connect them to the relevant environmental, "
+        "social and built-environment factors."
     )
     draft, usage = _llm_structured(
         _step4_system(kg_context),
@@ -1688,19 +2663,24 @@ def _metric_computers() -> dict:
         )(a.compute_transit_access(L["transit_stops"], sa)),
         "facility_access": lambda L, sa: a.compute_facility_access(L["facilities"], sa),
         "land_use_mix": lambda L, sa: a.compute_land_use_mix(L["landuse"], sa),
+        "near_major_road_exposure": lambda L, sa: a.compute_near_major_road_exposure(
+            L["buildings"], L["roads"], sa),
+        "industrial_land_share": lambda L, sa: a.compute_industrial_land_share(L["landuse"], sa),
     }
 
 
-def _run_step_5(project: dict) -> tuple[dict, str | None, dict | None]:
-    inv = _confirmed(project, 3)
+def _database_for(inv: dict) -> dict:
     sa = inv.get("study_area") or {}
     # Prefer the step-3 study-area description; fall back for old disc artifacts.
     if sa:
-        study_desc = (
-            f"{sa.get('name', 'Study area')} · "
-            + (f"county boundary ({sa['area_km2']} km²)" if sa.get("kind") == "county"
-               else f"{sa.get('radius_m', 5000)} m centroid buffer")
-        )
+        kind = sa.get("kind")
+        if kind == "county":
+            shape = f"county boundary ({sa['area_km2']} km²)"
+        elif kind in ("units", "custom"):
+            shape = f"{sa.get('units', '')} selected Census areas ({sa.get('area_km2')} km²)"
+        else:
+            shape = f"{sa.get('radius_m', 5000)} m centroid buffer"
+        study_desc = f"{sa.get('name', 'Study area')} · {shape}"
     else:
         study_desc = f"{inv.get('radius_m', 5000)} m circular buffer around the county centroid"
     return {
@@ -1710,39 +2690,70 @@ def _run_step_5(project: dict) -> tuple[dict, str | None, dict | None]:
         "study_area": study_desc,
         "study_area_detail": sa,
         "layers": inv["layers"],
-        "storage": "layers fetched from OSM per run; artifacts persisted in the audit store",
-    }, None, None
+        "tables": inv.get("tables") or [],
+        "storage": "map layers saved on this machine and reused across projects for 30 days; "
+                   "community data tables saved likewise; artifacts persisted in the audit store",
+    }
+
+
+def _run_step_5(project: dict) -> tuple[dict, str | None, dict | None]:
+    inv = _confirmed(project, 3)
+    out = _database_for(inv)
+    if inv.get("base"):
+        out["base"] = _database_for(inv["base"])
+    return out, None, None
 
 
 def _run_step_6(project: dict) -> tuple[dict, str | None, dict | None]:
-    metrics = sorted({f["metric"] for f in _confirmed(project, 2)["factors"]})
-    steps = [
-        {"action": "compute", "metric": m, "layers": METRIC_LAYERS[m]} for m in metrics
-    ]
+    from backend.assess.indicators import SOURCES
+
+    factors = _confirmed(project, 2)["factors"]
+    metrics = sorted({f["metric"] for f in factors if f.get("metric") in METRICS})
+    steps = []
+    for m in metrics:
+        step = {"action": "compute", "metric": m, "layers": _metric_layers(m)}
+        if m in METRIC_SOURCES:
+            step["source"] = SOURCES[METRIC_SOURCES[m]]["short"]
+        steps.append(step)
+    for f in factors:
+        if f.get("metric") == NEEDS_DATA:
+            steps.append({"action": "awaiting_data", "factor": f.get("factor", ""),
+                          "data_needed": f.get("data_needed", "")})
+    if project["meta"].get("base"):
+        steps.append({"action": "compare_with_base", "input": "every computed metric, both areas"})
     steps.append({"action": "generate_interventions", "input": "all computed metrics"})
     steps.append({"action": "assemble_report", "input": "confirmed artifacts of steps 1-7"})
     return {"kind": "workflow", "steps": steps}, None, None
 
 
 def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, describe,
-                    study_area=None) -> dict:
+                    study_area=None, which: str = "project") -> dict:
     """Metrics per reporting unit, or a stated reason there are none.
 
     Always returns a dict carrying `unit` and either `rows` or `note`, so the
     wizard and report never have to guess whether an absent table means "the
     county is the unit", "the data was not published", or "it failed".
+
+    For an area built from selected units (2026-09-16) the rows are exactly
+    those units — a customized area is broken down by its block groups.
     """
+    from backend.gis.areas import geometry_unit
     from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
 
-    meta = project["meta"]
+    meta = _area_spec(project, which) or project["meta"]
     unit = meta.get("areal_unit", DEFAULT_AREAL_UNIT)
-    label = (AREAL_UNITS.get(unit) or {}).get("label", unit)
+    spec_units = AREAL_UNITS.get(unit) or {}
+    label = spec_units.get("short") or spec_units.get("label", unit)
     pid = project["id"]
+    selected = [str(g) for g in (meta.get("area_geoids") or [])]
 
     if unit == "county":
         return {"unit": unit, "label": label, "rows": [],
                 "note": "The county is the reporting unit, so the figures above are the result."}
-    if describe.get("kind") != "county":
+    if describe.get("kind") in ("units", "custom") and len(selected) == 1:
+        return {"unit": unit, "label": label, "rows": [],
+                "note": f"The area is a single {_unit_label(unit)}, so the figures above are the result."}
+    if describe.get("kind") not in ("county", "units", "custom"):
         return {"unit": unit, "label": label, "rows": [],
                 "note": "The county boundary was unavailable on this run, so the study area is a "
                         "centroid buffer and does not align with any Census unit. Re-run with the "
@@ -1769,11 +2780,14 @@ def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, de
         from backend.assess.by_unit import tabulate_by_unit
         from backend.gis.profile import fetch_areal_unit_geometries
 
-        units = fetch_areal_unit_geometries(meta["state_fips"], meta["county_fips"], unit)
+        units = fetch_areal_unit_geometries(meta["state_fips"], meta["county_fips"],
+                                            geometry_unit(unit))
         if units is None or units.empty:
             return {"unit": unit, "label": label, "rows": [],
                     "note": f"Census publishes no {label} boundaries for this county, so results "
                             f"stay at the county level."}
+        if selected:
+            units = units[units["GEOID"].astype(str).isin(selected)]
 
         def _tick(done, total):
             set_progress(pid, 7, 86 + 6 * done / max(total, 1),
@@ -1818,28 +2832,45 @@ def _tabulate_units(project, layers, computers, metrics_wanted, fetch_errors, de
     return result
 
 
-def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
-    from backend.assess import generate_interventions
+def _execute_area(project: dict, which: str, metrics_wanted: list,
+                  pct_span: tuple[float, float]) -> dict:
+    """Step 7 for one area — the project's own, or its base area (2026-09-16 #3).
 
-    # Execute the human-confirmed workflow: a deleted compute step stays deleted.
-    plan = [s for s in _confirmed(project, 6)["steps"] if s["action"] == "compute"]
-    metrics_wanted = [s["metric"] for s in plan]
-    names = sorted({layer for m in metrics_wanted for layer in METRIC_LAYERS[m]})
-    study_area, bbox_list, describe = _resolve_study_area(project)
+    Both areas go through this one function with the same confirmed workflow,
+    so a difference between them can only come from the areas, never from the
+    two having been computed differently.
+    """
+    from backend.assess import generate_interventions
+    from backend.assess.indicators import sources_for
+
+    lo, hi = pct_span
+    span = lambda f: lo + (hi - lo) * f  # noqa: E731 — progress within this area's share
+    tag = "base area — " if which == "base" else ""
+    names = sorted({layer for m in metrics_wanted for layer in _metric_layers(m)})
+    study_area, bbox_list, describe = _resolve_study_area(project, which)
     bbox = tuple(bbox_list)
     pid = project["id"]
+    spec = _area_spec(project, which)
     results, fetch_errors, detail = _fetch_layers(
-        pid, 7, names, bbox, LAYER_FETCH_BUDGET_S, pct_span=(2.0, 65.0)
+        pid, 7, names, bbox, LAYER_FETCH_BUDGET_S, pct_span=(span(0.02), span(0.65))
     )
     layers = {n: results[n] for n in names}
     # study_area resolved above (county polygon, or 5 km disc fallback)
     computers = _metric_computers()
-    set_progress(pid, 7, 70, "computing metrics…")
+    set_progress(pid, 7, span(0.70), f"{tag}computing metrics…")
     metrics: dict = {}
     for m in metrics_wanted:
-        metrics.update(computers[m](layers, study_area))
+        if m in computers:
+            metrics.update(computers[m](layers, study_area))
     metrics = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in metrics.items()}
-    set_progress(pid, 7, 82, "drawing the map…")
+
+    # Community measures (#6): read from the public tables step 3 saved, and
+    # combined for exactly this area.
+    tables, table_errors = _fetch_tables(sources_for(metrics_wanted), spec)
+    table_values, measure_details = _indicator_values(
+        metrics_wanted, spec, tables, table_errors, polygon=study_area)
+    metrics.update(table_values)
+    set_progress(pid, 7, span(0.82), f"{tag}drawing the map…")
 
     # A failed fetch yields an empty layer, and an empty layer computes a
     # perfectly plausible 0.0. Null those out so nothing downstream — the
@@ -1848,6 +2879,12 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     unmeasured = [k for k in _unmeasured_metric_keys(fetch_errors) if k in metrics]
     for key in unmeasured:
         metrics[key] = None
+    # A community measure with no value is not measured either — its source
+    # failed, the county is not covered, or too few residents have an estimate.
+    unmeasured += [k for k, v in table_values.items() if v is None and k not in unmeasured]
+    # So is an exposure share with no buildings to share out.
+    unmeasured += [k for k in ("near_major_road_exposure",) if k in metrics and metrics[k] is None
+                   and k not in unmeasured]
     measured = {k: v for k, v in metrics.items() if v is not None}
 
     artifact = {
@@ -1862,8 +2899,12 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
         # here — an ~18x denominator error with nothing to catch it.
         "study_area": describe,
     }
+    if measure_details:
+        artifact["measure_details"] = measure_details
     if fetch_errors:
         artifact["fetch_errors"] = fetch_errors
+    if table_errors:
+        artifact["table_errors"] = table_errors
     if unmeasured:
         artifact["unmeasured_metrics"] = unmeasured
 
@@ -1875,8 +2916,14 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     # failed fetch would spread one silent zero across 28 rows.
     artifact["by_unit"] = _tabulate_units(
         project, layers, computers, metrics_wanted, fetch_errors, describe,
-        study_area=study_area,
+        study_area=study_area, which=which,
     )
+    community = [m for m in metrics_wanted if m in METRIC_SOURCES]
+    if community and artifact["by_unit"].get("rows"):
+        extra = ("Community measures (" + ", ".join(community) + ") come from census-tract or "
+                 "county tables and are reported for the area as a whole, not per row.")
+        bu = artifact["by_unit"]
+        bu["note"] = f"{bu['note']} {extra}" if bu.get("note") else extra
     if layers and all(g.empty for g in layers.values()):
         artifact["map_note"] = (
             "Every data layer came back empty, so the map has no features to "
@@ -1994,6 +3041,43 @@ def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
     except Exception as exc:  # map is a bonus, never fails the step
         logger.warning(f"step 7 map render failed: {exc}")
         artifact["map_available"] = False
+    return artifact
+
+
+
+
+def _compare_metrics(project_metrics: dict, base_metrics: dict) -> dict:
+    """Side-by-side figures for every metric both areas measured."""
+    out = {}
+    for k, a in project_metrics.items():
+        b = base_metrics.get(k)
+        if isinstance(a, bool) or isinstance(b, bool):
+            continue
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            out[k] = {"project": a, "base": b, "difference": round(a - b, 6),
+                      "ratio": round(a / b, 4) if b else None}
+        elif k in base_metrics:
+            out[k] = {"project": a, "base": b, "difference": None, "ratio": None}
+    return out
+
+
+def _run_step_7(project: dict) -> tuple[dict, str | None, dict | None]:
+    # Execute the human-confirmed workflow: a deleted compute step stays deleted.
+    steps6 = _confirmed(project, 6)["steps"]
+    metrics_wanted = [s["metric"] for s in steps6
+                      if s["action"] == "compute" and s.get("metric") in METRICS]
+    has_base = bool(project["meta"].get("base"))
+    artifact = _execute_area(project, "project", metrics_wanted,
+                             (2.0, 55.0) if has_base else (2.0, 96.0))
+    waiting = [s for s in steps6 if s["action"] == "awaiting_data"]
+    if waiting:
+        artifact["awaiting_data"] = [{"factor": s.get("factor", ""),
+                                      "data_needed": s.get("data_needed", "")} for s in waiting]
+    if has_base:
+        base = _execute_area(project, "base", metrics_wanted, (55.0, 96.0))
+        artifact["_base_map_html"] = base.pop("_map_html", None)
+        artifact["base"] = base
+        artifact["comparison"] = _compare_metrics(artifact["metrics"], base["metrics"])
     return artifact, None, None
 
 
@@ -2112,10 +3196,11 @@ def _empty_layer():
     return gpd.GeoDataFrame(geometry=[], crs="EPSG:5070")
 
 
-def get_map(pid: str, db: Path | None = None) -> str:
+def get_map(pid: str, db: Path | None = None, which: str = "project") -> str:
     db = db or DB_PATH
+    key = f"{pid}:base" if which == "base" else pid
     with _conn(db) as conn:
-        row = conn.execute("SELECT html FROM maps WHERE project_id = ?", (pid,)).fetchone()
+        row = conn.execute("SELECT html FROM maps WHERE project_id = ?", (key,)).fetchone()
     if row is None:
         raise KeyError(f"no map rendered yet for project {pid}")
     return row["html"]
@@ -2173,6 +3258,47 @@ def _fmt_report_num(v: float) -> str:
     return f"{v:.6g}"
 
 
+def _awaiting_data_lines(factors) -> list[str]:
+    """Factors kept in the assessment though nothing connected can measure them
+    yet (#6) — listed, never silently dropped."""
+    waiting = [f for f in factors if f.get("metric") == NEEDS_DATA]
+    if not waiting:
+        return []
+    return ["\n### Factors awaiting data",
+            "_Important to this community's health, but not measured in this assessment: no "
+            "connected data source covers them yet. They are listed so the gap stays visible "
+            "until a data source for them is added._\n",
+            *[f"- **{f.get('factor', '')}** — {f.get('rationale', '')}"
+              + (f" _Data needed: {f['data_needed']}_" if f.get("data_needed") else "")
+              for f in waiting]]
+
+
+def _comparison_lines(project: dict, results: dict) -> list[str]:
+    """Project area against the base area, every metric both measured (#3)."""
+    base = results.get("base")
+    comp = results.get("comparison") or {}
+    if not base or not comp:
+        return []
+    b1 = _confirmed(project, 1).get("base") or {}
+    s1 = _confirmed(project, 1)
+
+    def cell(v):
+        return "not measured" if v is None else _fmt_report_num(v)
+
+    out = [
+        "\n## Comparison with the base area",
+        f"_Project area: {s1.get('place_name', 'project area')}. Base area: "
+        f"{b1.get('place_name', 'base area')}. Both were computed with the same confirmed "
+        "workflow and data sources. Difference = project area minus base area._\n",
+        "| Measure | Project area | Base area | Difference |",
+        "|---|---|---|---|",
+    ]
+    for k, row in comp.items():
+        out.append(f"| `{k}` | {cell(row.get('project'))} | {cell(row.get('base'))} | "
+                   f"{cell(row.get('difference'))} |")
+    return out
+
+
 def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     area = _confirmed(project, 1)
     factors = _confirmed(project, 2)["factors"]
@@ -2199,6 +3325,9 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         if d.get("kind") == "disc":
             radius_km = (d.get("radius_m") or 5000) / 1000
             return f"{radius_km:g} km buffer around the county centroid"
+        if d.get("kind") in ("units", "custom"):
+            return (d.get("text") or "selected Census areas") + (
+                f" ({d['area_km2']} km²)" if d.get("area_km2") is not None else "")
         return "not recorded"
 
     study_line = ""
@@ -2249,12 +3378,17 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     unmeasured = results.get("unmeasured_metrics") or _unmeasured_metric_keys(fetch_errors)
     unmeasured = [k for k in unmeasured if k in results["metrics"]]
     quality: list[str] = []
-    if fetch_errors or unmeasured or study_warnings or results.get("map_note"):
+    table_errors = results.get("table_errors") or {}
+    if fetch_errors or unmeasured or study_warnings or results.get("map_note") or table_errors:
         quality.append("\n## Data quality")
     for w in study_warnings:
         quality.append(f"- **Study area:** {w}")
     for layer, reason in sorted(fetch_errors.items()):
         quality.append(f"- **`{layer}` could not be fetched** — {reason}")
+    from backend.assess.indicators import SOURCES as _SOURCES
+
+    for src, reason in sorted(table_errors.items()):
+        quality.append(f"- **{_SOURCES.get(src, {}).get('name', src)}** — {reason}")
     if unmeasured:
         quality.append(
             "- Because of the failure(s) above, these metrics were **not measured** "
@@ -2266,10 +3400,27 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     if results.get("map_note"):
         quality.append(f"- {results['map_note']}")
 
+    details = results.get("measure_details") or {}
+
     def _result_line(k, v) -> str:
+        d = details.get(k) or {}
         if v is None:
-            return f"- `{k}`: not measured — the source data could not be fetched on this run."
-        return f"- `{k}`: {v}"
+            why = d.get("not_measured") or "the source data could not be fetched on this run"
+            return f"- `{k}`: not measured — {why}."
+        if not d:
+            return f"- `{k}`: {v}"
+        unit = d.get("unit") or ""
+        if unit in ("", "ratio"):
+            suffix = ""
+        elif unit.startswith("%"):
+            suffix = unit                        # "%", "% of days"
+        elif any(ch in unit for ch in "=–("):
+            suffix = f" ({unit})"                # a scale, not a unit
+        else:
+            suffix = f" {unit}"
+        us = f"; US {_fmt_report_num(d['us'])}" if d.get("us") is not None else ""
+        return (f"- `{k}`: {_fmt_report_num(v)}{suffix} — {d.get('level', '')}, "
+                f"{d.get('source', '')}{us}")
 
     results_lines = [_result_line(k, v) for k, v in results["metrics"].items()]
     # FAR assumes 1 level for every building OSM does not tag, so it must never
@@ -2302,12 +3453,27 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         "\n### Theoretical basis",
         *[f"- **{t['theory']}** — {t['application']}" for t in framework.get("theoretical_basis", [])],
         "\n### Factors and metrics",
-        *[f"- {f['factor']} → `{f['metric']}`: {f['rationale']}" for f in factors],
+        *[f"- {f['factor']} → `{f['metric']}`: {f['rationale']}" for f in factors
+          if f.get("metric") != NEEDS_DATA],
+        *_awaiting_data_lines(factors),
         "\n## Results",
         *results_lines,
+        *_comparison_lines(project, results),
     ]
     outcomes = _confirmed(project, 3).get("health_outcomes") or {}
-    if outcomes.get("measures"):
+    if outcomes.get("measures") and outcomes.get("level") == "project_area":
+        def _pct(v):
+            return "—" if v is None else f"{v}%"
+
+        lines += [
+            "\n## Health outcomes (project area)",
+            f"_{outcomes['source']}. {outcomes.get('note', '')}_\n",
+            "| Measure | Project area | County | US |",
+            "|---|---|---|---|",
+            *[f"| {m['label']} | {_pct(m.get('area_pct'))} | {_pct(m.get('county_pct'))} | "
+              f"{_pct(m.get('us_pct'))} |" for m in outcomes["measures"]],
+        ]
+    elif outcomes.get("measures"):
         lines += [
             "\n## Health outcomes (county-level)",
             f"_{outcomes['source']}. Model-based county-level estimates: they carry no "
@@ -2416,7 +3582,7 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
 
 def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
     if step == 1:
-        return _run_step_1(project["meta"]), None, None
+        return _run_step_1(project["meta"], pid=project["id"]), None, None
     if step == 2:
         return _run_step_2(project)
     runners = {3: _run_step_3, 4: _run_step_4, 5: _run_step_5, 6: _run_step_6, 7: _run_step_7, 8: _run_step_8}
@@ -2427,6 +3593,51 @@ def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
 # Machine
 # ---------------------------------------------------------------------------
 
+def _clean_area(state_fips: str, county_fips: str, areal_unit: str | None,
+                area_geoids, area_name: str | None) -> dict:
+    """Validate one area definition (project or base) and return its meta fields.
+
+    `area_geoids` empty means the whole county — for a Census unit that is the
+    old behaviour, results broken down by that unit. A Customized area has no
+    whole-county form: it IS its block groups, so it needs at least one.
+    Membership of each GEOID in the county is checked when step 1 fetches the
+    boundaries; here only the shape is checked, since that needs no network.
+    """
+    from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
+
+    if lookup_county(state_fips, county_fips) is None:
+        raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
+    unit = areal_unit or DEFAULT_AREAL_UNIT
+    if unit not in AREAL_UNITS:
+        raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
+    geoids = [str(g).strip() for g in (area_geoids or []) if str(g).strip()]
+    geoids = list(dict.fromkeys(geoids))            # de-duplicate, keep order
+    if unit == "county" and geoids:
+        raise ValueError("A whole-county project has no sub-areas to select.")
+    if unit == "custom" and not geoids:
+        raise ValueError(
+            "A customized area needs at least one block group — use “Suggest block groups” "
+            "or click block groups on the map."
+        )
+    if any(not g.isdigit() for g in geoids):
+        raise ValueError("Area identifiers must be Census GEOIDs (digits only).")
+    prefix = f"{state_fips}{county_fips}"
+    if unit != "zcta" and any(not g.startswith(prefix) for g in geoids):
+        raise ValueError("Every selected area must lie in the chosen county.")
+    return {
+        "state_fips": state_fips, "county_fips": county_fips, "areal_unit": unit,
+        "area_geoids": geoids, "area_name": (area_name or "").strip(),
+    }
+
+
+def _clean_base(base) -> dict | None:
+    """The comparison ("base") area, or None when there is none (#3)."""
+    if not base:
+        return None
+    return _clean_area(str(base.get("state_fips") or ""), str(base.get("county_fips") or ""),
+                       base.get("areal_unit"), base.get("area_geoids"), base.get("area_name"))
+
+
 def create_project(
     title: str,
     state_fips: str,
@@ -2436,33 +3647,34 @@ def create_project(
     areal_unit: str | None = None,
     location_query: str = "",
     notes: str = "",
+    area_geoids: list | None = None,
+    area_name: str = "",
+    base: dict | None = None,
 ) -> str:
-    from backend.gis.profile import AREAL_UNITS, DEFAULT_AREAL_UNIT
-
     db = db or DB_PATH
-    if lookup_county(state_fips, county_fips) is None:
-        raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
+    area = _clean_area(state_fips, county_fips, areal_unit, area_geoids, area_name)
     if gate_mode not in ("gated", "auto"):
         raise ValueError("gate_mode must be 'gated' or 'auto'")
-    unit = areal_unit or DEFAULT_AREAL_UNIT
-    if unit not in AREAL_UNITS:
-        raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
+    base_area = _clean_base(base)
     # ponytail: gate_mode is stored only; the auto path lands with the M2 ablation
     pid = uuid.uuid4().hex[:12]
     meta = {
         "title": title,
-        "state_fips": state_fips,
-        "county_fips": county_fips,
+        **area,
         "gate_mode": gate_mode,
-        "areal_unit": unit,
         "location_query": location_query,
         "notes": notes,
         "current_step": 1,
         "created_at": time.time(),
     }
+    if base_area:
+        meta["base"] = base_area
     with _conn(db) as conn:
         conn.execute("INSERT INTO projects VALUES (?, ?)", (pid, json.dumps(meta)))
     return pid
+
+
+_UNSET = object()
 
 
 def update_project_scope(
@@ -2474,6 +3686,9 @@ def update_project_scope(
     location_query: str | None = None,
     notes: str | None = None,
     db: Path | None = None,
+    area_geoids: list | None = None,
+    area_name: str | None = None,
+    base: Any = _UNSET,
 ) -> dict:
     """Redefine an existing project instead of starting a new one.
 
@@ -2482,9 +3697,11 @@ def update_project_scope(
     invalidates everything drafted from it, so every artifact is marked stale
     (the same signal an edited upstream step already produces) and the step-1
     draft is dropped so it must be re-run against the new scope.
-    """
-    from backend.gis.profile import AREAL_UNITS
 
+    Since 2026-09-16 the scope also covers the selected sub-areas and the base
+    area. `area_geoids=None` keeps the current selection; `base=None` removes
+    the base area, and leaving `base` out keeps it.
+    """
     db = db or DB_PATH
     with _conn(db) as conn:
         row = conn.execute("SELECT meta_json FROM projects WHERE id = ?", (pid,)).fetchone()
@@ -2493,20 +3710,31 @@ def update_project_scope(
         meta = json.loads(row["meta_json"])
         new_state = state_fips or meta["state_fips"]
         new_county = county_fips or meta["county_fips"]
-        if lookup_county(new_state, new_county) is None:
-            raise ValueError(f"Unknown county FIPS {new_state}-{new_county}")
-        if areal_unit is not None and areal_unit not in AREAL_UNITS:
-            raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
-
+        new_unit = areal_unit if areal_unit is not None else meta.get("areal_unit")
         geo_changed = (new_state, new_county) != (meta["state_fips"], meta["county_fips"])
-        scope_changed = geo_changed or (
-            areal_unit is not None and areal_unit != meta.get("areal_unit")
+        unit_changed = new_unit != meta.get("areal_unit")
+        if area_geoids is not None:
+            new_geoids = area_geoids
+        elif geo_changed or unit_changed:
+            new_geoids = []           # a selection never carries over to another county or unit
+        else:
+            new_geoids = meta.get("area_geoids") or []
+        new_name = area_name if area_name is not None else meta.get("area_name", "")
+        area = _clean_area(new_state, new_county, new_unit, new_geoids, new_name)
+        new_base = meta.get("base") if base is _UNSET else _clean_base(base)
+
+        scope_changed = (
+            geo_changed or unit_changed
+            or area["area_geoids"] != (meta.get("area_geoids") or [])
+            or new_base != meta.get("base")
         )
-        meta.update(state_fips=new_state, county_fips=new_county)
+        meta.update(area)
+        if new_base:
+            meta["base"] = new_base
+        else:
+            meta.pop("base", None)
         if title:
             meta["title"] = title
-        if areal_unit is not None:
-            meta["areal_unit"] = areal_unit
         if location_query is not None:
             meta["location_query"] = location_query
         if notes is not None:
@@ -2524,6 +3752,9 @@ def update_project_scope(
             ).rowcount
     if geo_changed:
         _clear_project_layer_cache(pid)
+    elif scope_changed:
+        for which in ("project", "base"):
+            _area_path(pid, which).unlink(missing_ok=True)
     return {"project_id": pid, "scope_changed": scope_changed, "stale_steps": stale}
 
 
@@ -2652,12 +3883,16 @@ def get_project(pid: str, db: Path | None = None) -> dict:
     }
 
 
-def run_step(pid: str, step: int, db: Path | None = None) -> dict:
-    """Draft step `step`. The gate: every earlier step must be confirmed."""
+def run_step(pid: str, step: int, db: Path | None = None, refresh: bool = False) -> dict:
+    """Draft step `step`. The gate: every earlier step must be confirmed.
+
+    `refresh` asks the data steps to download again rather than reuse saved
+    layers (never an upload) — the "Re-fetch data" choice at step 3."""
     db = db or DB_PATH
     if not 1 <= step <= 8:
         raise ValueError(f"step must be 1-8, got {step}")
     project = get_project(pid, db)
+    project["_refresh"] = bool(refresh)
     confirmed = {s["step"] for s in project["steps"] if s["status"] == "confirmed"}
     missing = [n for n in range(1, step) if n not in confirmed]
     if missing:
@@ -2668,6 +3903,7 @@ def run_step(pid: str, step: int, db: Path | None = None) -> dict:
     finally:
         clear_progress(pid, step)
     map_html = ai_draft.pop("_map_html", None)
+    base_map_html = ai_draft.pop("_base_map_html", None)
     data = {
         "ai_draft": ai_draft,
         "human_final": None,
@@ -2684,6 +3920,11 @@ def run_step(pid: str, step: int, db: Path | None = None) -> dict:
         if map_html is not None:
             conn.execute(
                 "INSERT OR REPLACE INTO maps VALUES (?, ?, ?)", (pid, map_html, time.time())
+            )
+        if base_map_html is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO maps VALUES (?, ?, ?)",
+                (f"{pid}:base", base_map_html, time.time()),
             )
     return data["ai_draft"]
 
@@ -2744,18 +3985,66 @@ def confirm_step(
             "UPDATE artifacts SET status = 'stale' WHERE project_id = ? AND step > ?",
             (pid, step),
         ).rowcount
+    if step == 1:
+        start_prefetch(pid, db=db)
     return {"step": step, "status": "confirmed", "stale_downstream": stale}
+
+
+# --- background prefetch -----------------------------------------------------
+# Prof. Shi 2026-09-16 #2 again: retrieval was the slow part, and it started only
+# when step 3 did — after the analyst had already spent minutes choosing
+# factors. Once the area is confirmed nothing about WHERE to download changes,
+# so every map layer starts downloading then, in the background. Step 3 finds
+# finished layers in the cache and waits for any still arriving (see
+# _claim_inflight) instead of asking the server a second time. It fetches all
+# eight layers, not only the ones the factors will need: at step 1 the factors
+# do not exist yet, and step 7's map draws them all anyway.
+PREFETCH_ENABLED = _os.environ.get("HCAS_PREFETCH", "1").strip().lower() not in ("0", "false", "no")
+_prefetching: set[str] = set()
+_prefetch_lock = threading.Lock()
+
+
+def start_prefetch(pid: str, db: Path | None = None) -> bool:
+    """Begin downloading every map layer for this project's area. Returns False
+    when it is switched off or already running for this project."""
+    if not PREFETCH_ENABLED:
+        return False
+    with _prefetch_lock:
+        if pid in _prefetching:
+            return False
+        _prefetching.add(pid)
+
+    def run():
+        try:
+            project = get_project(pid, db=db)
+            _study, bbox, _describe = _resolve_study_area(project)
+            names = sorted(LAYER_META)
+            logger.info(f"prefetch {pid}: {len(names)} layers for {bbox}")
+            _fetch_layers(pid, 0, names, bbox, LAYER_FETCH_BUDGET_S)
+        except Exception as exc:  # a head start, never a failure anyone sees
+            logger.warning(f"prefetch {pid} stopped: {exc!r}")
+        finally:
+            clear_progress(pid, 0)
+            with _prefetch_lock:
+                _prefetching.discard(pid)
+
+    threading.Thread(target=run, name=f"hcas-prefetch-{pid}", daemon=True).start()
+    return True
 
 
 _INTAKE_SYSTEM = (
     "You are the intake assistant of HCAS (Healthy Community Assessment System), a "
-    "step-by-step GIS + AI assessment of community health for a US county. The "
-    "analyst has not created a project yet, so you have no project data: answer "
-    "questions about what the system does, what the eight steps are (define project, "
-    "choose factors, gather data, set methodology, build database, plan workflow, run "
-    "analysis, write report), what data it uses (OpenStreetMap built environment, CDC "
-    "PLACES county health outcomes, US Census boundaries), and how to define a study "
-    "area. Be concise. Never invent measurements for any place — no assessment has "
+    "step-by-step GIS + AI assessment of community health for a US county or an area "
+    "within one — a town, ZIP code, census tracts or block groups, or a named community "
+    "built from block groups — optionally compared with a base area. The analyst has not "
+    "created a project yet, so you have no project data: answer questions about what the "
+    "system does, what the eight steps are (define project, choose factors, gather data, "
+    "set methodology, build database, plan workflow, run analysis, write report), what "
+    "data it uses (OpenStreetMap built environment; CDC PLACES health outcomes and "
+    "health-related social needs; the CDC Social Vulnerability Index for income, housing, "
+    "education and access; County Health Rankings for air pollution, drinking water, "
+    "health care providers and safety; EPA air-quality monitors; US Census boundaries "
+    "and 2020 population), and how to define a study area. Be concise. Never invent measurements for any place — no assessment has "
     "been run. If asked for numbers about a specific area, say the analyst should "
     "create the project and run the steps."
 )
@@ -2769,7 +4058,12 @@ _AREA_SYSTEM = (
     "as its full name. Also return what you understood and, when the place spans more "
     "than one county or you are unsure, say so in `caveat` and pick the county holding "
     "most of it. If the text is not a US place at all, set `county` and `state` to the "
-    "empty string and explain in `caveat`."
+    "empty string and explain in `caveat`. Also classify how big the described place is "
+    "in `scale`: \"county\" (a whole county), \"town\" (a town, township or city that "
+    "is a county subdivision), \"zip\" (a ZIP code — put the five digits in `zip`), or "
+    "\"community\" (a neighborhood, community, campus, landmark surroundings or any other "
+    "area smaller than a town). Put the town's plain name in `town` when scale is town; "
+    "leave `zip` and `town` empty otherwise."
 )
 
 _AREA_SCHEMA = {
@@ -2779,8 +4073,11 @@ _AREA_SCHEMA = {
         "state": {"type": "string"},
         "interpretation": {"type": "string"},
         "caveat": {"type": "string"},
+        "scale": {"type": "string", "enum": ["county", "town", "zip", "community"]},
+        "zip": {"type": "string"},
+        "town": {"type": "string"},
     },
-    "required": ["county", "state", "interpretation", "caveat"],
+    "required": ["county", "state", "interpretation", "caveat", "scale", "zip", "town"],
     "additionalProperties": False,
 }
 
@@ -2848,36 +4145,93 @@ def resolve_area(text: str) -> dict:
         "interpretation": draft.get("interpretation", ""),
         "caveat": draft.get("caveat", ""),
         "query": text,
+        # How big the place is, so the form can pick the matching reporting
+        # unit (2026-09-16 #1): a ZIP code becomes that ZIP area, a town its
+        # county subdivision, anything smaller a customized area.
+        "scale": draft.get("scale") or "county",
+        "zip": "".join(ch for ch in (draft.get("zip") or "") if ch.isdigit())[:5],
+        "town": draft.get("town") or "",
     }
 
 
+def units_geojson(state_fips: str, county_fips: str, unit: str) -> dict:
+    """The county's Census units of one kind as GeoJSON for the area picker —
+    simplified for drawing, with name, 2020 population and land area on each."""
+    from backend.gis.profile import AREAL_UNITS
+
+    if lookup_county(state_fips, county_fips) is None:
+        raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
+    if unit == "county":
+        geom = _county_geometry(state_fips, county_fips)
+        if geom is None or geom.empty:
+            raise RuntimeError("The county boundary could not be loaded from Census TIGERweb.")
+        g = geom.to_crs("EPSG:4326")
+        g["GEOID"] = f"{state_fips}{county_fips}"
+        g["NAME"] = build_place_name(state_fips, county_fips)
+        units = g
+    elif unit in AREAL_UNITS:
+        units = _unit_features(state_fips, county_fips, unit)
+    else:
+        raise ValueError(f"Unknown reporting unit {unit!r}")
+    out = units[["GEOID", "geometry"]].copy()
+    out["name"] = units["NAME"].astype(str) if "NAME" in units.columns else out["GEOID"]
+    if "POP100" in units.columns:
+        out["population"] = units["POP100"].map(lambda v: None if v != v else int(v))
+    out["area_km2"] = (units.to_crs("EPSG:5070").geometry.area / 1e6).round(3)
+    out["geometry"] = out.geometry.simplify(0.0001, preserve_topology=True)
+    import json as _json
+
+    return _json.loads(out.to_json(drop_id=True))
+
+
+def suggest_area(text: str, state_fips: str, county_fips: str) -> dict:
+    """AI-recommended block groups for a named community (2026-09-16 #1)."""
+    from backend.gis import areas
+
+    if lookup_county(state_fips, county_fips) is None:
+        raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
+    bgs = _unit_features(state_fips, county_fips, "block_group")
+    minx, miny, maxx, maxy = [float(v) for v in bgs.to_crs("EPSG:4326").total_bounds]
+    out = areas.suggest_block_groups(
+        text, build_place_name(state_fips, county_fips), (minx, miny, maxx, maxy), bgs,
+        llm=lambda system, prompt, schema: _llm_structured(system, prompt, schema,
+                                                           model="claude-sonnet-5"),
+    )
+    pops = {str(g): p for g, p in zip(bgs["GEOID"], bgs["POP100"]) if p == p}
+    chosen = out.get("geoids") or []
+    if chosen:
+        sel = bgs[bgs["GEOID"].astype(str).isin(chosen)]
+        out["area_km2"] = round(float(sel.to_crs("EPSG:5070").geometry.area.sum()) / 1e6, 2)
+        if all(g in pops for g in chosen):
+            out["population"] = int(sum(pops[g] for g in chosen))
+    return out
+
+
+# Prof. Shi 2026-09-16 #6: "add pollution data" came back as "no change was
+# needed. The metric registry has no pollution or air/water quality measure …
+# Adding nothing", and "demographic and socioeconomic factors" the same. The old
+# rule below said exactly that — "if the registry cannot measure it, add
+# nothing" — so the refusal was the prompt working as written. A broad request
+# now adds the measures that fit, and something no connected data can measure
+# is added as awaiting data instead of refused.
 _REVISE_SYSTEM = (
     "You revise an existing factor list for a healthy-community assessment in "
     "response to one instruction from the analyst. Do NOT redesign the list. Return "
     "only what to ADD and what to REMOVE. Add a factor only if the instruction asks "
-    "for it; remove one only if the instruction asks for it. Every added factor must "
-    "map to exactly one metric from the registry below. If the instruction asks for "
-    "something the registry cannot measure, add nothing and explain in `note`.\n\n"
-    "METRIC REGISTRY:\n"
-    + "\n".join(f"- {name}: {desc}" for name, desc in METRICS.items())
+    "for it; remove one only if the instruction asks for it. A broad request (for "
+    "example \"add pollution data\" or \"add demographic and socioeconomic factors\") "
+    "asks for the several available measures that cover that topic, each as its own "
+    "factor — do not add a measure that is already in the list. Every added factor "
+    "maps to exactly one of the available measures below. "
+    + _NEEDS_DATA_RULE + " " + _PLAIN_WORDS_RULE
+    + " Use `note` to tell the analyst in one or two plain sentences what you added or "
+    "removed and why.\n\nAVAILABLE MEASURES:\n" + _measure_catalog()
 )
 
 _REVISE_SCHEMA = {
     "type": "object",
     "properties": {
-        "add": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "factor": {"type": "string"},
-                    "metric": {"type": "string", "enum": list(METRICS)},
-                    "rationale": {"type": "string"},
-                },
-                "required": ["factor", "metric", "rationale"],
-                "additionalProperties": False,
-            },
-        },
+        "add": {"type": "array", "items": _FACTOR_ITEM_SCHEMA},
         "remove": {"type": "array", "items": {"type": "string"}},
         "note": {"type": "string"},
     },

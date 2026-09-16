@@ -81,10 +81,13 @@ class TestWithinProjectReuse:
         # second fetch.
         assert counts == {"greenspace": 1}
 
-    def test_a_second_project_gets_its_own_fetch(self, tmp_path, monkeypatch):
-        """The cache is keyed per project id — a different project for the same
-        county must still fetch for itself, never silently borrow another
-        project's data."""
+    def test_a_second_project_reuses_the_download_but_says_so(self, tmp_path, monkeypatch):
+        """Reversed 2026-09-16 at Prof. Shi's request ("save the retrieved data
+        locally, so that they don't have to be re-retrieved"). This test used to
+        demand the opposite — a new project for the same county fetched again —
+        so as never to borrow another project's data SILENTLY. The download is
+        now shared, but not silently: the layer says it was reused, a Re-fetch
+        ignores the saved copy, and a user's upload is never shared at all."""
         counts = {}
         monkeypatch.setattr(hcas, "_layer_fetchers", _counted_fetchers(counts))
         pid1, db = _through_step_2(tmp_path)
@@ -95,7 +98,25 @@ class TestWithinProjectReuse:
         hcas.confirm_step(pid2, 1, hcas.run_step(pid2, 1, db=db), db=db)
         hcas.confirm_step(pid2, 2, hcas.run_step(pid2, 2, db=db), db=db)
         hcas.run_step(pid2, 3, db=db)
+        assert counts == {"greenspace": 1}
+        assert hcas.list_data_bundle(pid2, db=db)["layers"]["greenspace"]["kind"] == "shared"
+
+        hcas.run_step(pid2, 3, db=db, refresh=True)
         assert counts == {"greenspace": 2}
+
+    def test_an_upload_is_never_shared_with_another_project(self, tmp_path, monkeypatch):
+        counts = {}
+        monkeypatch.setattr(hcas, "_layer_fetchers", _counted_fetchers(counts))
+        pid1, db = _through_step_2(tmp_path)
+        hcas.import_data_bundle(pid1, "greenspace.geojson", _geojson_bytes(5), db=db)
+        hcas.run_step(pid1, 3, db=db)
+
+        pid2 = hcas.create_project("second", *FRANKLIN, db=db)
+        hcas.confirm_step(pid2, 1, hcas.run_step(pid2, 1, db=db), db=db)
+        hcas.confirm_step(pid2, 2, hcas.run_step(pid2, 2, db=db), db=db)
+        draft = hcas.run_step(pid2, 3, db=db)
+        assert counts == {"greenspace": 1}
+        assert draft["layers"][0]["source"] != "Your uploaded data"
 
 
 class TestUploadOverridesFetch:

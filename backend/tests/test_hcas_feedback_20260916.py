@@ -166,6 +166,199 @@ class TestRetrievalRecoversFromAnOutage:
         assert hosts.index("z.overpass-api.de") < hosts.index("overpass.private.coffee")
 
 
+def _polys(n, x0=0.0, y0=0.0, crs="EPSG:5070"):
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    return gpd.GeoDataFrame({"building": ["yes"] * n},
+                            geometry=[box(x0 + i * 10, y0, x0 + i * 10 + 5, y0 + 5) for i in range(n)],
+                            crs=crs)
+
+
+class TestSavedDataIsReusedAcrossProjects:
+    """#2: "Save the retrieved data locally, so that they don't have to be
+    re-retrieved when the user comes back to the same project." The per-project
+    cache did that for one project id; the same county under a new project, or
+    a neighbourhood inside a county already fetched, paid the whole fetch again.
+    """
+
+    BBOX = (-83.2, 39.8, -82.8, 40.1)
+
+    def test_a_second_project_reuses_the_first_projects_download(self, monkeypatch):
+        calls = []
+
+        def fetch_buildings(bbox):
+            calls.append(bbox)
+            return _polys(3)
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"buildings": fetch_buildings})
+        r1, e1, _ = hcas._fetch_layers("proj-a", 3, ["buildings"], self.BBOX, budget_s=30)
+        r2, e2, d2 = hcas._fetch_layers("proj-b", 3, ["buildings"], self.BBOX, budget_s=30)
+
+        assert len(calls) == 1, "the second project fetched again"
+        assert not e1 and not e2
+        assert len(r2["buildings"]) == 3
+        assert d2[0]["cached"] == "shared" and "reused" in d2[0]["note"]
+        assert hcas.list_data_bundle.__name__  # manifest notes the reuse:
+        manifest = json.loads((hcas.LAYER_CACHE_DIR / "proj-b" / "manifest.json").read_text())
+        assert manifest["layers"]["buildings"]["kind"] == "shared"
+
+    def test_an_area_inside_a_cached_area_is_cut_from_it(self, monkeypatch):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        calls = []
+        # Two buildings: one inside the small box, one far outside it.
+        inside = gpd.GeoSeries([Point(-83.0, 39.95)], crs="EPSG:4326").to_crs("EPSG:5070").iloc[0]
+        outside = gpd.GeoSeries([Point(-82.85, 40.08)], crs="EPSG:4326").to_crs("EPSG:5070").iloc[0]
+        layer = gpd.GeoDataFrame({"building": ["a", "b"]},
+                                 geometry=[inside.buffer(5), outside.buffer(5)], crs="EPSG:5070")
+
+        def fetch_buildings(bbox):
+            calls.append(bbox)
+            return layer
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"buildings": fetch_buildings})
+        hcas._fetch_layers("county", 3, ["buildings"], self.BBOX, budget_s=30)
+        small = (-83.05, 39.9, -82.95, 40.0)
+        res, errs, detail = hcas._fetch_layers("hood", 3, ["buildings"], small, budget_s=30)
+
+        assert len(calls) == 1
+        assert list(res["buildings"]["building"]) == ["a"]
+        assert detail[0]["count"] == 1
+
+    def test_expired_entries_are_fetched_again(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(hcas, "_layer_fetchers",
+                            lambda: {"buildings": lambda bbox: calls.append(1) or _polys(1)})
+        hcas._fetch_layers("p1", 3, ["buildings"], self.BBOX, budget_s=30)
+        monkeypatch.setattr(hcas, "SHARED_CACHE_DAYS", 0.0)
+        hcas._fetch_layers("p2", 3, ["buildings"], self.BBOX, budget_s=30)
+        assert len(calls) == 2
+
+    def test_refresh_downloads_again_but_keeps_an_upload(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {
+            "buildings": lambda bbox: calls.append("b") or _polys(2),
+            "facilities": lambda bbox: calls.append("f") or _polys(2),
+        })
+        pid = "refresh-me"
+        hcas._fetch_layers(pid, 3, ["buildings", "facilities"], self.BBOX, budget_s=30)
+        _polys(7).to_file(hcas._user_layer_path(pid, "facilities"), driver="GeoJSON")
+        calls.clear()
+        res, errs, _ = hcas._fetch_layers(pid, 3, ["buildings", "facilities"], self.BBOX,
+                                          budget_s=30, refresh=True)
+        assert calls == ["b"]
+        assert len(res["facilities"]) == 7
+
+    def test_a_failed_download_is_never_saved_as_an_empty_layer(self, monkeypatch):
+        from backend.assess.netdiag import record_fetch_error
+
+        def fetch_buildings(bbox):
+            record_fetch_error("fetch_buildings", OSError("timed out"))
+            return _polys(0)
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"buildings": fetch_buildings})
+        _, errs, _ = hcas._fetch_layers("p", 3, ["buildings"], self.BBOX, budget_s=30)
+        assert "buildings" in errs
+        assert hcas._shared_layer("buildings", self.BBOX) is None
+        assert hcas._cached_layer("p2", "buildings", self.BBOX) == (None, None)
+
+    def test_osm_lists_survive_the_geopackage(self, monkeypatch):
+        layer = _polys(2)
+        layer["nodes"] = [[1, 2, 3], [4, 5]]
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"buildings": lambda bbox: layer})
+        hcas._fetch_layers("p", 3, ["buildings"], self.BBOX, budget_s=30)
+        hit = hcas._shared_layer("buildings", self.BBOX)
+        assert hit is not None and len(hit[0]) == 2
+
+
+class TestOneDownloadPerLayer:
+    """A prefetch and a step (or two users) wanting the same layer for the same
+    area must not both ask Overpass — the second waits and reads the first."""
+
+    def test_a_concurrent_request_waits_for_the_download_in_flight(self, monkeypatch):
+        import threading
+
+        started, release, calls = threading.Event(), threading.Event(), []
+
+        def fetch_buildings(bbox):
+            calls.append(1)
+            started.set()
+            release.wait(10)
+            return _polys(4)
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"buildings": fetch_buildings})
+        bbox = (-83.2, 39.8, -82.8, 40.1)
+        out = {}
+        first = threading.Thread(target=lambda: out.setdefault(
+            "a", hcas._fetch_layers("p-a", 0, ["buildings"], bbox, budget_s=30)))
+        first.start()
+        assert started.wait(5)
+        second = threading.Thread(target=lambda: out.setdefault(
+            "b", hcas._fetch_layers("p-b", 3, ["buildings"], bbox, budget_s=30)))
+        second.start()
+        release.set()
+        first.join(10)
+        second.join(10)
+
+        assert len(calls) == 1
+        res, errs, detail = out["b"]
+        assert not errs and len(res["buildings"]) == 4
+        assert detail[0]["cached"] in ("inflight", "shared")
+
+    def test_an_error_stays_with_the_run_that_had_it(self, monkeypatch):
+        """Errors used to sit in one process-wide registry popped by name. Two
+        runs at once could each read the other's failure — so a run could cache
+        an empty layer as real because another run had drained its error."""
+        from backend.assess.netdiag import record_fetch_error
+
+        def fetch_roads(bbox):
+            record_fetch_error("fetch_road_network", OSError("timed out"))
+            return _polys(0)
+
+        fetch_roads.__name__ = "fetch_road_network"
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {"roads": fetch_roads,
+                                                              "buildings": lambda b: _polys(1)})
+        _, errs, _ = hcas._fetch_layers("p", 3, ["roads", "buildings"], (0, 0, 1, 1), budget_s=30)
+        assert set(errs) == {"roads"}
+        from backend.assess.netdiag import take_fetch_errors
+
+        assert take_fetch_errors() == {}, "the failure leaked into the global registry"
+
+
+class TestPrefetch:
+    """Once the area is confirmed, the layers start downloading — step 3 no
+    longer begins from nothing after minutes spent choosing factors."""
+
+    def test_confirming_step_1_downloads_every_layer_in_the_background(self, tmp_path, monkeypatch):
+        import time
+
+        calls = []
+
+        def make(name):
+            return lambda bbox: calls.append(name) or _polys(1)
+
+        monkeypatch.setattr(hcas, "_layer_fetchers", lambda: {n: make(n) for n in hcas.LAYER_META})
+        monkeypatch.setattr(hcas, "PREFETCH_ENABLED", True)
+        pid, db = _project(tmp_path)
+        hcas.confirm_step(pid, 1, hcas.run_step(pid, 1, db=db), db=db)
+        deadline = time.time() + 20
+        while time.time() < deadline and pid in hcas._prefetching:
+            time.sleep(0.05)
+        assert sorted(calls) == sorted(hcas.LAYER_META)
+
+        # Step 3 then fetches nothing at all.
+        calls.clear()
+        hcas.confirm_step(pid, 2, hcas.run_step(pid, 2, db=db), db=db)
+        draft = hcas.run_step(pid, 3, db=db)
+        assert calls == []
+        assert all(not l.get("error") for l in draft["layers"])
+
+    def test_it_is_off_in_the_test_suite_by_default(self):
+        assert hcas.PREFETCH_ENABLED is False
+
+
 class TestInterface:
     """#5, checked against the page source: these are layout promises, and the
     template is the only place they live."""

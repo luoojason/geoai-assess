@@ -89,6 +89,18 @@ def fetch_total_population(state_fips: str, county_fips: str) -> int | None:
         return None
 
 
+def fetch_crude_outcomes(state_fips: str, county_fips: str) -> tuple[dict, dict]:
+    """County and US CRUDE prevalence for the registered measures.
+
+    A project area smaller than its county is described from tract estimates,
+    which PLACES publishes as crude prevalence only. Setting those beside the
+    county's age-adjusted figures would compare two different quantities, so
+    the sub-county table uses crude figures in every column."""
+    county, _ = _query(locationid=f"{state_fips}{county_fips}", datavaluetypeid="CrdPrv")
+    us, _ = _query(stateabbr="US", datavaluetypeid="CrdPrv")
+    return county, us
+
+
 def fetch_health_outcomes(state_fips: str, county_fips: str) -> dict:
     """County prevalence vs US benchmark for the registered PLACES measures.
 

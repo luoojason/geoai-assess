@@ -28,7 +28,13 @@ def _isolate_osm_layer_globals(monkeypatch):
     monkeypatch.setattr(ol, "_dead_addresses", set())
     monkeypatch.setattr(ol, "_addr_checked", {})
     monkeypatch.setattr(ol, "_outage_suspected_flag", False)
-    monkeypatch.setattr(ol, "_probe_expires_at", 0.0)
+    # No test may probe the real Overpass servers by accident. Since 2026-09-16
+    # the probe's verdict expires, so leaving it unset made every test that
+    # reached a fetcher re-probe five live endpoints (up to 12 s each) and more
+    # than tripled the suite's run time. A test that wants a probe sets
+    # `_probed` False itself.
+    monkeypatch.setattr(ol, "_probed", True)
+    monkeypatch.setattr(ol, "_probe_expires_at", float("inf"))
     monkeypatch.setattr(ol, "_retry_pause", lambda attempt: 0.0)
     ol.clear_deadline()
     try:
@@ -47,3 +53,7 @@ def _isolate_layer_cache(tmp_path_factory, monkeypatch):
     from backend import hcas
 
     monkeypatch.setattr(hcas, "LAYER_CACHE_DIR", tmp_path_factory.mktemp("hcas_layer_cache"))
+    # Confirming step 1 starts a background download of every layer. A test
+    # suite must not have threads fetching behind its back; the prefetch tests
+    # switch it on for themselves.
+    monkeypatch.setattr(hcas, "PREFETCH_ENABLED", False)

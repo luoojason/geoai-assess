@@ -19,6 +19,8 @@ from .metrics import (
     compute_transit_access,
     compute_facility_access,
     compute_land_use_mix,
+    compute_near_major_road_exposure,
+    compute_industrial_land_share,
 )
 from .renderer import render_assessment_map
 from .interventions import generate_interventions
@@ -43,6 +45,8 @@ __all__ = [
     "compute_transit_access",
     "compute_facility_access",
     "compute_land_use_mix",
+    "compute_near_major_road_exposure",
+    "compute_industrial_land_share",
     "render_assessment_map",
     "generate_interventions",
     "REFERENCES",

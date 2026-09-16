@@ -34,12 +34,18 @@ _COUNTY_LAYER = 82
 # ZCTAs are the one unit that does not nest inside a county: TIGERweb has no
 # county field on layer 2, so it is matched geographically (intersects the
 # county envelope) rather than by GEOID prefix.
+#
+# Ordered the way Prof. Shi listed them on 2026-09-16 — county, town, ZIP Code,
+# tract, block group — with "Customized" last. A customized area is assembled
+# from block groups (see backend/gis/areas.py), so it shares their layer.
 AREAL_UNITS = {
     "county": {"label": "County (whole study area)", "layer": None},
+    "county_subdivision": {"label": "County subdivision (town/township)", "layer": 22, "prefix": True},
+    "zcta": {"label": "ZIP code (ZCTA)", "layer": 2, "prefix": False},
     "tract": {"label": "Census tract", "layer": 8, "prefix": True},
     "block_group": {"label": "Census block group", "layer": 10, "prefix": True},
-    "zcta": {"label": "ZIP code (ZCTA)", "layer": 2, "prefix": False},
-    "county_subdivision": {"label": "County subdivision (town/township)", "layer": 22, "prefix": True},
+    "custom": {"label": "Customized (community, neighborhood, etc.)", "layer": 10, "prefix": True,
+               "short": "Block group"},
 }
 DEFAULT_AREAL_UNIT = "tract"
 
