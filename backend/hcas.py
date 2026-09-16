@@ -2861,9 +2861,19 @@ def _execute_area(project: dict, which: str, metrics_wanted: list,
     computers = _metric_computers()
     set_progress(pid, 7, span(0.70), f"{tag}computing metrics…")
     metrics: dict = {}
+    compute_errors: dict[str, str] = {}
     for m in metrics_wanted:
-        if m in computers:
+        if m not in computers:
+            continue
+        try:
             metrics.update(computers[m](layers, study_area))
+        except Exception as exc:
+            # One measure that cannot be computed on this data is not measured;
+            # it must not take every other measure — and the step — down with it.
+            logger.exception(f"{tag}metric {m} failed")
+            compute_errors[m] = f"could not be computed on this data ({type(exc).__name__})"
+            for key in METRIC_RESULT_KEYS.get(m, [m]):
+                metrics[key] = None
     metrics = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in metrics.items()}
 
     # Community measures (#6): read from the public tables step 3 saved, and
@@ -2884,6 +2894,10 @@ def _execute_area(project: dict, which: str, metrics_wanted: list,
     # A community measure with no value is not measured either — its source
     # failed, the county is not covered, or too few residents have an estimate.
     unmeasured += [k for k, v in table_values.items() if v is None and k not in unmeasured]
+    unmeasured += [k for m in compute_errors for k in METRIC_RESULT_KEYS.get(m, [m])
+                   if k not in unmeasured]
+    for m, why in compute_errors.items():
+        measure_details.setdefault(m, {"source": "OpenStreetMap", "level": "the area"})["not_measured"] = why
     # So is an exposure share with no buildings to share out.
     unmeasured += [k for k in ("near_major_road_exposure",) if k in metrics and metrics[k] is None
                    and k not in unmeasured]
@@ -3275,6 +3289,36 @@ def _awaiting_data_lines(factors) -> list[str]:
               for f in waiting]]
 
 
+# Plain names for step 7's flat result keys — the same words the wizard shows.
+RESULT_LABELS = {
+    "building_coverage_ratio": "Building coverage (share of area)",
+    "greenspace_coverage_ratio": "Green space (share of area)",
+    "greenspace_area_m2": "Green space area (m²)",
+    "road_density_km_per_km2": "Road density (km per km²)",
+    "far": "Floor area ratio",
+    "levels_tagged_pct": "Buildings with a height tag (%)",
+    "parking_coverage_ratio": "Parking (share of area)",
+    "pedestrian_density_km_per_km2": "Sidewalks and paths (km per km²)",
+    "transit_stop_count": "Transit stops",
+    "transit_stop_density_per_km2": "Transit stops per km²",
+    "facility_count": "Community facilities",
+    "facility_density_per_km2": "Community facilities per km²",
+    "land_use_mix": "Land-use mix (0 = one use, 1 = even mix)",
+    "land_use_categories": "Land-use categories",
+    "near_major_road_exposure": "Buildings within 150 m of a major road (%)",
+    "industrial_land_share": "Industrial land (% of area)",
+}
+
+
+def _result_label(key: str) -> str:
+    if key in RESULT_LABELS:
+        return RESULT_LABELS[key]
+    from backend.assess.indicators import INDICATORS
+
+    unit = (INDICATORS.get(key) or {}).get("unit")
+    return METRIC_LABELS.get(key, key.replace("_", " ")) + (f" ({unit})" if unit else "")
+
+
 def _comparison_lines(project: dict, results: dict) -> list[str]:
     """Project area against the base area, every metric both measured (#3)."""
     base = results.get("base")
@@ -3296,7 +3340,7 @@ def _comparison_lines(project: dict, results: dict) -> list[str]:
         "|---|---|---|---|",
     ]
     for k, row in comp.items():
-        out.append(f"| `{k}` | {cell(row.get('project'))} | {cell(row.get('base'))} | "
+        out.append(f"| {_result_label(k)} | {cell(row.get('project'))} | {cell(row.get('base'))} | "
                    f"{cell(row.get('difference'))} |")
     return out
 

@@ -305,13 +305,23 @@ INDUSTRIAL_LANDUSE = {"industrial", "quarry", "landfill"}
 
 
 def _is_major(value) -> bool:
-    """OSM `highway` on a merged graph edge can be a list ("['primary', 'secondary']")."""
-    if isinstance(value, (list, tuple, set)):
-        return any(_is_major(v) for v in value)
-    s = str(value or "")
-    if s.startswith("["):
-        return any(c in s for c in (f"'{m}'" for m in MAJOR_ROAD_CLASSES))
-    return s in MAJOR_ROAD_CLASSES
+    """OSM `highway` on a merged graph edge can hold several classes — as a list
+    from osmnx, as a NUMPY ARRAY once the layer has been read back from a saved
+    file, or as the text "['primary', 'secondary']". `value or ""` on an array
+    raises "truth value of an array is ambiguous", which is how this first
+    failed a whole live step 7 (2026-09-16), so no truth test on the raw value."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        if value.startswith("["):
+            return any(f"'{c}'" in value for c in MAJOR_ROAD_CLASSES)
+        return value in MAJOR_ROAD_CLASSES
+    if isinstance(value, float):
+        return False                                   # NaN: no tag
+    try:
+        return any(_is_major(v) for v in value)        # list, tuple, set, ndarray
+    except TypeError:
+        return str(value) in MAJOR_ROAD_CLASSES
 
 
 def compute_near_major_road_exposure(

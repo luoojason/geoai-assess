@@ -1181,7 +1181,7 @@ function intakePanel(a, which){
   const sub = pa.kind === "units" || pa.kind === "custom";
   const rows = sub ? [
     ["Area", esc(pa.label||a.place_name||"—")],
-    ["Made of", `${num(pa.count)} ${esc(pa.count===1 ? (pa.unit_label||"area") : (pa.unit_label_plural||pa.unit_label||"areas"))}`],
+    ["Made of", `${num(pa.count)} ${esc(unitWord(pa.unit||"", pa.count!==1))}`],
     ["Size", pa.area_km2!=null?`${num(pa.area_km2,2)} km²`:null],
     ["Population", pa.population!=null?`${num(pa.population)} <span class="subnote" style="display:inline">(2020 Census)</span>`
       : (pa.population_partial!=null?`at least ${num(pa.population_partial)}`:null)],

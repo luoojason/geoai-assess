@@ -389,6 +389,30 @@ class TestExposureProxies:
         assert mm._is_major(["secondary", "primary"]) and mm._is_major("['trunk', 'service']")
         assert not mm._is_major("residential")
 
+    def test_highway_arrays_from_a_saved_layer_count(self):
+        """Read back from a saved file, a merged edge's classes are a numpy
+        array — and `array or ""` crashed a whole live step 7 on 2026-09-16."""
+        import numpy as np
+
+        from backend.assess import metrics as mm
+
+        assert mm._is_major(np.array(["primary", "secondary"]))
+        assert not mm._is_major(np.array(["residential", "service"]))
+        assert not mm._is_major(float("nan")) and not mm._is_major(None)
+
+    def test_a_measure_that_cannot_be_computed_does_not_fail_the_step(self, tmp_path, monkeypatch):
+        def boom(L, sa):
+            raise ValueError("bad data")
+        real = hcas._metric_computers
+        monkeypatch.setattr(hcas, "_metric_computers", lambda: {**real(), "greenspace_coverage": boom})
+        db = tmp_path / "h.db"
+        pid = hcas.create_project("t", *FRANKLIN, db=db)
+        _walk(pid, db, through=6)
+        a7 = hcas.run_step(pid, 7, db=db)
+        assert a7["metrics"]["greenspace_coverage_ratio"] is None
+        assert "greenspace_coverage_ratio" in a7["unmeasured_metrics"]
+        assert "could not be computed" in a7["measure_details"]["greenspace_coverage"]["not_measured"]
+
     def test_industrial_share_counts_overlaps_once(self):
         from backend.assess import metrics as mm
 

@@ -186,6 +186,22 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "",
         m.get_root().html.add_child(folium.Element(label_html))
 
     m.fit_bounds([[south, west], [north, east]])
+    # Fit again once the page has its real size. The map is drawn inside an
+    # iframe, and when that frame is still being laid out (two maps side by side
+    # in the base-area comparison, 2026-09-16) Leaflet measures a near-zero box,
+    # picks the minimum zoom, and a 4 km² neighbourhood opened as the whole city.
+    refit = f"""
+    <script>
+    window.addEventListener("load", function () {{
+      setTimeout(function () {{
+        try {{
+          {m.get_name()}.invalidateSize();
+          {m.get_name()}.fitBounds([[{south}, {west}], [{north}, {east}]]);
+        }} catch (e) {{}}
+      }}, 200);
+    }});
+    </script>"""
+    m.get_root().html.add_child(folium.Element(refit))
     return m._repr_html_()
 
 
