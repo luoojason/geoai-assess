@@ -273,6 +273,11 @@ def _next_endpoint(used: str) -> str:
     hand the run straight back to it.
     """
     usable = [e for e in _OVERPASS_ENDPOINTS if e not in _stale_endpoints] or _OVERPASS_ENDPOINTS
+    # ...and skip hosts we are resting (refused us, or asked us to wait) while
+    # any other host is available. `used` stays in the list as a position.
+    awake = [e for e in usable if e == used or not _host_blocked(_host(e))]
+    if any(e != used for e in awake):
+        usable = awake
     try:
         i = usable.index(used)
     except ValueError:
@@ -331,11 +336,303 @@ ox.settings.http_user_agent = _USER_AGENT
 # the same minute answered in 0.8-15 s, which is how the contradiction showed up.
 # With this off, a transit fetch that had never completed returned in 6.1 s.
 #
-# Politeness is preserved where it actually counts: layer concurrency is capped
-# at 2 (OSM_LAYER_WORKERS in hcas.py), matching overpass-api.de's advertised
-# 2 slots, and tiles are small. A server that wants us to wait can still say so
-# with 429/504, which the rotation treats as a failure and moves on from.
+# Politeness is NOT given up with it: the polite client below replaces osmnx's
+# request function, reads /status with a parser that searches lines instead of
+# indexing them, waits when the server says so, caps our own in-flight requests,
+# and backs off on refusals. See "polite Overpass client".
 ox.settings.overpass_rate_limit = False
+
+
+# --- polite Overpass client -------------------------------------------------
+# Measured 2026-09-29 on Railway: one step-3 run (7 layers, two areas) made every
+# overpass-api.de backend refuse TCP from the app's IP for 10+ minutes. The
+# client had no way to hear "wait": osmnx's status check is off (above), every
+# refusal was retried instantly, and nothing counted the requests in flight
+# across layers, areas and abandoned threads. This section is the fix, and it is
+# plain politeness, not evasion: the same identified client, sending less, later.
+#
+#  1. Slot check. Before a query to the overpass-api.de family we GET /status
+#     (short timeout, cached a few seconds) and parse it by searching lines:
+#     "N slots available now." -> go; "Slot available after: ..., in N seconds."
+#     -> wait N s if that fits the layer's budget, else call the host busy and
+#     rotate. A status call that fails changes nothing (never hangs a query).
+#     kumi and private.coffee serve a different format and are not asked.
+#  2. Refused hosts cool down. A connection refused in under a second, or a
+#     TCP handshake that times out, is the "this IP is refused" signal; two in a
+#     row on one host stop us sending to it for OSM_HOST_COOLDOWN_S instead of
+#     hammering the refusal.
+#  3. One in-flight cap per server family, counted at the HTTP request, so a
+#     project area, a base area, a prefetch and an abandoned layer all share it.
+#  4. 429/504 are raised to the tile loop (which backs off) instead of osmnx's
+#     unbounded "sleep 55 s and recurse", which ignored the step budget.
+_STATUS_HOSTS = {"overpass-api.de", "z.overpass-api.de", "lz4.overpass-api.de"}
+_FAMILY_KEY = "overpass-api.de"
+OSM_OVERPASS_MAX_INFLIGHT = int(os.environ.get("OSM_OVERPASS_MAX_INFLIGHT", "2"))
+OSM_STATUS_TIMEOUT_S = float(os.environ.get("OSM_STATUS_TIMEOUT_S", "4"))
+OSM_STATUS_CACHE_S = float(os.environ.get("OSM_STATUS_CACHE_S", "5"))
+OSM_STATUS_MAX_WAIT_S = float(os.environ.get("OSM_STATUS_MAX_WAIT_S", "90"))
+OSM_HOST_COOLDOWN_S = float(os.environ.get("OSM_HOST_COOLDOWN_S", "300"))
+OSM_FAST_REFUSAL_S = float(os.environ.get("OSM_FAST_REFUSAL_S", "1.0"))
+OSM_SLOT_WAIT_MAX_S = float(os.environ.get("OSM_SLOT_WAIT_MAX_S", "180"))
+
+
+class OverpassBusy(Exception):
+    """We chose not to send: the server asked us to wait longer than the layer
+    can afford, or we are resting a host that refused us. Counts as a refusal
+    (retried with backoff, never split) and carries a plain reason for the UI."""
+
+    def __init__(self, plain_reason: str):
+        super().__init__(plain_reason)
+        self.plain_reason = plain_reason
+
+
+_ASKED_TO_WAIT = (
+    "the OpenStreetMap server asked us to wait before sending more requests (its "
+    "fair-use limit), and the wait did not fit in this step's time. Try again in "
+    "a few minutes."
+)
+_RESTING_HOSTS = (
+    "the OpenStreetMap servers were refusing connections from this server, so the "
+    "app paused its requests to let their limit reset. Try again in a few minutes."
+)
+_OWN_CAP_FULL = (
+    "the app's fair-use share of the OpenStreetMap server stayed in use by its "
+    "other downloads for this step's whole time. Try again in a few minutes."
+)
+
+_SLOTS_NOW_RE = re.compile(r"^\s*(\d+)\s+slots?\s+available\s+now", re.I | re.M)
+_SLOT_AFTER_RE = re.compile(
+    r"^\s*Slot available after:.*?\bin\s+(-?\d+)\s+seconds?", re.I | re.M)
+_RATE_LIMIT_RE = re.compile(r"^\s*Rate limit:\s*(\d+)", re.I | re.M)
+
+
+def parse_overpass_status(text) -> dict | None:
+    """{'rate_limit', 'available', 'wait_s'} from an overpass-api.de /status body,
+    or None when the body is not in that format (garbage, kumi's layout, HTML).
+
+    Searched line by line, never by index — osmnx's `split("\\n")[4]` is what
+    hung on another server's layout. A body can list free slots AND occupied
+    ones; `wait_s` is the soonest occupied slot and only matters at 0 free.
+    """
+    if not isinstance(text, str):
+        return None
+    now = _SLOTS_NOW_RE.search(text)
+    afters = [max(0, int(m)) for m in _SLOT_AFTER_RE.findall(text)]
+    if now is None and not afters:
+        return None
+    rl = _RATE_LIMIT_RE.search(text)
+    return {
+        "rate_limit": int(rl.group(1)) if rl else None,
+        "available": int(now.group(1)) if now else 0,
+        "wait_s": float(min(afters)) if afters else None,
+    }
+
+
+_polite_lock = threading.Condition()
+_status_cache: dict[str, dict] = {}        # endpoint -> parsed status + "until"
+_inflight: dict[str, int] = {}              # gate key -> requests on the wire
+_rate_limits: dict[str, int] = {}           # endpoint -> last "Rate limit: N"
+_host_blocked_until: dict[str, float] = {}  # host -> resting until (time.time())
+_host_block_reason: dict[str, str] = {}
+_fast_refusals: dict[str, int] = {}         # host -> consecutive fast refusals
+_polite_stats: dict[str, float] = {}
+
+
+def _stat(key: str, n: float = 1) -> None:
+    _polite_stats[key] = _polite_stats.get(key, 0) + n
+
+
+def polite_stats() -> dict:
+    """Counters for measurement: status calls, waits, cooldowns, refusals."""
+    return dict(_polite_stats)
+
+
+def _host(url: str) -> str:
+    return urlsplit(url).hostname or ""
+
+
+def _gate_key(host: str) -> str:
+    return _FAMILY_KEY if host in _STATUS_HOSTS else host
+
+
+def _gate_limit(key: str) -> int:
+    limit = max(1, OSM_OVERPASS_MAX_INFLIGHT)
+    if key == _FAMILY_KEY:
+        reported = [n for n in _rate_limits.values() if n > 0]   # 0 = unlimited
+        if reported:
+            limit = min(limit, min(reported))
+    return limit
+
+
+def _host_blocked(host: str) -> bool:
+    return _host_blocked_until.get(host, 0.0) > time.time()
+
+
+def _block_host(host: str, seconds: float, reason: str) -> None:
+    with _polite_lock:
+        until = time.time() + seconds
+        if until > _host_blocked_until.get(host, 0.0):
+            _host_blocked_until[host] = until
+            _host_block_reason[host] = reason
+
+
+def _remaining_budget() -> float:
+    deadline = current_deadline()
+    return float("inf") if deadline is None else deadline - time.time()
+
+
+def _acquire_gate(key: str) -> None:
+    """Wait for one of our own in-flight places for this server family."""
+    give_up = time.time() + max(0.0, min(_remaining_budget(), OSM_SLOT_WAIT_MAX_S))
+    with _polite_lock:
+        while _inflight.get(key, 0) >= _gate_limit(key):
+            left = give_up - time.time()
+            if left <= 0:
+                raise OverpassBusy(_OWN_CAP_FULL)
+            _polite_lock.wait(timeout=min(left, 1.0))
+        _inflight[key] = _inflight.get(key, 0) + 1
+
+
+def _release_gate(key: str) -> None:
+    with _polite_lock:
+        _inflight[key] = max(0, _inflight.get(key, 0) - 1)
+        _polite_lock.notify_all()
+
+
+def _fetch_status_text(url: str) -> str | None:
+    """GET <endpoint>/status. Any failure is None: it must never block a query."""
+    import requests
+
+    _stat("status_calls")
+    try:
+        r = requests.get(f"{url.rstrip('/')}/status", timeout=OSM_STATUS_TIMEOUT_S,
+                         headers={"User-Agent": _USER_AGENT})
+        return r.text if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _status_for(url: str) -> dict | None:
+    """The endpoint's status, from a few-seconds cache so parallel workers share
+    one call. A cached "N free" is consumed as workers use it, so two workers
+    cannot both spend the same last slot."""
+    with _polite_lock:
+        entry = _status_cache.get(url)
+        if entry and entry["until"] > time.time() and entry["available"] > 0:
+            entry["available"] -= 1
+            return dict(entry, available=entry["available"] + 1)
+    status = parse_overpass_status(_fetch_status_text(url))
+    if status is None:
+        return None
+    with _polite_lock:
+        if status["rate_limit"] is not None:
+            _rate_limits[url] = status["rate_limit"]
+        entry = dict(status, until=time.time() + OSM_STATUS_CACHE_S)
+        if entry["available"] > 0:
+            entry["available"] -= 1        # this caller takes one
+        _status_cache[url] = entry
+    return status
+
+
+def _wait_for_server_slot(url: str) -> None:
+    """Honour the server's own "wait N seconds" before sending a query."""
+    if _host(url) not in _STATUS_HOSTS:
+        return
+    for attempt in range(3):              # wait, recheck, at most twice
+        status = _status_for(url)
+        if status is None or status["available"] > 0 or status["wait_s"] is None:
+            return
+        pause = status["wait_s"] + 1.0
+        if attempt == 2 or pause > min(OSM_STATUS_MAX_WAIT_S, _remaining_budget() - 5.0):
+            _block_host(_host(url), status["wait_s"], _ASKED_TO_WAIT)
+            _stat("asked_to_wait_rotations")
+            raise OverpassBusy(_ASKED_TO_WAIT)
+        logger.info(f"Overpass {_host(url)} asked us to wait {pause:.0f} s — waiting")
+        _stat("waits")
+        _stat("wait_s", pause)
+        time.sleep(pause)
+        with _polite_lock:
+            _status_cache.pop(url, None)
+
+
+def _note_fast_refusal(host: str) -> None:
+    with _polite_lock:
+        _fast_refusals[host] = _fast_refusals.get(host, 0) + 1
+        strikes = _fast_refusals[host]
+    _stat("fast_refusals")
+    if strikes >= 2:
+        _block_host(host, OSM_HOST_COOLDOWN_S, _RESTING_HOSTS)
+        with _polite_lock:
+            _fast_refusals[host] = 0
+        _stat("cooldowns")
+        logger.warning(
+            f"Overpass {host} refused two connections in a row — resting it "
+            f"for {OSM_HOST_COOLDOWN_S:.0f} s"
+        )
+
+
+def _polite_overpass_request(data):
+    """Drop-in for osmnx._overpass._overpass_request (osmnx 2.x).
+
+    Same cache and parsing as osmnx; different manners. It deliberately does
+    not call osmnx's _config_dns, which pins the host to one gethostbyname()
+    answer and rebinds socket.getaddrinfo process-wide — bypassing the
+    dead-address filter above every time it ran.
+    """
+    import requests
+    from osmnx import _http
+
+    url = ox.settings.overpass_url.rstrip("/")
+    host = _host(url)
+    full = url + "/interpreter"
+    prepared = str(requests.Request("GET", full, params=data).prepare().url)
+    cached = _http._retrieve_from_cache(prepared)
+    if isinstance(cached, dict):
+        return cached
+    if _host_blocked(host):
+        raise OverpassBusy(_host_block_reason.get(host, _RESTING_HOSTS))
+    key = _gate_key(host)
+    _acquire_gate(key)
+    try:
+        _wait_for_server_slot(url)
+        _stop_if_expired()
+        _stat("requests")
+        t0 = time.monotonic()
+        try:
+            response = requests.post(full, data=data, timeout=ox.settings.requests_timeout,
+                                     headers=_http._get_http_headers(),
+                                     **ox.settings.requests_kwargs)
+        except requests.exceptions.ConnectionError as exc:
+            # Two shapes of "this IP is refused": a reset in under a second, or
+            # a handshake that never completes. The second is what the live run
+            # on 2026-09-29 actually saw (every family host: connect timeout at
+            # 10 s, never a reset), so counting only fast resets rested nothing.
+            # A ReadTimeout is NOT counted — the server accepted us.
+            if isinstance(exc, requests.exceptions.ConnectTimeout) or (
+                    not isinstance(exc, requests.exceptions.Timeout)
+                    and time.monotonic() - t0 < OSM_FAST_REFUSAL_S):
+                _note_fast_refusal(host)
+            raise
+    finally:
+        _release_gate(key)
+    with _polite_lock:
+        _fast_refusals[host] = 0          # it answered: the IP is not refused
+    if response.status_code in (429, 504):
+        _stat("http_refusals")
+        with _polite_lock:
+            _status_cache.pop(url, None)  # the next attempt reads a fresh status
+        raise ResponseStatusCodeError(
+            f"{host!r} responded: {response.status_code} {response.reason}")
+    response_json = _http._parse_response(response)
+    if not isinstance(response_json, dict):
+        raise InsufficientResponseError("Overpass API did not return a dict of results.")
+    _http._save_to_cache(prepared, response_json, response.ok)
+    return response_json
+
+
+from osmnx import _overpass as _ox_overpass  # noqa: E402
+
+_ox_overpass._overpass_request = _polite_overpass_request
 
 
 # 12 s, not 6: measured on a flaky link 2026-08-07, overpass-api.de answered a
@@ -583,8 +880,12 @@ def _with_overpass_failover(call):
         # the dead address belonged to the host that failed (measured
         # 2026-09-02: twenty minutes of rotating off overpass-api.de on
         # ConnectTimeout without ever re-probing it).
-        _learn_dead_addresses(urlsplit(used).hostname)
-        _learn_dead_addresses(urlsplit(nxt).hostname)
+        # Not after OverpassBusy: nothing went on the wire, so there is no
+        # evidence about addresses, and probing a host we are resting would
+        # send it the very connections we chose to withhold.
+        if not isinstance(exc, OverpassBusy):
+            _learn_dead_addresses(urlsplit(used).hostname)
+            _learn_dead_addresses(urlsplit(nxt).hostname)
         logger.warning(f"Overpass {used} failed ({exc!r}) — retrying on {nxt}")
         try:
             return call()
@@ -599,7 +900,8 @@ def _with_overpass_failover(call):
                 _failed_over = after != _OVERPASS_PRIMARY
             # Same reasoning as the rotation above: the next call inherits this
             # endpoint, so it inherits its dead addresses unless we look now.
-            _learn_dead_addresses(urlsplit(after).hostname)
+            if not isinstance(exc2, OverpassBusy):
+                _learn_dead_addresses(urlsplit(after).hostname)
             logger.warning(
                 f"Overpass {nxt} failed too ({exc2!r}) — next request tries {after}"
             )
@@ -705,6 +1007,8 @@ def _is_refusal(exc: BaseException) -> bool:
     """
     import requests
 
+    if isinstance(exc, OverpassBusy):
+        return True          # we held back on the server's word: same as a refusal
     if isinstance(exc, (requests.exceptions.ConnectionError,
                         requests.exceptions.Timeout)):
         return True          # covers ConnectTimeout and ReadTimeout, both subclasses
@@ -715,10 +1019,22 @@ def _is_refusal(exc: BaseException) -> bool:
     return False
 
 
+# Backoff between attempts at the same area: roughly 5 s, 15 s, 40 s, then
+# capped, each with +/-25% jitter so parallel layers do not retry in lockstep.
+# It was 2/4/8 s — measured 2026-09-29 on Railway, retrying that fast after
+# refusals is how every overpass-api.de backend came to refuse the app's IP for
+# 10+ minutes. _pause_for_retry still clamps every pause to the step budget.
+_BACKOFF_STEPS_S = (5.0, 15.0, 40.0)
+OSM_BACKOFF_MAX_S = float(os.environ.get("OSM_BACKOFF_MAX_S", "60"))
+
+
 def _retry_pause(attempt: int) -> float:
-    """Backoff before retrying the same area. Bounded: a long sleep inside a
-    step that has a wall-clock budget is just a slower way to run out of it."""
-    return min(2.0 * (2 ** (attempt - 1)), 8.0)
+    """Backoff before retry number `attempt` (1-based) of the same area."""
+    import random
+
+    i = max(1, attempt) - 1
+    base = _BACKOFF_STEPS_S[i] if i < len(_BACKOFF_STEPS_S) else OSM_BACKOFF_MAX_S
+    return min(base, OSM_BACKOFF_MAX_S) * random.uniform(0.75, 1.25)
 
 
 def _pause_for_retry(attempt: int) -> None:

@@ -24,8 +24,25 @@ _scope: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
 
 def friendly_net_reason(exc: Exception) -> str:
     """One sentence a non-developer can act on, from a raw network exception."""
+    # Failures the app chose on the server's behalf (osm_layers.OverpassBusy:
+    # "asked us to wait", resting a refusing host) already carry plain words.
+    plain = getattr(exc, "plain_reason", None)
+    if isinstance(plain, str) and plain:
+        return plain
     s = str(exc)
     name = type(exc).__name__
+    if name == "BudgetExpired":
+        return (
+            "the OpenStreetMap servers did not deliver this layer within the "
+            "step's time (they were busy or turning requests away). Try again in "
+            "a few minutes."
+        )
+    if "responded: 429" in s:
+        return (
+            "the OpenStreetMap server asked us to slow down (too many requests); "
+            "the app backed off, but it did not clear in this step's time. Try "
+            "again in a few minutes."
+        )
     if "getaddrinfo failed" in s or "Failed to resolve" in s or "NameResolution" in s:
         return (
             "DNS lookup failed — this computer could not translate the server's "

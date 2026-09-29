@@ -36,6 +36,17 @@ def _isolate_osm_layer_globals(monkeypatch):
     monkeypatch.setattr(ol, "_probed", True)
     monkeypatch.setattr(ol, "_probe_expires_at", float("inf"))
     monkeypatch.setattr(ol, "_retry_pause", lambda attempt: 0.0)
+    # The polite client's state (2026-09-29): status cache, in-flight counts,
+    # rested hosts. And its /status GET is pinned off like the probe — a test
+    # that wants a status sets `_fetch_status_text` itself.
+    monkeypatch.setattr(ol, "_status_cache", {})
+    monkeypatch.setattr(ol, "_inflight", {})
+    monkeypatch.setattr(ol, "_rate_limits", {})
+    monkeypatch.setattr(ol, "_host_blocked_until", {})
+    monkeypatch.setattr(ol, "_host_block_reason", {})
+    monkeypatch.setattr(ol, "_fast_refusals", {})
+    monkeypatch.setattr(ol, "_polite_stats", {})
+    monkeypatch.setattr(ol, "_fetch_status_text", lambda url: None)
     ol.clear_deadline()
     try:
         yield
