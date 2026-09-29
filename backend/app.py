@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -659,6 +660,13 @@ async def hcas_step_progress(pid: str, step: int):
     detail = hcas.get_progress_detail(pid, step)
     if detail:
         out["detail"] = detail
+    # `running` + `elapsed_s` only while a run is in flight: every step says so,
+    # even the ones that never report a percentage, so a reloaded page can find
+    # a re-run of an EARLIER step and carry its clock instead of restarting it.
+    started = hcas.get_started(pid, step)
+    if started is not None:
+        out["running"] = True
+        out["elapsed_s"] = max(0.0, round(time.time() - started, 1))
     return out
 
 

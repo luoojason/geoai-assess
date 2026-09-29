@@ -126,6 +126,7 @@ step, no external services.
 | `HCAS_DB` | `/data/hcas.db` | Already set in the Dockerfile; must land on the mounted volume. |
 | `CENSUS_API_KEY` | optional, free | Median household income / home value / age on step 1. |
 | `HCAS_LAYER_BUDGET_S` | optional, default `420` | Per-step ceiling on the layer fetch. |
+| `HCAS_HOSTED` | `1` on any shared server | Visitors cannot edit the server's `.env`, so messages that say "add X to the .env next to START-HCAS" are replaced by plain words saying the site administrator has not set X up. Leave unset on a local install. |
 
 Mount a volume at **`/data`** (1 GB is plenty). It holds the SQLite database and
 the osmnx tile cache, both of which must survive a redeploy.

@@ -61,10 +61,28 @@ def get_progress_detail(pid: str, step: int) -> list:
         return list(_progress_detail.get((pid, step), []))
 
 
+# When each in-flight run began (time.time()). Set by run_step for EVERY step,
+# including the ones that never report a percentage, so a reloaded browser can
+# ask "is step N running?" and get a true answer, and can show the real elapsed
+# time instead of restarting its clock at 0:00 when it re-attaches.
+_progress_started: dict[tuple[str, int], float] = {}
+
+
+def mark_started(pid: str, step: int) -> None:
+    with _progress_lock:
+        _progress_started[(pid, step)] = time.time()
+
+
+def get_started(pid: str, step: int) -> float | None:
+    with _progress_lock:
+        return _progress_started.get((pid, step))
+
+
 def clear_progress(pid: str, step: int) -> None:
     with _progress_lock:
         _progress.pop((pid, step), None)
         _progress_detail.pop((pid, step), None)
+        _progress_started.pop((pid, step), None)
 
 from backend import kg
 from backend.assess.references import REFERENCES
@@ -880,14 +898,33 @@ def _llm_structured(
 # reply, but never writes an artifact row — so the HITL-ablation dataset stays
 # "LLM at steps 2 & 4 only". Its token spend is deliberately outside the audit
 # tuples that steps 2 & 4 record.
+# QA 2026-09-29: the chat told a tester to "add a new entry to the `factors`
+# array", named ids like `near_major_road_exposure`, and answered in raw
+# markdown. The analyst never sees the data behind a page, only the page, so
+# the assistant must talk about the page.
+_CHAT_PLAIN_RULE = (
+    "The analyst sees the web page, never the data behind it. Never show or mention "
+    "JSON, arrays, fields, keys or ids (such as snake_case names); refer to every "
+    "factor, measure, layer or setting by the name the page shows, in plain words. "
+    "Never tell the analyst to edit data or add entries. You cannot change anything "
+    "yourself — never claim you did. When the analyst wants a change, say what they "
+    "can do on the page: on Choose factors, tick or untick a factor, or type the "
+    "change into the 'Change the list' box and press 'Apply change'; on any step, "
+    "edit the panels shown, press 'Re-run' to draft the step again, 'Confirm' to "
+    "accept it and move on, or 'Back' to return to the previous step. Keep formatting "
+    "light: short paragraphs, **bold** for emphasis and simple '-' lists at most; no "
+    "headings, tables or code."
+)
+
 _CHAT_SYSTEM = (
     "You are the assessment assistant embedded in the Healthy Community Assessment "
     "System (HCAS) — a gated GIS + generative-AI pipeline that walks an analyst "
     "through an 8-step community-health assessment. Explain the current step and its "
     "AI-drafted artifact, and answer the analyst's questions. Be concise, specific, and "
-    "grounded: never invent GIS numbers — cite values that appear in the artifact JSON. "
-    "You are a read-only assistant; if the analyst wants the artifact changed, tell them "
-    "which field to edit and confirm — you cannot edit or advance the pipeline yourself."
+    "grounded: never invent GIS numbers — use only values that appear in the step's "
+    "data below. "
+    + _PLAIN_WORDS_RULE + " "
+    + _CHAT_PLAIN_RULE
 )
 
 
@@ -1263,7 +1300,11 @@ def basemap_for_project(pid: str, which: str = "project", db: Path | None = None
     if not spec:
         raise KeyError(f"project {pid} has no {which} area")
     if not _is_sub_county(spec):
-        return basemap_for_county(spec["state_fips"], spec["county_fips"])
+        # A whole-county BASE area is still the base area, not the study area
+        # (QA 2026-09-29: the base column's map was captioned "Study area").
+        return basemap_for_county(
+            spec["state_fips"], spec["county_fips"],
+            subtitle="Base area · full county boundary" if which == "base" else None)
     from backend.assess.renderer import render_base_map
 
     polygon = _load_area(project, which)
@@ -1281,12 +1322,13 @@ def basemap_for_project(pid: str, which: str = "project", db: Path | None = None
     )
 
 
-def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None) -> str:
+def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None,
+                       subtitle: str | None = None) -> str:
     """Rendered HTML for the study-area locator map. Raises ValueError for an
     unknown county, RuntimeError if the boundary cannot be reached."""
     if lookup_county(state_fips, county_fips) is None:
         raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
-    key = (state_fips, county_fips)
+    key = (state_fips, county_fips) if subtitle is None else (state_fips, county_fips, subtitle)
     with _basemap_lock:
         if key in _basemap_cache:
             return _basemap_cache[key]
@@ -1299,7 +1341,7 @@ def basemap_for_county(state_fips: str, county_fips: str, db: Path | None = None
     place = build_place_name(state_fips, county_fips)
     from backend.assess.renderer import render_base_map
 
-    html = render_base_map(geom, place)
+    html = render_base_map(geom, place, subtitle=subtitle) if subtitle else render_base_map(geom, place)
     with _basemap_lock:
         _basemap_cache[key] = html
     return html
@@ -2284,7 +2326,8 @@ def _step3_area(project: dict, which: str, names: list, sources: list,
     # (FIPS, area, population) and properties can be shown like any other layer.
     study_layer = {
         "kind": describe["kind"],
-        "name": "Project area" if describe["kind"] in ("units", "custom") else "Study area",
+        "name": ("Base area" if which == "base"
+                 else "Project area" if describe["kind"] in ("units", "custom") else "Study area"),
         "fips": describe.get("fips"),
         "crs": "EPSG:5070 (CONUS Albers Equal Area)",
         "extent_4326": bbox,
@@ -2671,7 +2714,7 @@ def _metric_computers() -> dict:
     }
 
 
-def _database_for(inv: dict) -> dict:
+def _database_for(inv: dict, which: str = "project") -> dict:
     sa = inv.get("study_area") or {}
     # Prefer the step-3 study-area description; fall back for old disc artifacts.
     if sa:
@@ -2682,7 +2725,10 @@ def _database_for(inv: dict) -> dict:
             shape = f"{sa.get('units', '')} selected Census areas ({sa.get('area_km2')} km²)"
         else:
             shape = f"{sa.get('radius_m', 5000)} m centroid buffer"
-        study_desc = f"{sa.get('name', 'Study area')} · {shape}"
+        # Step-3 artifacts from before 2026-09-29 named the base area "Project
+        # area"; label by the column this database belongs to.
+        name = "Base area" if which == "base" else sa.get("name", "Study area")
+        study_desc = f"{name} · {shape}"
     else:
         study_desc = f"{inv.get('radius_m', 5000)} m circular buffer around the county centroid"
     return {
@@ -2702,7 +2748,7 @@ def _run_step_5(project: dict) -> tuple[dict, str | None, dict | None]:
     inv = _confirmed(project, 3)
     out = _database_for(inv)
     if inv.get("base"):
-        out["base"] = _database_for(inv["base"])
+        out["base"] = _database_for(inv["base"], "base")
     return out, None, None
 
 
@@ -3316,7 +3362,27 @@ def _result_label(key: str) -> str:
     from backend.assess.indicators import INDICATORS
 
     unit = (INDICATORS.get(key) or {}).get("unit")
-    return METRIC_LABELS.get(key, key.replace("_", " ")) + (f" ({unit})" if unit else "")
+    return with_unit(METRIC_LABELS.get(key, key.replace("_", " ")), unit)
+
+
+def with_unit(label: str, unit: str | None) -> str:
+    """`label (unit)`, without saying the unit twice.
+
+    "Social vulnerability (percentile)" + "percentile (0–1)" used to read
+    "Social vulnerability (percentile) (percentile (0–1))" (QA 2026-09-29).
+    When the label already names the unit, the unit's extra detail is folded
+    into the label's own parentheses instead: "(percentile, 0–1)".
+    """
+    if not unit:
+        return label
+    head, _, rest = unit.partition(" (")
+    rest = rest[:-1] if rest.endswith(")") else rest
+    tag = f"({head})"
+    if label.lower().endswith(tag.lower()):
+        return label[: -len(tag)] + (f"({head}, {rest})" if rest else tag)
+    if len(head) >= 4 and head.lower() in label.lower():
+        return label
+    return f"{label} ({unit})"
 
 
 def _comparison_lines(project: dict, results: dict) -> list[str]:
@@ -3616,14 +3682,37 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         "\n## Limitations",
         *[f"- {x}" for x in _strs("limitations")],
         "\n## References",
-        *[
-            f"- {cited[t]['authors']} ({cited[t]['year']}). {t}. _{cited[t]['journal']}_."
-            + (f" doi:{cited[t]['doi']}" if cited[t]["doi"] else "")
-            for t in _strs("references")
-            if t in cited
-        ],
+        *_report_references(framework, _strs("references"), cited),
     ]
     return {"kind": "report_markdown", "markdown": "\n".join(lines)}, None, None
+
+
+def _report_references(framework: dict, titles: list[str], cited: dict) -> list[str]:
+    """The report's reference lines, in step 4's order.
+
+    Built-in titles carry full bibliographic data. Titles the knowledgebase
+    returned for this project are cited too: they used to be dropped because
+    only built-in titles have that data (QA 2026-09-29: step 4 listed 14
+    references, the report 13). The grounding note appears only when step 4
+    really was grounded; a run without the knowledgebase says nothing about it.
+    """
+    kb = framework.get("knowledgebase")
+    grounded = isinstance(kb, dict)
+    kb_docs = [t for t in (kb.get("source_documents") or []) if isinstance(t, str)] if grounded else []
+    kb_titles = set(kb_docs)
+    out: list[str] = []
+    if grounded:
+        n = len(kb_docs)
+        out.append(f"_Theoretical framework grounded in the project knowledgebase "
+                   f"({n} source{'' if n == 1 else 's'})._\n")
+    for t in titles:
+        if t in cited:
+            r = cited[t]
+            out.append(f"- {r['authors']} ({r['year']}). {t}. _{r['journal']}_."
+                       + (f" doi:{r['doi']}" if r["doi"] else ""))
+        elif t in kb_titles:
+            out.append(f"- {t}. From the project knowledgebase.")
+    return out
 
 
 def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
@@ -3944,6 +4033,7 @@ def run_step(pid: str, step: int, db: Path | None = None, refresh: bool = False)
     if missing:
         raise ValueError(f"cannot run step {step}: steps {missing} not confirmed")
 
+    mark_started(pid, step)
     try:
         ai_draft, model, usage = _draft(project, step)
     finally:
@@ -4385,9 +4475,10 @@ def chat(
     s1 = next((s for s in project["steps"] if s["step"] == 1), None)
     area = (s1.get("human_final") or s1.get("ai_draft")) if s1 else None
     if area and step != 1:
-        ctx.append("Study area and Census profile (JSON):\n" + _clip_json(area, 2500))
+        ctx.append("Study area and Census profile (JSON, for your reading only):\n" + _clip_json(area, 2500))
     if artifact is not None:
-        ctx.append("Current step artifact (JSON):\n" + _clip_json(artifact, 6000))
+        ctx.append("Current step data (JSON, for your reading only; never quote its "
+                   "keys or ids to the analyst):\n" + _clip_json(artifact, 6000))
     else:
         ctx.append("The current step has not been run yet (no artifact drafted).")
 

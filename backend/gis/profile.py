@@ -20,6 +20,8 @@ import logging
 
 import requests
 
+from backend.config import is_hosted
+
 logger = logging.getLogger(__name__)
 
 _TIGER = (
@@ -166,9 +168,19 @@ def county_profile(
         except Exception as exc:
             logger.warning(f"county_profile ACS lookup failed: {exc!r}")
             out["unavailable"]["acs"] = (
+                f"The Census request for household income and home value failed "
+                f"({type(exc).__name__}). Try re-running this step later."
+                if is_hosted() else
                 f"The Census ACS request failed ({type(exc).__name__}) — check the "
                 "CENSUS_API_KEY in .env and the network."
             )
+    elif is_hosted():
+        # A visitor to a hosted site cannot edit the server's .env (QA 2026-09-29).
+        out["unavailable"]["acs"] = (
+            "Household income, home value and median age figures need a Census data "
+            "key, and the site administrator has not set one up, so they are left out. "
+            "Everything else in the assessment works without them."
+        )
     else:
         out["unavailable"]["acs"] = (
             "Median household income, median home value and median age come from "

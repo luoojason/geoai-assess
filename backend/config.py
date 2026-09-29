@@ -31,6 +31,17 @@ def load_env_file(path: Optional[Path] = None) -> None:
             os.environ[key] = value
 
 
+def is_hosted() -> bool:
+    """True on a shared server (set HCAS_HOSTED=1 there), False on a local install.
+
+    Messages that tell the reader to edit the .env file next to START-HCAS are
+    only actionable on the reader's own machine. On a hosted site the reader is
+    a visitor who cannot touch the server, so those messages must instead say
+    that the site administrator has not set the thing up.
+    """
+    return os.environ.get("HCAS_HOSTED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings(BaseSettings):
     # App settings
     host: str = "0.0.0.0"
