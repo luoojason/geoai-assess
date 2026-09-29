@@ -132,7 +132,11 @@
      size and a similar-to-square (rather than elongated) shape." Aspect-ratio
      drives the height, so the map grows with the panel and stays near-square
      instead of the old fixed 264px letterbox. */
-  .mapview{aspect-ratio:5/4;min-height:420px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;
+  /* min-width:0 matters: with aspect-ratio, min-height:420px is transferred into
+     an automatic min-width of 525px, so in the two-column comparison (QA
+     2026-09-29, 1500-1600px wide) each map burst out of its column and the base
+     column was cut off at the right. */
+  .mapview{aspect-ratio:5/4;min-height:420px;min-width:0;max-width:100%;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;
            background-color:var(--teal-tint);
            background-image:linear-gradient(var(--grid) 1px,transparent 1px),
                             linear-gradient(90deg,var(--grid) 1px,transparent 1px);
@@ -193,6 +197,7 @@
   .rprev h3{font:600 var(--fs-base) var(--sans);margin:.9em 0 .2em;}
   .rprev p,.rprev li{font-size:var(--fs-sm);color:var(--ink);line-height:1.6;}
   .rprev table{border-collapse:collapse;margin:10px 0;} .rprev th,.rprev td{border:1px solid var(--line);padding:5px 10px;font-size:var(--fs-sm);}
+  .rprev blockquote{margin:10px 0;padding:6px 14px;border-left:3px solid var(--amber,#c98a1b);background:var(--panel);border-radius:0 var(--r-sm) var(--r-sm) 0;}
   .rprev th{background:var(--panel);font-family:var(--mono);font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.03em;}
   details.raw{margin-top:var(--sp-4);}
   details.raw summary{font:500 var(--fs-xs) var(--mono);color:var(--faint);cursor:pointer;letter-spacing:.03em;
@@ -285,6 +290,10 @@
   .bub.a{align-self:flex-start;background:var(--teal-tint);color:var(--teal-d);border-bottom-left-radius:4px;}
   .bub.u{align-self:flex-end;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-bottom-right-radius:4px;}
   .bub.err{background:var(--red-tint);color:var(--red);}
+  .bub.md{white-space:normal;}
+  .bub.md p{margin:0 0 6px;} .bub.md p:last-child{margin-bottom:0;}
+  .bub.md ul,.bub.md ol{margin:2px 0 6px;padding-left:18px;} .bub.md li{margin:1px 0;}
+  .bub.md code{font:400 0.92em var(--mono,monospace);background:rgba(0,0,0,.06);padding:0 3px;border-radius:3px;}
   .typing{align-self:flex-start;display:flex;gap:4px;padding:12px 14px;}
   .typing span{width:6px;height:6px;border-radius:50%;background:var(--teal);opacity:.4;animation:blink 1.2s infinite both;}
   .typing span:nth-child(2){animation-delay:.2s;} .typing span:nth-child(3){animation-delay:.4s;}
@@ -368,6 +377,10 @@
   .cmpgrid > div{min-width:0;}
   .cmpgrid .cols{flex-wrap:wrap!important;}
   .cmpgrid .panel.tree{width:100%!important;}
+  .cmpgrid .mapview{min-height:300px;}
+  .cmpgrid .panel,.cmpgrid .cols > *{min-width:0;}
+  .cmpgrid table.data{table-layout:auto;}
+  .cmpgrid .data td{overflow-wrap:anywhere;}
   .cmphead{font:600 var(--fs-sm) var(--sans);color:var(--ink);margin:var(--sp-4) 0 -6px;display:flex;gap:8px;align-items:center;}
   .cmphead .tag{font-size:10px;}
   .tag.base{background:var(--info-tint);color:var(--info);}
@@ -482,6 +495,8 @@ const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// "1 source", "2 sources" (QA 2026-09-29 saw "1 sources" on a badge).
+const plural = (n, one, many) => `${(+n||0).toLocaleString()} ${(+n)===1 ? one : (many||one+"s")}`;
 
 /* Map View helpers (Prof. Shi 2026-07-27: a base map from step 1). The locator
    map is FIPS-scoped so it works from step 1 onward; meta carries the FIPS. */
@@ -504,6 +519,18 @@ function baseMapFrame(which){
    the map's own layer control (same-origin iframe). */
 const FOLIUM_LABEL = { buildings:"Buildings", greenspace:"Greenspace", roads:"Roads",
   parking:"Parking", sidewalks:"Sidewalks", transit_stops:"Transit Stops", facilities:"Facilities" };
+/* Display names for map layers — mirrors LAYER_META in hcas.py (a test pins
+   the two together). Raw ids ("from greenspace", "transit_stops") reached the
+   step-6 workflow and the upload notice (QA 2026-09-29). */
+const LAYER_NAMES = { buildings:"Building footprints", greenspace:"Parks & green space",
+  roads:"Road network", parking:"Parking areas", sidewalks:"Sidewalks & paths",
+  transit_stops:"Transit stops", facilities:"Community facilities", landuse:"Land use" };
+function layerName(id){ return LAYER_NAMES[id] || String(id||"").replace(/_/g," "); }
+// Plain names for the step-1 "Not available" list, which used to print the
+// internal key ("acs not available…", QA 2026-09-29).
+const UNAVAILABLE_NAMES = { acs:"Income, home value and age", area:"Area", population:"Population",
+  profile:"Census profile", median_household_income_usd:"Median household income",
+  median_home_value_usd:"Median home value", median_age:"Median age" };
 const byStep = () => Object.fromEntries((S.project?.steps||[]).map(s=>[s.step,s]));
 const stepRow = n => (S.project?.steps||[]).find(s=>s.step===n) || null;
 
@@ -600,7 +627,7 @@ function renderChecklist(detail){
     const mark = d.status==="done" ? '<span class="ck-ok">✓</span>'
       : d.status==="error" ? '<span class="ck-err">⚠</span>'
       : '<span class="ck-run"></span>';
-    const meta = d.status==="done" && d.count!=null ? `${(+d.count).toLocaleString()} features`
+    const meta = d.status==="done" && d.count!=null ? plural(d.count, "feature")
       : d.status==="error" ? esc(d.note||"unavailable")
       : esc(d.source||"fetching…");
     return `<div class="ck-row ${esc(d.status||"")}">${mark}
@@ -615,10 +642,12 @@ function renderChecklist(detail){
 let PROG = null, CLOCK = null;
 const STEP_ETA = {1:6, 2:60, 3:180, 4:60, 5:3, 6:3, 7:240, 8:4};  // seconds, typical
 function mmss(s){ return Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"); }
-function startProgress(step){
+function startProgress(step, elapsed0){
   stopProgress();
   step = step || S.current;   // the step being run — see renderCanvasLoading
-  const t0 = Date.now();
+  // `elapsed0` is how long the SERVER says this run has been going. Re-attaching
+  // after a reload used to restart the clock at 0:00 on a run minutes old.
+  let t0 = Date.now() - (+elapsed0||0)*1000;
   let pct = 0;
 
   // The clock ticks on its own timer and never awaits anything. It used to be
@@ -644,6 +673,9 @@ function startProgress(step){
     try{ b = await api(`/hcas/projects/${S.pid}/steps/${step}/progress`); }
     catch(_){}
     finally{ inFlight = false; }
+    // The server's start time wins when it is further back than ours (a run we
+    // re-attached to). Never pull the clock forward: that would step it back.
+    if(b.elapsed_s != null && b.elapsed_s*1000 > Date.now()-t0 + 1500) t0 = Date.now() - b.elapsed_s*1000;
     const secs = (Date.now()-t0)/1000;
     // Steps 3 and 7 report REAL per-layer progress; steps 2 and 4 are one
     // blocking model call and can report none, which is what the time estimate
@@ -719,7 +751,7 @@ function stepTag(n){
     if(!row) return `<span class="tag rag">Knowledge base</span>`;
     const kb = (row.human_final||row.ai_draft||{}).knowledgebase;
     const n_src = kb && (kb.source_documents||[]).length;
-    return kb ? `<span class="tag rag">Knowledge base · ${n_src} sources</span>`
+    return kb ? `<span class="tag rag">Knowledge base · ${plural(n_src, "source")}</span>`
               : `<span class="tag muted">Built-in theory list</span>`;
   }
   if(n===6) return `<span class="tag muted">Derived from metrics</span>`;
@@ -1211,7 +1243,7 @@ function intakePanel(a, which){
         ${pa.population_note?`<div class="subnote">${esc(pa.population_note)}</div>`:""}
         ${sources.length?`<div class="subnote">Source: ${esc(sources.join(" · "))}</div>`:""}
         ${missing.length?`<div class="subnote" style="margin-top:10px;">Not available:<ul style="margin:4px 0;padding-left:16px;">
-          ${missing.map(([k,v])=>`<li><b>${esc(k)}</b> — ${esc(v)}</li>`).join("")}</ul></div>`:""}
+          ${missing.map(([k,v])=>`<li><b>${esc(UNAVAILABLE_NAMES[k]||k.replace(/_/g," "))}</b> — ${esc(v)}</li>`).join("")}</ul></div>`:""}
         ${which==="project" && a.notes ? `<div class="sec" style="margin-top:12px;"><h4>Notes</h4>
           ${notesBlock("step1", a.notes, {title:"Project notes"})}</div>` : ""}
       </div>
@@ -1352,7 +1384,7 @@ function layerRow(key, name, o){
          onclick="event.stopPropagation()" onchange="toggleMapLayer('${esc(o.foliumLabel)}',this.checked)">`
     : `<span class="lvis-sp"></span>`;
   const src = o.source ? `<span class="lsrc">${esc(o.source)}</span>` : "";
-  const count = (o.count!=null) ? `<span class="lsrc">· ${(+o.count).toLocaleString()} features</span>` : "";
+  const count = (o.count!=null) ? `<span class="lsrc">· ${plural(o.count, "feature")}</span>` : "";
   return `<div class="leaf lrow" oncontextmenu="return layerMenu(event,'${esc(key)}')"
        title="Right-click for Attribute Table &amp; Properties">
     ${cb}<span class="lname">${esc(name)}${o.hasError?' <span style="color:var(--red)" title="fetch error">⚠</span>':''}
@@ -1580,7 +1612,7 @@ async function uploadDataFiles(){
     }catch(e){ rejected.push({file:f.name, reason:e.message}); }
   }
   if(out) out.innerHTML = [
-    accepted.length ? `<div style="color:var(--ok)">✓ ${accepted.map(x=>`${esc(x.layer)} (${x.feature_count} feature${x.feature_count===1?"":"s"})`).join(", ")} — run this step to use it.</div>` : "",
+    accepted.length ? `<div style="color:var(--ok)">✓ ${accepted.map(x=>`${esc(layerName(x.layer))} (${plural(x.feature_count, "feature")})`).join(", ")} — run this step to use it.</div>` : "",
     rejected.length ? `<div style="color:var(--red)">✗ ${rejected.map(x=>`${esc(x.file)}: ${esc(x.reason)}`).join("; ")}</div>` : "",
   ].filter(Boolean).join("");
   if(input) input.value = "";
@@ -1598,8 +1630,8 @@ function viewSolution(a){
   const kb = a.knowledgebase;
   const kbSources = kb ? (kb.source_documents||[]) : [];
   const provenance = kb
-    ? `<div class="sec"><h4>Grounding</h4><p>Grounded in <b>${kbSources.length}</b>
-         document(s) from the knowledgebase — index <b>${esc(kb.version||"?")}</b>,
+    ? `<div class="sec"><h4>Grounding</h4><p>Grounded in <b>${plural(kbSources.length, "document")}</b>
+         from the knowledgebase — index <b>${esc(kb.version||"?")}</b>,
          ${esc(kb.method||"?")} search, ${esc(String(kb.duration_seconds||"?"))}s.</p></div>`
     : `<div class="sec"><h4>Grounding</h4><p class="muted">Knowledgebase unavailable for this
          run — the methodology below uses the built-in theory list, exactly as it would
@@ -1672,7 +1704,7 @@ function viewWorkflow(a){
   const steps = (a.steps||[]).map((s,i)=>{
     let lbl;
     if(s.action==="compute"){
-      const src = s.layers&&s.layers.length ? ` · from ${esc(s.layers.join(", "))}` : (s.source?` · from ${esc(s.source)}`:"");
+      const src = s.layers&&s.layers.length ? ` · from ${esc(s.layers.map(layerName).join(", "))}` : (s.source?` · from ${esc(s.source)}`:"");
       lbl = `compute <b>${esc(measureLabel(s.metric))}</b>${src}`;
     }else if(s.action==="awaiting_data"){
       lbl = `<span class="tag wait" style="font-size:10px;">awaiting data</span> <b>${esc(s.factor)}</b>${s.data_needed?` — needs ${esc(s.data_needed)}`:""}`;
@@ -1701,7 +1733,18 @@ const RESULT_LABELS = {
 function resultLabel(k, details){
   if(RESULT_LABELS[k]) return RESULT_LABELS[k];
   const d = (details||{})[k];
-  return measureLabel(k) + (d && d.unit ? ` (${d.unit})` : "");
+  return withUnit(measureLabel(k), d && d.unit);
+}
+// Mirrors with_unit in hcas.py: never "(percentile) (percentile (0-1))".
+function withUnit(label, unit){
+  if(!unit) return label;
+  const m = String(unit).match(/^(.*?)(?: \((.*)\))?$/);
+  const head = m[1], rest = m[2]||"";
+  const tag = `(${head})`;
+  if(label.toLowerCase().endsWith(tag.toLowerCase()))
+    return label.slice(0, -tag.length) + (rest ? `(${head}, ${rest})` : tag);
+  if(head.length >= 4 && label.toLowerCase().includes(head.toLowerCase())) return label;
+  return `${label} (${unit})`;
 }
 function fmtVal(v){
   return v===null||v===undefined ? null
@@ -1915,6 +1958,7 @@ async function downloadHtmlReport(btn){
   const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222}
 h1,h2,h3{font-family:Georgia,'Times New Roman',serif;line-height:1.25}
+blockquote{margin:10px 0;padding:6px 14px;border-left:3px solid #c98a1b;background:#faf6ee}
 table{border-collapse:collapse;margin:10px 0} th,td{border:1px solid #ccc;padding:5px 10px;font-size:14px} th{background:#f4f4f4}</style></head>
 <body>${mdToHtml(md)}${mapBlock}${baseBlock}</body></html>`;
   dl(doc, (S.project?.meta.title||"report")+".html", "text/html");
@@ -1989,6 +2033,7 @@ async function ensureProject(){
   // research ablation through the API, not through the wizard.
   S.pid=(await api("/hcas/projects",{method:"POST",
         body:JSON.stringify({...form, gate_mode:"gated"})})).project_id;
+  dropResumeBar();
   try{ localStorage.setItem("hcas_last_project", S.pid); }catch(_){}
 }
 async function refresh(keep){
@@ -2012,7 +2057,10 @@ function upsertLocalDraft(n, draft){
 }
 async function runStep(opts){
   if(S.busy) return;
-  const refresh = !!(opts && opts.refresh);
+  // Named `refetch`, not `refresh`: a local `refresh` shadowed the refresh()
+  // function below, so `await refresh(true)` threw "Cannot read properties of
+  // undefined (reading 'title')" after every new project's step 1.
+  const refetch = !!(opts && opts.refresh);
   // Pin the step being run. Everything after the await used to read S.current,
   // which the user can change by clicking another step mid-run — so a finished
   // draft could be written onto whatever step they had navigated to, and then
@@ -2026,7 +2074,7 @@ async function runStep(opts){
       await ensureProject();  // reads the definition form — before it is replaced
     if(S.current===step) renderCanvasLoading(step);  // only if that step is still on screen
     startProgress(step);
-    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${step}/run${refresh?"?refresh=true":""}`,{method:"POST"});
+    const {ai_draft}=await api(`/hcas/projects/${S.pid}/steps/${step}/run${refetch?"?refresh=true":""}`,{method:"POST"});
     S.running=null;                          // the run is over; re-renders show the result now
     upsertLocalDraft(step, ai_draft);        // survive a failed refresh so nav restores it
     if(S.current===step){                    // only touch the editor if it is still on screen
@@ -2100,8 +2148,43 @@ function renderChat(){
     : `Ask anything about this system before you start — what the eight steps do, `
       + `what data it uses, or how to define a study area.`;
   const h=S.chats[S.current] || (S.chats[S.current]=[{role:"assistant", content:opener}]);
-  $("msgs").innerHTML=h.map(m=>`<div class="bub ${m.role==='user'?'u':(m.err?'err':'a')}">${esc(m.content)}</div>`).join("");
+  $("msgs").innerHTML=h.map(m=>(m.role==='user'||m.err)
+    ? `<div class="bub ${m.role==='user'?'u':'err'}">${esc(m.content)}</div>`
+    : `<div class="bub a md">${chatMd(m.content)}</div>`).join("");
   $("msgs").scrollTop=$("msgs").scrollHeight;
+}
+/* The assistant answers in light markdown. It used to reach the bubble raw —
+   "**", backticks and "- " on screen (QA 2026-09-29). Everything is escaped
+   FIRST, then only these few patterns become tags, so no model output can
+   inject HTML: bold, italics, inline code, bullet and numbered lists, line
+   breaks, and a heading line shown as bold. */
+function chatMd(text){
+  const inl = t => t
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_\n]+?)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?![*\w])/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_(?!\s)([^_\n]+?)_(?![_\w])/g, "$1<em>$2</em>");
+  const lines = esc(text).split(/\r?\n/);
+  const out = []; let para = [], list = null;
+  const flushP = ()=>{ if(para.length){ out.push("<p>"+para.map(inl).join("<br>")+"</p>"); para=[]; } };
+  const flushL = ()=>{ if(list){ out.push(`<${list.tag}>`+list.items.map(x=>"<li>"+inl(x)+"</li>").join("")+`</${list.tag}>`); list=null; } };
+  for(const raw of lines){
+    const l = raw.replace(/\s+$/,"");
+    const ul = l.match(/^\s*[-*•]\s+(.*)$/), ol = l.match(/^\s*\d+[.)]\s+(.*)$/);
+    if(ul || ol){
+      flushP();
+      const tag = ul ? "ul" : "ol";
+      if(!list || list.tag !== tag){ flushL(); list = {tag, items: []}; }
+      list.items.push((ul||ol)[1]); continue;
+    }
+    flushL();
+    if(!l.trim()){ flushP(); continue; }
+    const hd = l.match(/^#{1,6}\s+(.*)$/);
+    para.push(hd ? "**"+hd[1]+"**" : l);
+  }
+  flushP(); flushL();
+  return out.join("");
 }
 /* Prof. Shi 2026-08-07 #3: "Allow the user to ask AI questions – even before
    creating a project." Without a project id the question goes to the intake
@@ -2128,7 +2211,7 @@ async function sendChat(){
 /* ================= header actions ================= */
 function newProject(){
   S.pid=null; S.current=1; S.project=null; S.edited=null; S.chats={}; S.draftShownAt=null;
-  S.redefining=false; AREA.key=null;
+  S.redefining=false; AREA.key=null; statusRun("");
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd(); setMsg("");
 }
 /* Open dialog lists saved projects. Work was always persisted step by step, but
@@ -2164,11 +2247,24 @@ async function openProject(){
    you happened to reload again after it finished. Ask the server whether the
    step is in flight and, if so, re-attach: draw its live progress and pick the
    result up when it lands. */
-async function isStepRunning(n){
+// Returns the progress body when step `n` is in flight on the server, else null.
+// `running` is set for every step for the whole run (steps 1, 5, 6 and 8 never
+// report a percentage, so pct alone missed them).
+async function stepInFlight(n){
   try{
     const b = await api(`/hcas/projects/${S.pid}/steps/${n}/progress`);
-    return (b.pct||0) > 0 || (Array.isArray(b.detail) && b.detail.length > 0);
-  }catch(_){ return false; }
+    const on = b.running || (b.pct||0) > 0 || (Array.isArray(b.detail) && b.detail.length > 0);
+    return on ? b : null;
+  }catch(_){ return null; }
+}
+async function isStepRunning(n){ return !!(await stepInFlight(n)); }
+// Which step, if any, is running on the server right now. Every step is asked,
+// not only the one after the furthest: a RE-run of step 4 on a project whose
+// steps 5-8 exist was invisible after a reload.
+async function findRunningStep(){
+  const bodies = await Promise.all([1,2,3,4,5,6,7,8].map(n=>stepInFlight(n)));
+  const i = bodies.findIndex(b=>b);
+  return i < 0 ? null : {step: i+1, body: bodies[i]};
 }
 // `force` is for the re-attach after a dropped connection: that step may well
 // already have an artifact row from an earlier run (you pressed Re-run), and
@@ -2177,10 +2273,11 @@ async function isStepRunning(n){
 // guard that would be wrong here, never invents a run.
 async function adoptRunningStep(n, force){
   if((!force && stepRow(n)) || S.running !== null) return false;
-  if(!await isStepRunning(n)) return false;
+  const b = await stepInFlight(n);
+  if(!b) return false;
   S.running = n; setBusy(true); statusRun("Running…");
   if(S.current === n) renderCanvasLoading(n);
-  startProgress(n);
+  startProgress(n, b.elapsed_s);
   // The server clears a step's progress when the run ends — that is the signal.
   const watch = setInterval(async ()=>{
     if(S.running !== n){ clearInterval(watch); return; }
@@ -2196,16 +2293,19 @@ async function doOpen(id){
   if(!id) return;
   try{
     S.pid=id; S.redefining=false; AREA.key=null; await refresh();
+    // A message about the project we just left ("Saved as …") is not about this one.
+    setMsg(""); dropResumeBar();
     localStorage.setItem("hcas_last_project", id);
-    // Land on the furthest step that exists, not back at step 1.
+    // Land on the step that is running on the server, if any — it may be a
+    // re-run of an earlier step that already has a row — else on the furthest
+    // step that exists, not back at step 1.
     const steps=(S.project?.steps||[]).map(s=>s.step);
     const furthest = steps.length?Math.max(...steps):1;
-    // A step that is mid-run has no artifact row yet, so it is not in `steps` —
-    // land on IT rather than on the finished step before it.
-    const running = (furthest < 8 && await isStepRunning(furthest+1)) ? furthest+1 : furthest;
-    selectStep(running);
+    const inflight = await findRunningStep();
+    const land = inflight ? inflight.step : furthest;
+    selectStep(land);
     closeModal();
-    adoptRunningStep(running);
+    if(inflight) adoptRunningStep(land, true);
   }
   catch(e){
     S.pid=null;
@@ -2242,7 +2342,7 @@ async function doSaveAs(){
   try{
     const r=await api(`/hcas/projects/${S.pid}/copy`,{method:"POST",body:JSON.stringify({title})});
     const keepStep=S.current;
-    S.pid=r.project_id; S.redefining=false; S.chats={};
+    S.pid=r.project_id; S.redefining=false; S.chats={}; dropResumeBar();
     try{ localStorage.setItem("hcas_last_project", S.pid); }catch(_){}
     await refresh();
     selectStep(keepStep);
@@ -2293,9 +2393,14 @@ function dl(text,name,type){ const b=new Blob([text],{type}); const u=URL.create
 
 function mdToHtml(md){
   const lines=String(md||"").split(/\r?\n/); let out=[],i=0;
-  const inl=s=>esc(s).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/\*(.+?)\*/g,"<em>$1</em>");
+  // `_…_` italics and `> ` quotes used to reach the step-8 preview raw (QA
+  // 2026-09-29). An underscore inside a word (snake_case, a URL) is left alone.
+  const inl=s=>esc(s).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/\*(.+?)\*/g,"<em>$1</em>")
+    .replace(/(^|[^\w])_(?!\s)(.+?)_(?![\w])/g,"$1<em>$2</em>");
   while(i<lines.length){
     let l=lines[i];
+    if(/^>\s?/.test(l)){ const q=[]; while(i<lines.length && /^>\s?/.test(lines[i])){ q.push(lines[i].replace(/^>\s?/,"")); i++; }
+      out.push("<blockquote>"+q.filter(x=>x.trim()).map(x=>"<p>"+inl(x)+"</p>").join("")+"</blockquote>"); continue; }
     if(/^###\s/.test(l)){ out.push("<h3>"+inl(l.replace(/^###\s/,""))+"</h3>"); i++; continue; }
     if(/^##\s/.test(l)){ out.push("<h2>"+inl(l.replace(/^##\s/,""))+"</h2>"); i++; continue; }
     if(/^#\s/.test(l)){ out.push("<h1>"+inl(l.replace(/^#\s/,""))+"</h1>"); i++; continue; }
@@ -2350,13 +2455,22 @@ loadMeasures().then(()=>{ if(S.pid) renderCanvas(); });
 /* Offer to pick up the last project. Closing the tab never lost work — every
    confirmed step is on disk — but you had to know the 12-character id to get
    back in, so in practice an accidental close did lose it. */
+/* The bar is built from the CURRENT project list, not from a copy fetched once:
+   it used to name a project the tester had since left, with a step count from
+   whenever the page loaded. It goes away the moment any project is opened or
+   created (dropResumeBar), so it can never sit stale above other work. */
+function dropResumeBar(){ const b=$("resumebar"); if(b) b.remove(); }
 (async function offerResume(){
   let last;
   try{ last = localStorage.getItem("hcas_last_project"); }catch(_){ return; }
   if(!last) return;
   try{
-    const p = await api(`/hcas/projects/${last}`);
-    const done = (p.steps||[]).filter(s=>s.status==="confirmed").length;
+    const {projects} = await api("/hcas/projects");
+    if(S.pid) return;                           // the user already opened one
+    const p = (projects||[]).find(x=>x.project_id===last);
+    if(!p){ try{ localStorage.removeItem("hcas_last_project"); }catch(_){} return; }
+    const done = p.confirmed_steps||0;
+    p.meta = {title: p.title};
     const bar = document.createElement("div");
     bar.id = "resumebar";
     bar.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px var(--sp-5);"
