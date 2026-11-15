@@ -102,6 +102,7 @@
   .pdot.confirmed{background:var(--ok);border-color:var(--ok);color:var(--surface);}
   .pdot.drafted{border-color:var(--draft);color:var(--draft);background:var(--amber-tint);}
   .pdot.stale{border-color:var(--stale);color:var(--stale);background:var(--red-tint);}
+  .pcheck{color:var(--ok);font-weight:700;margin-left:4px;}
   .plabel{font:400 var(--fs-sm)/1.25 var(--sans);color:var(--muted);}
   .prow.active .plabel{color:var(--ink);font-weight:600;}
   .prow.confirmed .plabel{color:var(--ink);}
@@ -363,7 +364,7 @@
   .radioline,.form label.radioline{display:flex;align-items:flex-start;gap:8px;font:400 var(--fs-sm) var(--sans);color:var(--ink);
              margin:6px 0;cursor:pointer;text-transform:none;letter-spacing:0;}
   .radioline input,.form .radioline input{accent-color:var(--teal);margin:3px 0 0;flex:none;width:auto;padding:0;}
-  .areamap{height:380px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;background:var(--teal-tint);
+  .areamap{height:600px;border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden;background:var(--teal-tint);
            display:flex;align-items:center;justify-content:center;color:var(--faint);font:400 var(--fs-sm) var(--sans);margin-top:10px;}
   .areasum{font:500 var(--fs-sm) var(--sans);color:var(--ink);margin-top:8px;}
   .areasum .muted{color:var(--faint);font-weight:400;}
@@ -372,6 +373,9 @@
         background:var(--teal-tint);border:1px solid var(--teal-tint-d);border-radius:999px;padding:3px 4px 3px 10px;}
   .chip button{border:none;background:none;color:var(--teal-d);font-size:13px;line-height:1;padding:0 5px;border-radius:50%;}
   .chip button:hover{background:var(--teal-tint-d);}
+  .maprow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;flex-wrap:wrap;}
+  .maprow .maphint{font:400 var(--fs-sm) var(--sans);color:var(--muted);flex:1;min-width:200px;}
+  .aifail{font:500 var(--fs-sm) var(--sans);color:var(--amber);background:var(--amber-tint);border-radius:var(--r-sm);padding:7px 10px;margin:6px 0;}
   .cmpbar{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;}
   .cmpgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--sp-4);align-items:start;}
   .cmpgrid > div{min-width:0;}
@@ -465,7 +469,7 @@ const STEP_TITLES = ["Define project","Choose factors","Gather data","Set method
 const PHASE = ["Preparation","Preparation","Preparation",
   "Methodology","Methodology","Analysis","Analysis","Report"];
 const SUBTITLE = [
-  "Set the scope and study area for the assessment.",
+  "Set the task and study area for the assessment.",
   "Suggested factors and metrics — keep the ones that apply, then confirm.",
   "Data for each factor, gathered and previewed for inspection.",
   "The methodology, with the models and metrics to apply.",
@@ -548,9 +552,10 @@ function renderRail(){
   $("steps").innerHTML = [1,2,3,4,5,6,7,8].map(n=>{
     const st = bs[n]?.status || "pending";
     const locked = !S.pid || (!bs[n] && [...Array(n-1).keys()].some(i=>!confirmed.has(i+1)));
-    const mark = st==="confirmed" ? "✓" : n;
+    // Prof. Shi 2026-11-13 #1: a finished step keeps its number; the check goes at the end of the name.
+    const tick = st==="confirmed" ? `<span class="pcheck" title="Confirmed">✓</span>` : "";
     return `<div class="prow ${st} ${n===S.current?"active":""} ${locked&&n!==S.current?"locked":""}" onclick="selectStep(${n})">
-      <span class="pdot ${st}">${mark}</span><span class="plabel">${STEP_TITLES[n-1]}</span></div>`;
+      <span class="pdot ${st}">${n}</span><span class="plabel">${STEP_TITLES[n-1]}${tick}</span></div>`;
   }).join("");
 }
 
@@ -574,6 +579,11 @@ function selectStep(n){
   renderRail(); renderCanvas(); renderChat(); renderCmd();
 }
 
+/* Step 1 is always the definition form (Prof. Shi 2026-11-13 #10: no separate
+   page that only shows the study area — confirming happens here). The only
+   exception is while the step is running, when its progress is shown. */
+function step1Form(){ return S.current===1 && S.running!==1; }
+
 /* ---- command bar state ----
    Prof. Shi 2026-08-07: #8 Back works on step 1's result page (it re-opens the
    definition form); #9 Re-run is deactivated there, because re-running step 1
@@ -582,22 +592,26 @@ function renderCmd(){
   const row = stepRow(S.current);
   const confirmed = new Set((S.project?.steps||[]).filter(s=>s.status==="confirmed").map(s=>s.step));
   const prevOk = S.current===1 || confirmed.has(S.current-1);
-  const onStep1Result = S.current===1 && !!row && !S.redefining;
-  $("runbtn").disabled = S.busy || (!prevOk && !row) || onStep1Result;
-  $("nextbtn").disabled = S.busy || !row || S.redefining;
-  $("prevbtn").disabled = S.busy || (S.current===1 && !onStep1Result);
+  const form = step1Form();
+  $("runbtn").disabled = S.busy || (!prevOk && !row);
+  // Step 1: the work happens when Confirm is pressed, so it can always be pressed.
+  $("nextbtn").disabled = S.busy || (!row && !form);
+  $("prevbtn").disabled = S.busy || S.current===1;
   $("nextbtn").textContent = S.current===8 ? "Save report" : "Confirm →";
-  $("runbtn").textContent = S.redefining ? "Apply & re-run" : (row ? "Re-run" : "Run step");
-  $("prevbtn").textContent = onStep1Result ? "← Re-define" : "← Back";
-  $("runbtn").title = onStep1Result
-    ? "Step 1 only re-derives the same county — use Re-define to change the study area."
-    : "";
+  $("runbtn").textContent = row ? "Re-run" : "Run step";
+  $("prevbtn").textContent = "← Back";
+  $("runbtn").title = "";
+  // Step 1's "Run step" now lives on its map as "Update map"; step 2's "Re-run"
+  // lives under its Notes box (Prof. Shi 2026-11-13 #9, #13).
+  const hideRun = form || (S.current===2 && !!row && S.running!==2);
+  $("runbtn").style.display = hideRun ? "none" : "";
+  const rr = $("f_rerun"); if(rr) rr.disabled = S.busy;
 }
 
 /* ================= CANVAS ================= */
 function canvasHead(n){
-  const defining = n===1 && (!S.pid || S.redefining);
-  return `<div class="chead"><span class="eyebrow">Step ${n} of 8 · ${esc(PHASE[n-1])}</span>
+  const defining = n===1 && S.running!==1;
+  return `<div class="chead">
     <div class="chd"><h2>${esc(STEP_TITLES[n-1])}</h2>${stepTag(n)}</div>
     <div class="csub">${esc(SUBTITLE[n-1])}</div>
     ${defining ? "" : compareToggle()}
@@ -706,7 +720,7 @@ function renderCanvas(){
   const n = S.current, row = stepRow(n), a = S.edited;
   const head = canvasHead(n);
   let body;
-  const defining = n===1 && (!S.pid || S.redefining);
+  const defining = n===1 && S.running!==1;
   if(defining) body = defineForm();
   // Coming back to a step that is still running shows its progress again. This
   // covers a re-run too, where an artifact row already exists — you pressed Run,
@@ -780,15 +794,29 @@ function newAreaState(src){
   return { state_fips: src.state_fips||"", county_fips: src.county_fips||"",
            unit: src.areal_unit||"", geoids, name: src.area_name||"",
            mode: geoids.length || src.areal_unit==="custom" ? "selected" : "all",
-           features:null, featuresKey:"", map:null, layer:null, loading:null };
+           features:null, featuresKey:"", map:null, layer:null, loading:null,
+           suggestedText:null, suggesting:false, aiFailed:false };
 }
 
 function defineForm(){
-  return `<div class="panel form wideform"><div class="ph">Project setup</div>
+  return `<div class="panel form wideform">
     <div class="row">
       <div class="fld"><label>Project title</label><input id="f_title" placeholder="e.g. Riverside County · Health Equity 2026"></div>
     </div>
-    <div class="fld" style="margin-bottom:var(--sp-4);">
+    <div class="fld" style="margin-bottom:var(--sp-4);"><label>Project task</label>
+      <textarea id="f_tasks" placeholder="e.g. calculate a neighborhood health index; identify priority areas…"></textarea>
+    </div>
+    <div class="defgrid" id="f_defgrid">
+      <div class="areapanel" id="ap_project">${areaEditorHtml("project")}</div>
+      <div class="areapanel base" id="ap_base" style="display:none">${areaEditorHtml("base")}</div>
+    </div>
+  </div>`;
+}
+
+function areaEditorHtml(w){
+  // Prof. Shi 2026-11-13: the "describe the location" box sits at the top of the
+  // project-area panel, and "compare with a base area" at its bottom.
+  const where = w==="base" ? "" : `<div class="fld" style="margin-bottom:var(--sp-3);">
       <label>Describe the location (optional)</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <input id="f_where" style="flex:1;min-width:240px;"
@@ -798,32 +826,33 @@ function defineForm(){
       </div>
       <div class="hint" id="f_wherehint">A ZIP code, town, community, landmark or description — the assistant
         finds the county and, for a ZIP code, town or neighborhood, sets up that area below. You can change everything it fills in.</div>
-    </div>
-    <label class="chkline"><input type="checkbox" id="f_compare" onchange="toggleCompare(this.checked)">
+    </div>`;
+  const updateBtn = w==="base" ? "" : `<button class="cbtn run" id="f_updatemap" onclick="updateMap()"
+        title="Redraw the map from the settings above">Update map</button>`;
+  const compare = w==="base" ? "" : `<label class="chkline" style="margin-top:var(--sp-3);"><input type="checkbox" id="f_compare" onchange="toggleCompare(this.checked)">
       Compare with a base area</label>
-    <div class="hint" style="margin:0 0 var(--sp-3) 25px;">A larger area for context (such as the whole county) or a similar
-      community to compare with. Every later step is then also run for the base area and shown side by side.</div>
-    <div class="defgrid" id="f_defgrid">
-      <div class="areapanel" id="ap_project">${areaEditorHtml("project")}</div>
-      <div class="areapanel base" id="ap_base" style="display:none">${areaEditorHtml("base")}</div>
-    </div>
-    <div class="fld"><label>Notes</label>
-      <textarea id="f_tasks" placeholder="e.g. calculate a neighborhood health index; identify priority areas…"></textarea>
-      <div class="hint">Run this step to create the project and describe the area.</div>
-    </div>
-  </div>`;
-}
-
-function areaEditorHtml(w){
+    <div class="hint" style="margin:0 0 0 25px;">A larger area for context (such as the whole county) or a similar
+      community to compare with. Every later step is then also run for the base area and shown side by side.</div>`;
   return `<div class="ph">${w==="base" ? "Base area" : "Project area"}</div>
+    ${where}
     <div class="row">
       <div class="fld"><label>State</label><select id="${w}_state"></select></div>
       <div class="fld"><label>County</label><select id="${w}_county"></select></div>
     </div>
     <div class="fld"><label>Reporting unit</label><select id="${w}_unit"></select></div>
     <div id="${w}_scope" style="margin-top:8px;"></div>
+    <div class="maprow"><div class="maphint" id="${w}_maphint"></div>${updateBtn}</div>
     <div class="areamap" id="${w}_map">Select a county to see it on the map.</div>
-    <div class="areasum" id="${w}_sum"></div>`;
+    <div class="areasum" id="${w}_sum"></div>
+    ${compare}`;
+}
+
+/* "Update map" (Prof. Shi 2026-11-13 #9): the old step-1 Run step button, now on the
+   map. To the analyst it only redraws the map from the current settings; the
+   project is created and its facts worked out quietly when they press Confirm. */
+async function updateMap(){
+  const ws = AREA.compare ? ["project","base"] : ["project"];
+  for(const w of ws){ await refreshArea(w); }
 }
 
 function toggleCompare(on){
@@ -903,9 +932,9 @@ async function fillAreaSelects(w){
   un.innerHTML = AREAL_UNITS.map(u=>`<option value="${esc(u.id)}">${esc(u.label)}</option>`).join("");
   un.value = a.unit || "county"; a.unit = un.value;
   st.onchange = async ()=>{ a.state_fips=st.value; await loadCountiesFor(w); a.county_fips=co.value;
-                            a.geoids=[]; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
-  co.onchange = ()=>{ a.county_fips=co.value; a.geoids=[]; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
-  un.onchange = ()=>{ a.unit=un.value; a.geoids=[]; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+                            a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+  co.onchange = ()=>{ a.county_fips=co.value; a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+  un.onchange = ()=>{ a.unit=un.value; a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
   refreshArea(w);
 }
 
@@ -953,9 +982,24 @@ function featureIndex(a){
   return idx;
 }
 
+/* The suggestion button is live only when there is something new to ask: the
+   AI has not yet suggested for this exact text (Prof. Shi 2026-11-13 #11). */
+function suggestIsStale(a){
+  return !a.suggestedText || a.suggestedText !== (a.name||"").trim();
+}
+function updateSuggestBtn(w){
+  const a = AREA[w], b = $(`${w}_suggestbtn`); if(!a || !b) return;
+  b.disabled = !!a.suggesting || !suggestIsStale(a);
+  b.textContent = a.suggesting ? "Suggesting…" : SUGGEST_LABEL;
+}
+const SUGGEST_LABEL = "Generate/Update AI's suggestion";
+
 function renderScope(w){
   const a = AREA[w], box = $(`${w}_scope`); if(!box) return;
   const one = unitWord(a.unit), many = unitWord(a.unit, true);
+  const mh = $(`${w}_maphint`);
+  if(mh) mh.textContent = a.unit === "county" ? ""
+    : `Click to add or remove a ${one} to modify the ${w==="base"?"base":"project"} area`;
   if(a.unit === "county"){
     box.innerHTML = `<div class="hint">The whole county is the ${w==="base"?"base":"project"} area.</div>`;
     return;
@@ -968,9 +1012,9 @@ function renderScope(w){
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <input id="${w}_name" style="flex:1;min-width:180px;" value="${esc(a.name)}"
                  placeholder="e.g. Short North · German Village · Hanover downtown"
-                 oninput="AREA['${w}'].name=this.value"
+                 oninput="AREA['${w}'].name=this.value;updateSuggestBtn('${w}')"
                  onkeydown="if(event.key==='Enter'){event.preventDefault();suggestBlockGroups('${w}');}">
-          <button class="cbtn" id="${w}_suggestbtn" onclick="suggestBlockGroups('${w}')">Suggest block groups with AI</button>
+          <button class="cbtn" id="${w}_suggestbtn" onclick="suggestBlockGroups('${w}')" ${a.suggesting||!suggestIsStale(a)?"disabled":""}>${a.suggesting?"Suggesting…":SUGGEST_LABEL}</button>
         </div>
         <div class="hint" id="${w}_suggesthint">The AI recommends the block groups that make up the community.
           Click block groups on the map to add or remove them.</div></div>
@@ -982,7 +1026,7 @@ function renderScope(w){
     .filter(p=>!a.geoids.includes(p.GEOID))
     .sort((x,y)=>String(x.name).localeCompare(String(y.name), undefined, {numeric:true}))
     .map(p=>`<option value="${esc(p.GEOID)}">${esc(p.name)}</option>`).join("");
-  box.innerHTML = `
+  box.innerHTML = (a.aiFailed ? `<div class="aifail">AI could not define the specified area. Please manually define it on the map.</div>` : "") + `
     <label class="radioline"><input type="radio" name="${w}_mode" ${a.mode==="all"?"checked":""}
         onchange="setMode('${w}','all')">
       <span>Whole county — results broken down by each ${esc(one)}</span></label>
@@ -1084,7 +1128,7 @@ async function suggestBlockGroups(w, textOverride){
   const hint = $(`${w}_suggesthint`), btn = $(`${w}_suggestbtn`);
   if(!text){ if(hint) hint.textContent = "Type the community or neighborhood name first."; return; }
   a.name = text;
-  if(btn){ btn.disabled = true; btn.textContent = "Suggesting…"; }
+  a.suggesting = true; updateSuggestBtn(w);
   if(hint) hint.innerHTML = '<span class="spin"></span>Asking the AI which block groups make up this community…';
   try{
     const r = await api("/hcas/suggest-area", {method:"POST",
@@ -1092,6 +1136,8 @@ async function suggestBlockGroups(w, textOverride){
     a.mode = "selected";
     a.geoids = r.geoids || [];
     if(r.place && !textOverride) a.name = r.place;
+    a.suggestedText = (r.geoids||[]).length ? (a.name||"").trim() : null;
+    a.suggesting = false;
     renderScope(w); renderAreaSum(w); styleAreaMap(w);
     const h = $(`${w}_suggesthint`);
     if(h) h.innerHTML = r.geoids?.length
@@ -1107,7 +1153,7 @@ async function suggestBlockGroups(w, textOverride){
     const h = $(`${w}_suggesthint`);
     if(h) h.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
   }finally{
-    const b = $(`${w}_suggestbtn`); if(b){ b.disabled = false; b.textContent = "Suggest block groups with AI"; }
+    a.suggesting = false; updateSuggestBtn(w);
   }
 }
 
@@ -1125,6 +1171,7 @@ async function resolveArea(){
     if(r.resolved){
       const wb=document.getElementById('f_where'); if(wb) wb.style.borderColor="";
       const a = AREA.project;
+      a.aiFailed = false; a.suggestedText = null;
       a.state_fips=r.state_fips; a.county_fips=r.county_fips; a.geoids=[];
       a.unit = {zip:"zcta", town:"county_subdivision", community:"custom"}[r.scale] || "county";
       a.mode = a.unit==="county" ? "all" : "selected";
@@ -1135,12 +1182,12 @@ async function resolveArea(){
       if(a.unit==="zcta"){
         const hit = (a.features?.features||[]).find(f=>f.properties.GEOID===r.zip);
         if(hit){ a.geoids=[r.zip]; what = ` Project area set to ZIP code ${esc(r.zip)}.`; }
-        else what = ` ZIP code ${esc(r.zip||"")} was not found near this county — pick the ZIP area on the map.`;
+        else{ a.aiFailed = true; what = ` ZIP code ${esc(r.zip||"")} was not found near this county — pick the ZIP area on the map.`; }
       }else if(a.unit==="county_subdivision"){
         const norm = s=>String(s||"").toLowerCase().replace(/\b(town|city|township|village|borough|cdp|plantation|charter)\b/g,"").replace(/[^a-z]/g,"");
         const hit = (a.features?.features||[]).find(f=>norm(f.properties.name)===norm(r.town));
         if(hit){ a.geoids=[hit.properties.GEOID]; what = ` Project area set to ${esc(hit.properties.name)}.`; }
-        else what = ` Pick ${esc(r.town||"the town")} on the map.`;
+        else{ a.aiFailed = true; what = ` Pick ${esc(r.town||"the town")} on the map.`; }
       }else if(a.unit==="custom"){
         what = " Suggesting the block groups for this community…";
       }
@@ -1161,6 +1208,9 @@ async function resolveArea(){
    in the 2026-08-09 sweep: the resolver errored, the form stayed on Ohio/Adams,
    and the project was created there. */
 function resolveFailed(hint, why){
+  // The two manual choices (whole county / only the ones I choose) are the way
+  // forward now, so say plainly that the AI could not do it (Prof. Shi 2026-11-13 #12).
+  if(AREA.project){ AREA.project.aiFailed = true; renderScope("project"); }
   hint.innerHTML = `<span style="color:var(--red);font-weight:600;">Could not place that location.</span>`
     + ` ${esc(why)}<br><b>The project area below was not changed</b> —`
     + ` it still shows <b>${esc(document.getElementById('project_state')?.selectedOptions[0]?.textContent||'')},`
@@ -1185,7 +1235,7 @@ function areaPayload(w){
   const selected = a.unit === "custom" || (a.unit !== "county" && a.mode === "selected");
   if(selected && !a.geoids.length){
     return {error: a.unit === "custom"
-      ? `Select at least one block group for the ${w==="base"?"base":"project"} area — use “Suggest block groups with AI” or click them on the map.`
+      ? `Select at least one block group for the ${w==="base"?"base":"project"} area — use “Generate/Update AI's suggestion” or click them on the map.`
       : `Choose at least one ${unitWord(a.unit)} for the ${w==="base"?"base":"project"} area, or pick “Whole county”.`};
   }
   if(a.unit === "custom" && !(a.name||"").trim()) a.name = "Custom area";
@@ -1334,7 +1384,9 @@ function viewFactors(a){
     </div>
     <div class="sec" style="margin-top:14px;"><h4>Notes</h4>
       ${notesBlock("step2", a.notes||"", {editable:true, title:"Notes on the factor selection",
-          onSave:v=>{ if(S.edited) S.edited.notes=v; }})}</div></div>`;
+          onSave:v=>{ if(S.edited) S.edited.notes=v; }})}
+      <div style="margin-top:12px;"><button class="cbtn run" id="f_rerun" onclick="runStep()"
+        title="Draw up the factor list again from scratch">Re-run</button></div></div></div>`;
 }
 function wireFactors(){
   // Same row order the view just rendered, so index -> factor stays aligned.
@@ -2011,7 +2063,16 @@ function saveNotes(key){
 /* Reads the definition form. Creates the project, or — when the analyst came
    back to re-define it (Prof. Shi 2026-08-07 #8) — updates it in place, which
    marks everything drafted from the old scope stale. */
-async function ensureProject(){
+/* A fingerprint of everything the definition form sets, to tell whether the
+   analyst changed anything since the project was saved. */
+function areaSig(o){
+  return o ? [o.state_fips, o.county_fips, o.areal_unit||"county",
+              [...(o.area_geoids||[])].map(String).sort().join(","), o.area_name||""].join("|") : "";
+}
+function scopeSig(o){
+  return [o.title||"", o.location_query||"", o.notes||"", areaSig(o), areaSig(o.base)].join("§");
+}
+function readStep1Form(){
   const area = areaPayload("project");
   if(area.error) throw new Error(area.error);
   let base = null;
@@ -2019,13 +2080,24 @@ async function ensureProject(){
     base = areaPayload("base");
     if(base.error) throw new Error(base.error);
   }
-  const form={ title:($("f_title").value||"Untitled assessment"), ...area, base,
-               location_query:($("f_where")?.value||""), notes:($("f_tasks")?.value||"") };
+  return { title:($("f_title").value||"Untitled assessment"), ...area, base,
+           location_query:($("f_where")?.value||""), notes:($("f_tasks")?.value||"") };
+}
+function step1Changed(){
+  const m = S.project?.meta; if(!S.pid || !m) return true;
+  return scopeSig(readStep1Form()) !== scopeSig({title:m.title, location_query:m.location_query, notes:m.notes,
+    state_fips:m.state_fips, county_fips:m.county_fips, areal_unit:m.areal_unit,
+    area_geoids:m.area_geoids, area_name:m.area_name, base:m.base||null});
+}
+/* Reads the definition form. Creates the project, or updates it in place when
+   the analyst changed something — which marks everything drafted from the old
+   scope stale. */
+async function ensureProject(){
+  const form = readStep1Form();
   if(S.pid){
-    if(S.redefining){
+    if(step1Changed())
       await api(`/hcas/projects/${S.pid}`,{method:"PATCH",body:JSON.stringify(form)});
-      S.redefining=false;
-    }
+    S.redefining=false;
     return;
   }
   // gate_mode is always "gated": Prof. Shi 2026-08-07 #6 removed the choice —
@@ -2070,7 +2142,7 @@ async function runStep(opts){
   setBusy(true); setMsg(""); statusRun("Running…");
   let failed = null;
   try{
-    if(step===1 && (!S.pid || S.redefining))
+    if(step===1)
       await ensureProject();  // reads the definition form — before it is replaced
     if(S.current===step) renderCanvasLoading(step);  // only if that step is still on screen
     startProgress(step);
@@ -2102,8 +2174,29 @@ async function runStep(opts){
   // reporting: if it is still running, re-attach to it and keep the progress
   // bar, instead of showing an error the user can do nothing with.
   if(failed && await adoptRunningStep(step, true)) setMsg("");
+  return !failed;
+}
+/* Step 1's Confirm does the quiet work (Prof. Shi 2026-11-13 #9, #10): save the
+   definition, work out the study-area facts, then confirm — all in one press, so
+   there is no second page that only displays the area. Returns false when the
+   caller should stop (an error is on the command line, or nothing more to do). */
+async function commitStep1(){
+  if(S.busy) return false;
+  setMsg("");
+  let changed;
+  try{ changed = step1Changed(); }
+  catch(e){ setMsg(e.message); return false; }
+  const row = stepRow(1);
+  if(row && !changed){
+    if(row.status==="confirmed"){ selectStep(2); return false; }   // nothing to redo
+    return true;                                                    // drafted: just confirm it
+  }
+  if(!(await runStep())) return false;
+  const r = stepRow(1);
+  return !!r && r.status!=="stale";
 }
 async function confirmStep(){
+  if(step1Form() && !(await commitStep1())) return;
   const row=stepRow(S.current);
   if(!row||S.busy) return;
   setBusy(true); setMsg("");
@@ -2132,12 +2225,7 @@ async function confirmStep(){
 function prevStep(){
   // On step 1's result page, Back re-opens the definition form for the SAME
   // project (Prof. Shi 2026-08-07 #8) rather than stepping to a step 0.
-  if(S.current===1){
-    if(!stepRow(1)) return;
-    S.redefining=true; setMsg(""); AREA.key=null;
-    renderCanvas(); renderCmd();
-    return;
-  }
+  if(S.current===1) return;
   selectStep(S.current-1);
 }
 
