@@ -527,3 +527,101 @@ def test_step5_confirm_shows_an_in_page_dialog_not_a_browser_confirm():
     assert "confirm(" not in dlg.replace("Confirm", "")
     assert "/database/status" in dlg and "if(!st.ask) return;" in dlg      # unchanged: no question
     assert "/database/save" in dlg and "database.zip" in dlg
+
+
+# ---------------------------------------------------------------- #4b AI history + export
+def _proj(tmp_path, monkeypatch):
+    db = tmp_path / "h.db"
+    monkeypatch.setattr(hcas, "DB_PATH", db)
+    pid = hcas.create_project("hist", *FRANKLIN, db=db, areal_unit="block_group",
+                              area_geoids=["390490001001", "390490001002"])
+    return pid, db
+
+
+def test_item4b_records_carry_step_kind_input_output_time_and_replay_context(tmp_path, monkeypatch):
+    from backend import hcas_ai
+
+    pid, db = _proj(tmp_path, monkeypatch)
+    ctx = hcas_ai.context_for(hcas.get_project(pid, db=db))
+    assert hcas_ai.record(pid, 1, "find_area", {"text": "Gary, Indiana"}, {"scale": "place"}, ctx, db=db)
+    assert hcas_ai.record(pid, 2, "revise_factors", {"instruction": "add air"}, {"added": ["Air"]}, ctx, db=db)
+    h = hcas_ai.list_history(pid, db=db)
+    assert [x["kind"] for x in h] == ["find_area", "revise_factors"]
+    first = h[0]
+    assert first["step"] == 1 and first["user_input"] == {"text": "Gary, Indiana"}
+    assert first["ai_output"] == {"scale": "place"} and first["created_at"] > 1.7e9
+    # enough to replay: which county, which unit, how many units were selected
+    assert first["context"]["county_fips"] == "049" and first["context"]["areal_unit"] == "block_group"
+    assert first["context"]["area_units"] == 2
+    assert hcas_ai.record("no-such-project", 1, "chat", {}, {}) is False      # never raises
+
+
+def test_item4b_chat_and_step_drafts_are_recorded_by_the_pipeline(tmp_path, monkeypatch):
+    from backend import hcas_ai
+
+    pid, db = _proj(tmp_path, monkeypatch)
+    monkeypatch.setattr(hcas, "_llm_text", lambda system, prompt, model="m": ("It is a block group.", {"output_tokens": 5}))
+    hcas.chat(pid, 1, "what is a block group?", [{"role": "user", "content": "hi"}], db=db)
+    monkeypatch.setattr(hcas, "_draft", lambda project, step: ({"kind": "us_sub_county", "layers": [1, 2]}, "m1", {"in": 1}))
+    hcas.run_step(pid, 1, db=db)
+    h = hcas_ai.list_history(pid, db=db)
+    chat, draft = h[0], h[1]
+    assert chat["kind"] == "chat" and chat["user_input"]["message"] == "what is a block group?"
+    assert chat["ai_output"]["reply"] == "It is a block group."
+    assert draft["kind"] == "step_draft" and draft["step"] == 1
+    assert draft["ai_output"]["summary"]["layers_count"] == 2 and draft["ai_output"]["model"] == "m1"
+
+
+def test_item4b_before_a_project_exists_the_record_rides_with_the_reply_then_is_imported(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import hcas_ai
+    from backend.app import app
+
+    pid, db = _proj(tmp_path, monkeypatch)
+    monkeypatch.setattr(hcas, "resolve_area", lambda text: {"resolved": True, "county_name": "Lake County", "scale": "place"})
+    c = TestClient(app)
+    h = {"X-Requested-With": "geoai"}
+    r = c.post("/hcas/resolve-area", json={"text": "Gary, Indiana"}, headers=h).json()
+    assert r["ai_record"]["kind"] == "find_area" and r["ai_record"]["user_input"] == {"text": "Gary, Indiana"}
+    saved = c.post(f"/hcas/projects/{pid}/ai-history", json={"records": [r["ai_record"], {"kind": "bogus"}]}, headers=h)
+    assert saved.json() == {"saved": 1}
+    got = c.get(f"/hcas/projects/{pid}/ai-history", headers=h).json()["history"]
+    assert got[0]["kind"] == "find_area" and got[0]["context"]["relayed_by_page"] is True
+    # with a project id the server stores it itself and does not hand a record back
+    r2 = c.post("/hcas/resolve-area", json={"text": "Gary, Indiana", "project_id": pid}, headers=h).json()
+    assert "ai_record" not in r2
+    assert len(hcas_ai.list_history(pid, db=db)) == 2
+
+
+def test_item4b_export_is_one_json_with_settings_steps_and_history(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import hcas_ai
+    from backend.app import app
+
+    pid, db = _proj(tmp_path, monkeypatch)
+    monkeypatch.setattr(hcas, "_draft", lambda project, step: ({"kind": "us_sub_county"}, "m", {}))
+    hcas.run_step(pid, 1, db=db)
+    hcas.confirm_step(pid, 1, {"kind": "us_sub_county", "edited": True}, 3.0, db=db)
+    hcas_ai.record(pid, 1, "chat", {"message": "q"}, {"reply": "a"}, db=db)
+    c = TestClient(app)
+    r = c.get(f"/hcas/projects/{pid}/export.json", headers={"X-Requested-With": "geoai"})
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    doc = r.json()
+    assert doc["format"] == "hcas-project-export/1" and doc["settings"]["title"] == "hist"
+    assert doc["settings"]["area_geoids"] == ["390490001001", "390490001002"]
+    s1 = doc["steps"][0]
+    assert s1["step"] == 1 and s1["status"] == "confirmed" and s1["human_final"]["edited"] is True
+    assert s1["ai_draft"]["kind"] == "us_sub_county" and s1["edit_seconds"] == 3.0
+    assert [h["kind"] for h in doc["ai_history"]] == ["step_draft", "chat"]
+    assert c.get("/hcas/projects/nope/export.json", headers={"X-Requested-With": "geoai"}).status_code == 404
+
+
+def test_item4b_page_sends_the_project_id_relays_records_and_has_the_views():
+    for fn, needle in (("resolveArea", "project_id:S.pid"), ("suggestBlockGroups", "project_id:S.pid"),
+                       ("sendChat", "relayAi(res)"), ("reviseFactors", "project_id:S.pid")):
+        assert needle in _fn(fn), fn
+    assert "flushPendingAi()" in _fn("ensureProject")
+    assert "/ai-history" in _fn("showAiHistory") and "/export.json" in _fn("exportProject")
+    assert 'onclick="showAiHistory()"' in HTML and 'onclick="exportProject()"' in HTML

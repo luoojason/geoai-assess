@@ -405,6 +405,8 @@
       <button class="navbtn" onclick="openProject()">Open</button><span class="navsep">·</span>
       <button class="navbtn" onclick="saveProject()" title="Download this project as a file">Save</button><span class="navsep">·</span>
       <button class="navbtn" onclick="saveProjectAs()" title="Start a new project from this one">Save as</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="exportProject()" title="Download the settings, every step and the AI history as one JSON file">Export</button><span class="navsep">·</span>
+      <button class="navbtn" onclick="showAiHistory()" title="Every interaction with the AI in this project">AI history</button><span class="navsep">·</span>
       <button class="navbtn" onclick="openSettings()">Settings</button><span class="navsep">·</span>
       <button class="navbtn" onclick="showAbout()">About</button>
       <button class="navbtn exit" onclick="exitApp()">Exit</button>
@@ -495,7 +497,7 @@ const FETCH_STEPS = new Set([3, 7]);
 const DEFAULT_SYS = "Focus on spatial analysis for community-health assessment. Be concise and specific.";
 
 const S = { pid:null, current:1, project:null, edited:null, draftShownAt:null,
-            chats:{}, sys:DEFAULT_SYS, busy:false, redefining:false, running:null };
+            chats:{}, sys:DEFAULT_SYS, busy:false, redefining:false, running:null, pendingAi:[] };
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -1203,9 +1205,10 @@ async function suggestBlockGroups(w, textOverride, asPlace){
     // A city or town has a Census boundary of its own: select the block groups inside it.
     const r = asPlace
       ? await api("/hcas/place-area", {method:"POST",
-          body: JSON.stringify({name:text, state_fips:a.state_fips, county_fips:a.county_fips})})
+          body: JSON.stringify({name:text, state_fips:a.state_fips, county_fips:a.county_fips, project_id:S.pid})})
       : await api("/hcas/suggest-area", {method:"POST",
-          body: JSON.stringify({text, state_fips:a.state_fips, county_fips:a.county_fips})});
+          body: JSON.stringify({text, state_fips:a.state_fips, county_fips:a.county_fips, project_id:S.pid})});
+    relayAi(r);
     a.mode = "selected";
     a.geoids = r.geoids || [];
     if(r.place && (!textOverride || asPlace)) a.name = r.place;
@@ -1290,7 +1293,8 @@ async function resolveArea(){
   btn.disabled=true; btn.textContent="Finding…";
   hint.innerHTML='<span class="spin"></span>Asking the assistant…';
   try{
-    const r=await api("/hcas/resolve-area",{method:"POST",body:JSON.stringify({text})});
+    const r=await api("/hcas/resolve-area",{method:"POST",body:JSON.stringify({text, project_id:S.pid})});
+    relayAi(r);
     if(r.resolved){
       const wb=document.getElementById('f_where'); if(wb) wb.style.borderColor="";
       const a = AREA.project;
@@ -1546,7 +1550,8 @@ async function reviseFactors(){
   try{
     const place=(stepRow(1)?.human_final||stepRow(1)?.ai_draft||{}).place_name||"the study area";
     const r=await api("/hcas/revise-factors",{method:"POST",
-      body:JSON.stringify({artifact:S.edited, instruction, place})});
+      body:JSON.stringify({artifact:S.edited, instruction, place, project_id:S.pid})});
+    relayAi(r);
     S.edited=r.artifact;
     renderCanvas();
     const bits=[];
@@ -2353,6 +2358,7 @@ async function ensureProject(){
   // research ablation through the API, not through the wizard.
   S.pid=(await api("/hcas/projects",{method:"POST",
         body:JSON.stringify({...form, gate_mode:"gated"})})).project_id;
+  await flushPendingAi();
   dropResumeBar();
   try{ localStorage.setItem("hcas_last_project", S.pid); }catch(_){}
 }
@@ -2572,11 +2578,12 @@ async function sendChat(){
   $("msgs").scrollTop=$("msgs").scrollHeight;
   try{
     const hist=[{role:"user",content:"[Guidance] "+S.sys},...h.slice(-8)];
-    const {reply}= S.pid
+    const res = S.pid
       ? await api(`/hcas/projects/${S.pid}/chat`,
           {method:"POST",body:JSON.stringify({message:text,step:S.current,history:hist})})
-      : await api("/hcas/chat",{method:"POST",body:JSON.stringify({message:text,history:hist})});
-    h.push({role:"assistant",content:reply});
+      : await api("/hcas/chat",{method:"POST",body:JSON.stringify({message:text,history:hist,step:S.current})});
+    relayAi(res);
+    h.push({role:"assistant",content:res.reply});
   }catch(e){ h.push({role:"assistant",content:"⚠ "+e.message,err:true}); }
   renderChat();
 }
@@ -2584,7 +2591,7 @@ async function sendChat(){
 /* ================= header actions ================= */
 function newProject(){
   S.pid=null; S.current=1; S.project=null; S.edited=null; S.chats={}; S.draftShownAt=null;
-  S.redefining=false; AREA.key=null; statusRun("");
+  S.redefining=false; AREA.key=null; S.pendingAi=[]; statusRun("");
   renderRail(); renderBar(); renderCanvas(); renderChat(); renderCmd(); setMsg("");
 }
 /* Open dialog lists saved projects. Work was always persisted step by step, but
@@ -2685,6 +2692,65 @@ async function doOpen(id){
     const box=$("m_list")||$("m_pid");
     if(box) box.insertAdjacentHTML("afterend",`<p style="color:var(--red)">${esc(e.message)}</p>`);
   }
+}
+/* The project saves its AI interactions (Prof. Shi 2026-11-13 #4). Before the project
+   exists the server hands each record back with the reply; hold it and send it in once
+   the project has been created. */
+function relayAi(r){ if(r && r.ai_record) S.pendingAi.push(r.ai_record); }
+async function flushPendingAi(){
+  if(!S.pid || !S.pendingAi.length) return;
+  const records = S.pendingAi.splice(0);
+  try{ await api(`/hcas/projects/${S.pid}/ai-history`,{method:"POST",body:JSON.stringify({records})}); }
+  catch(_){ S.pendingAi.unshift(...records); }
+}
+function exportProject(){
+  if(!S.pid){ setMsg("Nothing to export yet."); return; }
+  const a = document.createElement("a"); a.href = `/hcas/projects/${S.pid}/export.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function aiBrief(v, max){
+  if(v==null) return "";
+  let t = typeof v === "string" ? v : JSON.stringify(v);
+  return t.length > (max||400) ? t.slice(0, max||400) + "…" : t;
+}
+function aiInputText(h){
+  const u = h.user_input || {};
+  if(h.kind==="chat") return u.message || "";
+  if(h.kind==="find_area") return u.text || "";
+  if(h.kind==="suggest_area") return u.text || "";
+  if(h.kind==="place_area") return u.name || "";
+  if(h.kind==="revise_factors") return u.instruction || "";
+  if(h.kind==="step_draft") return u.refresh ? "Run again, fetching the data fresh" : "Draft this step";
+  return aiBrief(u);
+}
+function aiOutputText(h){
+  const o = h.ai_output || {};
+  if(h.kind==="chat") return o.reply || "";
+  if(h.kind==="find_area") return [o.county_name && (o.county_name+", "+(o.state_name||"")), o.interpretation, o.caveat].filter(Boolean).join(" — ") || aiBrief(o);
+  if(h.kind==="suggest_area" || h.kind==="place_area") return `${(o.geoids||[]).length} block groups${o.place?" — "+o.place:""}${o.caveat?" — "+o.caveat:""}`;
+  if(h.kind==="revise_factors") return [(o.added||[]).length?"added "+o.added.join(", "):"", (o.removed||[]).length?"removed "+o.removed.join(", "):"", o.note].filter(Boolean).join(" · ") || "no change";
+  if(h.kind==="step_draft") return o.summary ? aiBrief(o.summary, 300) : (o.draft && (o.draft.notes || aiBrief(o.draft, 300))) || "";
+  return aiBrief(o);
+}
+async function showAiHistory(){
+  if(!S.pid){ modal(`<h3>AI history</h3><p>Nothing yet: the history belongs to a project. Create one by confirming step 1.</p>
+    <div class="acts"><button class="cbtn" onclick="closeModal()">Close</button></div>`); return; }
+  modal(`<h3>AI history</h3><div id="aihist" class="subnote"><span class="spin"></span>Loading…</div>
+    <div class="acts"><button class="cbtn" onclick="exportProject()">Export project</button>
+      <button class="cbtn next" onclick="closeModal()">Close</button></div>`, {wide:true});
+  try{
+    const {history} = await api(`/hcas/projects/${S.pid}/ai-history`);
+    const box = $("aihist"); if(!box) return;
+    if(!history.length){ box.innerHTML = "No AI interactions have been recorded for this project yet."; return; }
+    const byStep = {};
+    history.forEach(h=>{ (byStep[h.step||0] = byStep[h.step||0] || []).push(h); });
+    box.innerHTML = Object.keys(byStep).sort((a,b)=>a-b).map(st=>`<div style="margin:0 0 14px;">
+      <div class="ph">${+st ? `Step ${st} · ${esc(STEP_TITLES[st-1]||"")}` : "General"}</div>
+      ${byStep[st].map(h=>`<div class="aih" style="border-top:1px solid var(--line);padding:8px 0;font-size:var(--fs-sm);">
+        <div class="mono" style="color:var(--faint);font-size:11px;">${esc(new Date(h.created_at*1000).toLocaleString())} · ${esc(h.label)}</div>
+        <div><b>You / system:</b> ${esc(aiBrief(aiInputText(h), 300))}</div>
+        <div><b>AI:</b> ${esc(aiBrief(aiOutputText(h), 600))}</div></div>`).join("")}</div>`).join("");
+  }catch(e){ const b=$("aihist"); if(b) b.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
 }
 async function saveProject(){
   if(!S.pid){ setMsg("Nothing to save yet."); return; }

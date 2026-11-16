@@ -426,6 +426,17 @@ CREATE TABLE IF NOT EXISTS maps (
     html TEXT NOT NULL,
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS ai_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    step INTEGER,                  -- the wizard step the interaction belongs to
+    kind TEXT NOT NULL,            -- find_area | suggest_area | place_area | chat | step_draft | revise_factors
+    user_input TEXT,               -- JSON: exactly what the user (or the system) sent
+    ai_output TEXT,                -- JSON: what the AI returned, or a structured summary of it
+    context TEXT,                  -- JSON: area / unit / model, enough to replay the call later
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ai_history_project ON ai_history (project_id, id);
 """
 
 
@@ -4187,6 +4198,11 @@ def run_step(pid: str, step: int, db: Path | None = None, refresh: bool = False)
                 "INSERT OR REPLACE INTO maps VALUES (?, ?, ?)",
                 (f"{pid}:base", base_map_html, time.time()),
             )
+    from backend import hcas_ai
+
+    hcas_ai.record(pid, step, "step_draft", {"refresh": bool(refresh)},
+                   hcas_ai.summarize_draft(step, data["ai_draft"], model, usage),
+                   hcas_ai.context_for(project), db=db)
     return data["ai_draft"]
 
 
@@ -4699,6 +4715,10 @@ def chat(
     prompt = "\n\n".join(ctx) + "\n\n---\n\n" + "\n".join(convo) + "\n\nAssistant:"
     system = _CHAT_SYSTEM + ((" " + study_area_interface_note()) if step == 1 else "")
     reply, usage = _llm_text(system, prompt)
+    from backend import hcas_ai
+
+    hcas_ai.record(pid, step, "chat", {"message": message, "earlier_turns": len(history or [])},
+                   {"reply": reply, "usage": usage}, hcas_ai.context_for(project), db=db)
     return {"reply": reply, "usage": usage}
 
 

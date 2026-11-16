@@ -435,12 +435,14 @@ class HcasSuggestAreaRequest(BaseModel):
     text: str
     state_fips: str
     county_fips: str
+    project_id: Optional[str] = None
 
 
 class HcasPlaceAreaRequest(BaseModel):
     name: str
     state_fips: str
     county_fips: str
+    project_id: Optional[str] = None
 
 
 class HcasConfirmRequest(BaseModel):
@@ -457,16 +459,38 @@ class HcasChatRequest(BaseModel):
 class HcasIntakeChatRequest(BaseModel):
     message: str
     history: list[dict] = []
+    project_id: Optional[str] = None
+    step: int = 1
 
 
 class HcasAreaRequest(BaseModel):
     text: str
+    project_id: Optional[str] = None
 
 
 class HcasReviseRequest(BaseModel):
     artifact: dict
     instruction: str
     place: str = "the study area"
+    project_id: Optional[str] = None
+
+
+def _ai_log(project_id, step, kind, user_input, output, result):
+    """Save an AI interaction with the project (Prof. Shi 2026-11-13 #4). Before the project
+    exists there is nowhere to save it, so the record rides back with the reply and the page
+    sends it in once the project has been created."""
+    from backend import hcas_ai
+
+    ctx = {}
+    if project_id:
+        try:
+            ctx = hcas_ai.context_for(hcas.get_project(project_id))
+        except KeyError:
+            project_id = None
+    if project_id and hcas_ai.record(project_id, step, kind, user_input, output, ctx):
+        return result
+    result["ai_record"] = hcas_ai.make_record(step, kind, user_input, output, ctx)
+    return result
 
 
 @app.get("/hcas/measures", dependencies=_assess_deps)
@@ -541,8 +565,11 @@ async def hcas_units(state_fips: str, county_fips: str, unit: str):
 async def hcas_suggest_area(body: HcasSuggestAreaRequest):
     """AI-recommended block groups for a community or neighborhood name (#1)."""
     try:
-        return await asyncio.to_thread(hcas.suggest_area, body.text, body.state_fips,
-                                       body.county_fips)
+        res = await asyncio.to_thread(hcas.suggest_area, body.text, body.state_fips,
+                                      body.county_fips)
+        return _ai_log(body.project_id, 1, "suggest_area",
+                       {"text": body.text, "state_fips": body.state_fips, "county_fips": body.county_fips},
+                       {k: res.get(k) for k in ("geoids", "place", "method_text", "caveat", "area_km2", "population")}, res)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
@@ -574,8 +601,11 @@ async def hcas_upload_area(request: Request, filename: str, unit: str = "block_g
 async def hcas_place_area(body: HcasPlaceAreaRequest):
     """Block groups inside a city or town's Census boundary (#17)."""
     try:
-        return await asyncio.to_thread(hcas.place_area, body.name, body.state_fips,
-                                       body.county_fips)
+        res = await asyncio.to_thread(hcas.place_area, body.name, body.state_fips,
+                                      body.county_fips)
+        return _ai_log(body.project_id, 1, "place_area",
+                       {"name": body.name, "state_fips": body.state_fips, "county_fips": body.county_fips},
+                       {k: res.get(k) for k in ("geoids", "place", "method_text", "caveat", "area_km2", "population")}, res)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
@@ -597,7 +627,8 @@ async def hcas_project_basemap(pid: str, which: str = "project"):
 async def hcas_resolve_area(body: HcasAreaRequest):
     """Free-text location -> study-area county (Prof. Shi 2026-08-07 #4)."""
     try:
-        return await asyncio.to_thread(hcas.resolve_area, body.text)
+        res = await asyncio.to_thread(hcas.resolve_area, body.text)
+        return _ai_log(body.project_id, 1, "find_area", {"text": body.text}, dict(res), res)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
@@ -608,7 +639,10 @@ async def hcas_resolve_area(body: HcasAreaRequest):
 async def hcas_intake_chat(body: HcasIntakeChatRequest):
     """Assistant before a project exists (Prof. Shi 2026-08-07 #3)."""
     try:
-        return await asyncio.to_thread(hcas.chat_intake, body.message, body.history)
+        res = await asyncio.to_thread(hcas.chat_intake, body.message, body.history)
+        return _ai_log(body.project_id, body.step, "chat",
+                       {"message": body.message, "earlier_turns": len(body.history), "before_project": True},
+                       {"reply": res.get("reply"), "usage": res.get("usage")}, res)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
@@ -623,9 +657,13 @@ async def hcas_intake_chat(body: HcasIntakeChatRequest):
 async def hcas_revise_factors(body: HcasReviseRequest):
     """Incremental edit of the step-2 factor list (Prof. Shi 2026-08-07 #11)."""
     try:
-        return await asyncio.to_thread(
+        res = await asyncio.to_thread(
             hcas.revise_factors, body.artifact, body.instruction, body.place
         )
+        return _ai_log(body.project_id, 2, "revise_factors",
+                       {"instruction": body.instruction, "place": body.place,
+                        "factors_before": [f.get("factor") for f in (body.artifact.get("factors") or [])]},
+                       {k: res.get(k) for k in ("added", "removed", "note")}, res)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
@@ -805,6 +843,51 @@ async def hcas_data_list(pid: str):
         return hcas.list_data_bundle(pid)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/hcas/projects/{pid}/ai-history", dependencies=_assess_deps)
+async def hcas_ai_history(pid: str):
+    """Every AI interaction of the project, oldest first (Prof. Shi 2026-11-13 #4)."""
+    from backend import hcas_ai
+
+    try:
+        return {"history": hcas_ai.list_history(pid)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+
+
+class HcasAiRecords(BaseModel):
+    records: list[dict] = []
+
+
+@app.post("/hcas/projects/{pid}/ai-history", dependencies=_assess_deps)
+async def hcas_ai_history_import(pid: str, body: HcasAiRecords):
+    """Interactions the page made before the project existed (Find with AI on a blank form)."""
+    from backend import hcas_ai
+
+    try:
+        return {"saved": hcas_ai.import_records(pid, body.records)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+
+
+@app.get("/hcas/projects/{pid}/export.json", dependencies=_hcas_link_deps)
+async def hcas_export_project(pid: str):
+    """Export project: settings, every step's content and status, and the AI history,
+    as one JSON file."""
+    from fastapi.responses import Response
+
+    from backend import hcas_ai
+
+    try:
+        doc = hcas_ai.export_project(pid)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    import json as _json
+
+    title = "".join(c if c.isalnum() else "-" for c in (doc["settings"].get("title") or "project")).strip("-") or "project"
+    return Response(_json.dumps(doc, indent=1, default=str), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{title}-export.json"'})
 
 
 @app.get("/hcas/projects/{pid}/database/status", dependencies=_assess_deps)
