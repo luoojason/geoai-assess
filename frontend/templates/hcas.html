@@ -825,6 +825,8 @@ function newAreaState(src){
   const unit = src.areal_unit==="custom" ? "block_group" : (src.areal_unit||"");
   return { state_fips: src.state_fips||"", county_fips: src.county_fips||"",
            unit, geoids, name: src.area_name||"", suggestNote: "",
+           polygon: src.area_polygon ? {type:"Feature", properties:{name:src.area_polygon_name||""}, geometry:src.area_polygon} : null,
+           outline: null,
            mode: geoids.length ? "selected" : "all",
            features:null, featuresKey:"", map:null, layer:null, loading:null,
            suggestedText:null, suggesting:false, aiFailed:false };
@@ -858,6 +860,13 @@ function areaEditorHtml(w){
       </div>
       <div class="hint" id="f_wherehint">A ZIP code, town, community, landmark or description — the assistant
         finds the county and, for a ZIP code, town or neighborhood, sets up that area below. You can change everything it fills in.</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+        <button class="cbtn" id="f_uploadbtn" onclick="$('f_uploadfile').click()">Upload study area</button>
+        <input type="file" id="f_uploadfile" accept=".zip,.geojson,.json" style="display:none" onchange="uploadArea(this)">
+        <button class="linkbtn" id="f_uploadclear" style="display:none" onclick="clearUploadedArea()">remove uploaded outline</button>
+      </div>
+      <div class="hint" id="f_uploadmsg">Your own boundary: a zipped shapefile (.zip with the .shp, .shx, .dbf and .prj files) or a
+        GeoJSON file, up to 20 MB. It is drawn as a dashed outline and the block groups mostly inside it are selected.</div>
     </div>`;
   const updateBtn = w==="base" ? "" : `<button class="cbtn run" id="f_updatemap" onclick="updateMap()"
         title="Redraw the map from the settings above">Update map</button>`;
@@ -958,6 +967,7 @@ async function loadStates(){
     await fillAreaSelects("project");
     if(AREA.compare){ await fillAreaSelects("base"); }
     toggleCompare(AREA.compare);
+    restoreUploadMsg();
   }catch(e){ setMsg(e.message); }
 }
 
@@ -1153,8 +1163,14 @@ async function drawAreaMap(w){
   }).addTo(a.map);
   // Zoom to the selected area when there is one (coming back to a step shows the
   // confirmed area, not the whole county around it).
+  if(a.outline){ a.outline.remove(); a.outline = null; }
+  if(a.polygon){
+    a.outline = L.geoJSON(a.polygon, {style:{color:"#b45309", weight:3, dashArray:"8 6", fill:false},
+      interactive:false}).addTo(a.map);
+  }
   let fitTo = a.layer;
-  if(a.geoids.length){
+  if(a.outline){ fitTo = a.outline; }
+  else if(a.geoids.length){
     const sel = []; a.layer.eachLayer(l=>{ if(a.geoids.includes(l.feature.properties.GEOID)) sel.push(l); });
     if(sel.length) fitTo = L.featureGroup(sel);
   }
@@ -1214,6 +1230,54 @@ async function suggestBlockGroups(w, textOverride, asPlace){
   }finally{
     a.suggesting = false; updateSuggestBtn(w);
   }
+}
+
+/* Upload study area (Prof. Shi 2026-11-13 #12). The server reads the zipped shapefile
+   or GeoJSON, reprojects it, finds the county and the units mostly inside it. */
+function setUploadMsg(html, bad){
+  const m = $("f_uploadmsg"); if(!m) return;
+  m.innerHTML = html; m.style.color = bad ? "var(--red)" : "";
+  const c = $("f_uploadclear"); if(c) c.style.display = AREA.project?.polygon ? "" : "none";
+}
+async function uploadArea(inp){
+  const file = inp.files && inp.files[0]; inp.value = "";
+  if(!file) return;
+  const a = AREA.project;
+  if(file.size > 20*1024*1024){
+    setUploadMsg(`<b>${esc(file.name)}</b> is ${(file.size/1048576).toFixed(0)} MB; the limit is 20 MB. Simplify the polygon or upload a smaller extract.`, true);
+    return;
+  }
+  const btn = $("f_uploadbtn"); btn.disabled = true;
+  setUploadMsg('<span class="spin"></span>Reading '+esc(file.name)+'…');
+  try{
+    const unit = (a.unit && a.unit !== "county") ? a.unit : "block_group";
+    const resp = await fetch(`/hcas/upload-area?filename=${encodeURIComponent(file.name)}&unit=${unit}`,
+      {method:"POST", headers:{"X-Requested-With":"geoai","Content-Type":"application/octet-stream"}, body:file});
+    const r = await resp.json().catch(()=>({}));
+    if(!resp.ok) throw new Error(r.detail || (resp.status+" "+resp.statusText));
+    a.polygon = r.polygon; a.state_fips = r.state_fips; a.county_fips = r.county_fips;
+    a.unit = r.unit; a.geoids = (r.geoids||[]).slice(); a.mode = "selected";
+    a.featuresKey = ""; a.aiFailed = false; a.suggestNote = ""; a.name = "";
+    await fillAreaSelects("project");
+    await refreshArea("project");
+    const n = a.geoids.length;
+    setUploadMsg(`<b>${esc(file.name)}</b> — ${esc(r.county_name)}, ${esc(r.state_name)} · ${num(r.area_km2,1)} km². `
+      + (n ? `${n} ${esc(unitWord(a.unit, n!==1))} with more than half of their area inside the outline selected. Click units on the map to add or remove them.` : "")
+      + (r.notes||[]).map(t=>" "+esc(t)).join("")
+      + (r.caveat ? ` <span style="color:var(--amber)">${esc(r.caveat)}</span>` : ""));
+  }catch(e){
+    setUploadMsg(esc(e.message), true);
+  }finally{ btn.disabled = false; }
+}
+function clearUploadedArea(){
+  const a = AREA.project; if(!a) return;
+  a.polygon = null;
+  if(a.outline){ a.outline.remove(); a.outline = null; }
+  setUploadMsg("The uploaded outline was removed. The selected units stay as they are.");
+}
+function restoreUploadMsg(){
+  const a = AREA.project; if(!a || !a.polygon) return;
+  setUploadMsg(`Uploaded outline: <b>${esc(a.polygon.properties?.name || "study area")}</b> — shown as the dashed outline on the map.`);
 }
 
 /* Free-text location -> county, and for a ZIP code, town or community the
@@ -1314,7 +1378,8 @@ function areaPayload(w){
     return {error: `Choose at least one ${unitWord(a.unit)} for the ${w==="base"?"base":"project"} area, or pick “Whole county”.`};
   return {state_fips:a.state_fips, county_fips:a.county_fips, areal_unit:a.unit||"county",
           area_geoids: selected ? a.geoids.slice() : [],
-          area_name: selected && a.unit==="block_group" ? (a.name||"").trim() : ""};
+          area_name: selected && a.unit==="block_group" ? (a.name||"").trim() : "",
+          area_polygon: w==="project" ? (a.polygon||null) : null};
 }
 
 /* step 1 — study area (live base map since 2026-07-27).
@@ -2170,7 +2235,10 @@ function step1Changed(){
 async function ensureProject(){
   const form = readStep1Form();
   if(S.pid){
-    if(step1Changed() || (S.project?.meta?.ai_note||"") !== form.ai_note)
+    const mm = S.project?.meta || {};
+    if(step1Changed() || (mm.ai_note||"") !== form.ai_note
+        || !!mm.area_polygon !== !!form.area_polygon
+        || (mm.area_polygon_name||"") !== (form.area_polygon?.properties?.name||""))
       await api(`/hcas/projects/${S.pid}`,{method:"PATCH",body:JSON.stringify(form)});
     S.redefining=false;
     return;

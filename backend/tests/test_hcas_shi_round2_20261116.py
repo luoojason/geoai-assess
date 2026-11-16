@@ -179,3 +179,172 @@ def test_item17_failure_message_shows_for_every_unit_and_city_path_is_wired():
     assert sc.count("AI could not define the specified area") == 2   # county branch and the others
     ra = _fn("resolveArea")
     assert "cityPlace" in ra and "/hcas/place-area" in _fn("suggestBlockGroups")
+
+
+# ---------------------------------------------------------------- #12 upload a study area
+import io
+import zipfile
+
+import geopandas as gpd
+import pytest
+from shapely.geometry import LineString, Point, box
+
+from backend.gis import upload
+
+
+def _zip_shapefile(tmp_path, gdf, with_prj=True):
+    d = tmp_path / "shp"
+    d.mkdir(exist_ok=True)
+    gdf.to_file(d / "area.shp")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for f in d.iterdir():
+            if f.suffix == ".prj" and not with_prj:
+                continue
+            z.write(f, f.name)
+    return buf.getvalue()
+
+
+def _geojson_bytes(gdf):
+    return gdf.to_json().encode()
+
+
+def test_item12_reads_a_projected_shapefile_and_returns_wgs84(tmp_path):
+    g = gpd.GeoDataFrame({"id": [1]}, geometry=[box(-83.02, 39.97, -82.99, 39.99)], crs="EPSG:4326").to_crs("EPSG:3735")
+    out, notes = upload.read_polygon("area.zip", _zip_shapefile(tmp_path, g))
+    assert str(out.crs) == "EPSG:4326" and len(out) == 1
+    minx, miny, maxx, maxy = out.total_bounds
+    assert -83.03 < minx < -83.01 and 39.96 < miny < 39.98 and notes == []
+
+
+def test_item12_no_prj_in_degrees_is_assumed_wgs84_and_says_so(tmp_path):
+    g = gpd.GeoDataFrame({"id": [1]}, geometry=[box(-83.02, 39.97, -82.99, 39.99)], crs="EPSG:4326")
+    out, notes = upload.read_polygon("area.zip", _zip_shapefile(tmp_path, g, with_prj=False))
+    assert any("assumed to be WGS84" in n for n in notes)
+    assert out.total_bounds[0] == pytest.approx(-83.02)
+
+
+def test_item12_no_prj_in_metres_is_refused(tmp_path):
+    g = gpd.GeoDataFrame({"id": [1]}, geometry=[box(1.0e6, 1.0e6, 1.1e6, 1.1e6)], crs="EPSG:3735")
+    with pytest.raises(upload.AreaUploadError, match="no coordinate system"):
+        upload.read_polygon("area.zip", _zip_shapefile(tmp_path, g, with_prj=False))
+
+
+def test_item12_geojson_with_several_polygons_is_dissolved_to_one():
+    g = gpd.GeoDataFrame({"id": [1, 2]}, geometry=[box(0, 0, 1, 1), box(0.5, 0, 2, 1)], crs="EPSG:4326")
+    out, notes = upload.read_polygon("two.geojson", _geojson_bytes(g))
+    assert len(out) == 1 and out.geometry.iloc[0].area == pytest.approx(2.0)
+    assert any("combined" in n for n in notes)
+
+
+@pytest.mark.parametrize("name,content,message", [
+    ("p.geojson", None, "point features, not polygons"),
+    ("l.geojson", None, "linestring features, not polygons"),
+    ("e.geojson", b'{"type":"FeatureCollection","features":[]}', "no features"),
+    ("x.zip", b"garbage", "not a valid .zip"),
+    ("x.txt", b"hello", "Upload a zipped shapefile"),
+    ("x.shp", b"hello", "as a .zip"),
+    ("x.zip", b"", "empty"),
+])
+def test_item12_clear_errors_for_bad_files(name, content, message):
+    if content is None:
+        geom = Point(0, 0) if name == "p.geojson" else LineString([(0, 0), (1, 1)])
+        content = _geojson_bytes(gpd.GeoDataFrame({"id": [1]}, geometry=[geom], crs="EPSG:4326"))
+    with pytest.raises(upload.AreaUploadError, match=message):
+        upload.read_polygon(name, content)
+
+
+def test_item12_zip_without_shp_and_oversize_files():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("readme.txt", "hi")
+    with pytest.raises(upload.AreaUploadError, match="no .shp file"):
+        upload.read_polygon("x.zip", buf.getvalue())
+    with pytest.raises(upload.AreaUploadError, match="limit is 20 MB"):
+        upload.read_polygon("big.zip", b"0" * (upload.MAX_BYTES + 1))
+
+
+def test_item12_county_shares_picks_the_county_holding_most_of_the_polygon():
+    poly = gpd.GeoDataFrame({"n": [1]}, geometry=[box(0, 0, 4, 1)], crs="EPSG:4326")
+    cty = gpd.GeoDataFrame({"STATE": ["39", "39"], "COUNTY": ["041", "049"], "NAME": ["Delaware", "Franklin"]},
+                           geometry=[box(0, 0, 3, 1), box(3, 0, 6, 1)], crs="EPSG:4326")
+    shares = upload.county_shares(poly, cty)
+    assert [c["name"] for c in shares] == ["Delaware", "Franklin"]
+    assert shares[0]["share"] == pytest.approx(0.75, abs=0.01)
+
+
+def _fake_upload_env(monkeypatch, counties):
+    bgs = gpd.GeoDataFrame({"GEOID": ["390490001001", "390490001002", "390490001003"], "POP100": [1.0, 2.0, 3.0]},
+                           geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1), box(5, 5, 6, 6)], crs="EPSG:4326")
+    monkeypatch.setattr(upload, "counties_for_polygon", lambda gdf: counties)
+    monkeypatch.setattr(hcas, "_unit_features", lambda *a: bgs)
+
+
+def test_item12_upload_selects_units_mostly_inside_and_sets_the_county(monkeypatch):
+    _fake_upload_env(monkeypatch, [{"state_fips": "39", "county_fips": "049", "name": "Franklin", "share": 1.0}])
+    g = gpd.GeoDataFrame({"id": [1]}, geometry=[box(-0.5, -0.5, 1.2, 1.5)], crs="EPSG:4326")
+    r = hcas.upload_study_area("area.geojson", _geojson_bytes(g))
+    assert (r["state_fips"], r["county_fips"]) == ("39", "049")
+    assert r["geoids"] == ["390490001001"]          # the second block group is only 20% inside
+    assert r["county_name"].startswith("Franklin") and r["state_name"] == "Ohio"
+    assert r["polygon"]["geometry"]["type"] == "Polygon" and r["caveat"] == ""
+
+
+def test_item12_polygon_over_two_counties_says_so_and_uses_the_larger(monkeypatch):
+    _fake_upload_env(monkeypatch, [{"state_fips": "39", "county_fips": "049", "name": "Franklin", "share": 0.62},
+                                   {"state_fips": "39", "county_fips": "041", "name": "Delaware", "share": 0.38}])
+    g = gpd.GeoDataFrame({"id": [1]}, geometry=[box(0, 0, 1, 1)], crs="EPSG:4326")
+    r = hcas.upload_study_area("x.geojson", _geojson_bytes(g))
+    assert r["county_fips"] == "049"
+    assert "crosses county lines" in r["caveat"] and "Franklin 62%" in r["caveat"] and "Delaware 38%" in r["caveat"]
+
+
+def test_item12_polygon_smaller_than_any_unit_selects_nothing_and_says_so(monkeypatch):
+    _fake_upload_env(monkeypatch, [{"state_fips": "39", "county_fips": "049", "name": "Franklin", "share": 1.0}])
+    g = gpd.GeoDataFrame({"id": [1]}, geometry=[box(0.4, 0.4, 0.5, 0.5)], crs="EPSG:4326")
+    r = hcas.upload_study_area("tiny.geojson", _geojson_bytes(g))
+    assert r["geoids"] == [] and "nothing was selected" in r["caveat"]
+
+
+def test_item12_outline_is_saved_with_the_project_and_drawn_on_the_maps(tmp_path):
+    db = tmp_path / "h.db"
+    feat = {"type": "Feature", "properties": {"name": "my area"},
+            "geometry": {"type": "Polygon", "coordinates": [[[-83, 40], [-82.9, 40], [-82.9, 40.1], [-83, 40]]]}}
+    pid = hcas.create_project("p", *FRANKLIN, db=db, areal_unit="block_group",
+                              area_geoids=["390490001001"], area_polygon=feat)
+    meta = hcas.get_project(pid, db=db)["meta"]
+    assert meta["area_polygon"]["type"] == "Polygon" and meta["area_polygon_name"] == "my area"
+    # absent keeps it, null removes it
+    hcas.update_project_scope(pid, db=db, notes="n")
+    assert "area_polygon" in hcas.get_project(pid, db=db)["meta"]
+    hcas.update_project_scope(pid, db=db, area_polygon=None)
+    assert "area_polygon" not in hcas.get_project(pid, db=db)["meta"]
+    with pytest.raises(ValueError, match="polygon"):
+        hcas.create_project("p", *FRANKLIN, db=db, area_polygon={"type": "Point", "coordinates": [0, 0]})
+    # the renderers draw it as a separate dashed outline
+    from backend.assess.renderer import render_base_map
+
+    sq = gpd.GeoDataFrame({"n": [1]}, geometry=[box(-83, 40, -82.9, 40.1)], crs="EPSG:4326")
+    html = render_base_map(sq, "x", outline=sq)
+    assert "Uploaded study area" in html and "10 7" in html
+    assert "Uploaded study area" not in render_base_map(sq, "x")
+
+
+def test_item12_upload_endpoint_returns_plain_errors():
+    from fastapi.testclient import TestClient
+    from backend.app import app
+
+    c = TestClient(app)
+    h = {"X-Requested-With": "geoai"}
+    r = c.post("/hcas/upload-area?filename=p.geojson", content=_geojson_bytes(
+        gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326")), headers=h)
+    assert r.status_code == 400 and "not polygons" in r.json()["detail"]
+    r = c.post("/hcas/upload-area?filename=big.zip", content=b"0" * (upload.MAX_BYTES + 1), headers=h)
+    assert r.status_code == 413 and "20 MB" in r.json()["detail"]
+
+
+def test_item12_page_has_the_button_the_outline_and_saves_the_polygon():
+    assert "Upload study area" in _fn("areaEditorHtml")
+    assert "/hcas/upload-area" in _fn("uploadArea")
+    assert "dashArray" in _fn("drawAreaMap") and "a.polygon" in _fn("drawAreaMap")
+    assert "area_polygon" in _fn("areaPayload")

@@ -409,6 +409,8 @@ class HcasProjectRequest(BaseModel):
     area_geoids: list[str] = []
     area_name: str = ""
     ai_note: str = ""
+    # The analyst's own study-area outline (an uploaded polygon, GeoJSON Feature).
+    area_polygon: Optional[dict] = None
     base: Optional[HcasAreaSpec] = None
 
 
@@ -423,6 +425,8 @@ class HcasScopeRequest(BaseModel):
     area_geoids: Optional[list[str]] = None
     area_name: Optional[str] = None
     ai_note: Optional[str] = None
+    # Absent keeps the uploaded outline; null removes it.
+    area_polygon: Optional[dict] = None
     # Absent keeps the base area; null removes it.
     base: Optional[HcasAreaSpec] = None
 
@@ -491,7 +495,8 @@ async def hcas_create_project(body: HcasProjectRequest):
             body.title, body.state_fips, body.county_fips, body.gate_mode,
             areal_unit=body.areal_unit, location_query=body.location_query,
             notes=body.notes, area_geoids=body.area_geoids, area_name=body.area_name,
-            ai_note=body.ai_note, base=body.base.model_dump() if body.base else None,
+            ai_note=body.ai_note, area_polygon=body.area_polygon,
+            base=body.base.model_dump() if body.base else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -505,6 +510,8 @@ async def hcas_update_project(pid: str, body: HcasScopeRequest):
         kwargs = {}
         if "base" in body.model_fields_set:
             kwargs["base"] = body.base.model_dump() if body.base else None
+        if "area_polygon" in body.model_fields_set:
+            kwargs["area_polygon"] = body.area_polygon
         return hcas.update_project_scope(
             pid, title=body.title, state_fips=body.state_fips,
             county_fips=body.county_fips, areal_unit=body.areal_unit,
@@ -536,6 +543,27 @@ async def hcas_suggest_area(body: HcasSuggestAreaRequest):
     try:
         return await asyncio.to_thread(hcas.suggest_area, body.text, body.state_fips,
                                        body.county_fips)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/hcas/upload-area", dependencies=_assess_deps)
+async def hcas_upload_area(request: Request, filename: str, unit: str = "block_group"):
+    """The analyst's own study-area polygon: a zipped shapefile or GeoJSON, read from the
+    raw body (like the data upload below, so no multipart dependency). Returns the
+    outline, the county it is in and the units mostly inside it (#12)."""
+    from backend.gis.upload import MAX_BYTES, AreaUploadError
+
+    content = await request.body()
+    if len(content) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"The file is {len(content) / 1e6:.0f} MB; "
+                            "the limit is 20 MB. Simplify the polygon or upload a smaller extract.")
+    try:
+        return await asyncio.to_thread(hcas.upload_study_area, filename, content, unit)
+    except AreaUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:

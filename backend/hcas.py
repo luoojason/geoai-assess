@@ -1353,6 +1353,7 @@ def basemap_for_project(pid: str, which: str = "project", db: Path | None = None
         _html.escape(summary.get("label") or build_place_name(spec["state_fips"], spec["county_fips"])),
         subtitle=("Base area" if which == "base" else "Project area")
                  + f" · {n} selected {_unit_label(spec['areal_unit'], n != 1)}",
+        outline=_outline_gdf(project, which),
     )
 
 
@@ -3080,6 +3081,7 @@ def _execute_area(project: dict, which: str, metrics_wanted: list,
             landuse=slim.get("landuse"),
             sample_info=sample_info,
             detail_payloads=detail,
+            outline=_outline_gdf(project, which),
         )
         # The 25 MB / 150 MB ceilings below are byte budgets, so they compare
         # against len(html.encode()) rather than len(html). The two are NOT
@@ -3127,6 +3129,7 @@ def _execute_area(project: dict, which: str, metrics_wanted: list,
                 # renderer exists to close, on precisely the dense counties
                 # most likely to trip the ceiling in the first place.
                 landuse=slim.get("landuse"),
+                outline=_outline_gdf(project, which),
                 sample_info=sample_info,
             )
             html_bytes = len(html.encode())
@@ -3762,6 +3765,36 @@ def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
 # Machine
 # ---------------------------------------------------------------------------
 
+def _clean_polygon(feature) -> dict:
+    """Meta fields for an uploaded study-area outline (a GeoJSON Feature), or {}.
+    Only the shape is checked here; the file itself was validated when uploaded."""
+    if not feature:
+        return {}
+    geom = feature.get("geometry") if isinstance(feature, dict) and feature.get("type") == "Feature" else feature
+    if not isinstance(geom, dict) or geom.get("type") not in ("Polygon", "MultiPolygon")             or not geom.get("coordinates"):
+        raise ValueError("The uploaded study-area outline must be a polygon.")
+    if len(json.dumps(geom)) > 1_500_000:
+        raise ValueError("The uploaded study-area outline is too large to save with the project.")
+    props = feature.get("properties") if isinstance(feature, dict) else None
+    return {"area_polygon": geom, "area_polygon_name": str((props or {}).get("name") or "")}
+
+
+def _outline_gdf(project: dict, which: str = "project"):
+    """The uploaded outline as a GeoDataFrame (EPSG:4326), for drawing on maps; None
+    when the project has none (the base area never has one)."""
+    geom = None if which == "base" else (project.get("meta") or {}).get("area_polygon")
+    if not geom:
+        return None
+    import geopandas as gpd
+    from shapely.geometry import shape
+
+    try:
+        return gpd.GeoDataFrame({"name": ["Uploaded study area"]}, geometry=[shape(geom)], crs="EPSG:4326")
+    except Exception as exc:
+        logger.warning("stored study-area outline unreadable: %r", exc)
+        return None
+
+
 def _load_meta(raw: str) -> dict:
     """Project meta from its JSON, with the retired "Customized" reporting unit
     read as block group (Prof. Shi 2026-11-13 #15): a saved project that used
@@ -3830,6 +3863,7 @@ def create_project(
     area_name: str = "",
     base: dict | None = None,
     ai_note: str = "",
+    area_polygon: dict | None = None,
 ) -> str:
     db = db or DB_PATH
     area = _clean_area(state_fips, county_fips, areal_unit, area_geoids, area_name)
@@ -3845,6 +3879,7 @@ def create_project(
         "location_query": location_query,
         "notes": notes,
         "ai_note": ai_note or "",
+        **_clean_polygon(area_polygon),
         "current_step": 1,
         "created_at": time.time(),
     }
@@ -3871,6 +3906,7 @@ def update_project_scope(
     area_name: str | None = None,
     base: Any = _UNSET,
     ai_note: str | None = None,
+    area_polygon: Any = _UNSET,
 ) -> dict:
     """Redefine an existing project instead of starting a new one.
 
@@ -3923,6 +3959,9 @@ def update_project_scope(
             meta["notes"] = notes
         if ai_note is not None:       # the assistant's note on step 1; not part of the scope
             meta["ai_note"] = ai_note
+        if area_polygon is not _UNSET:   # the uploaded outline; null removes it
+            meta.pop("area_polygon", None)
+            meta.update(_clean_polygon(area_polygon))
         conn.execute("UPDATE projects SET meta_json = ? WHERE id = ?", (json.dumps(meta), pid))
 
         stale = 0
@@ -4392,6 +4431,57 @@ def suggest_area(text: str, state_fips: str, county_fips: str) -> dict:
         if all(g in pops for g in chosen):
             out["population"] = int(sum(pops[g] for g in chosen))
     return out
+
+
+def upload_study_area(filename: str, content: bytes, unit: str = "block_group") -> dict:
+    """A study-area polygon from the analyst's own file (Prof. Shi 2026-11-13 #12).
+
+    The file is read and dissolved to one WGS84 polygon; the county holding most of
+    it becomes the project's county (the area model has one county), and the units of
+    `unit` lying mostly inside it (more than half of their own area) are selected.
+    The analyst can still click units on or off afterwards."""
+    from backend.gis import places, upload
+    from backend.gis.counties import list_counties, list_states
+
+    gdf, notes = upload.read_polygon(filename, content)
+    try:
+        counties = upload.counties_for_polygon(gdf)
+    except Exception as exc:
+        logger.warning("county lookup for an uploaded area failed: %r", exc)
+        raise RuntimeError("The Census boundary service (TIGERweb) could not be reached to find "
+                           "which county this polygon is in. Check the connection and try again.")
+    if not counties:
+        raise upload.AreaUploadError("The polygon does not overlap any US county. HCAS covers the "
+                                     "United States; check the file's location and coordinate system.")
+    top = counties[0]
+    unit = unit if unit in ("county_subdivision", "zcta", "tract", "block_group") else "block_group"
+    state = next((x for x in list_states() if x["state_fips"] == top["state_fips"]), {})
+    cty = next((c for c in list_counties(top["state_fips"]) if c["county_fips"] == top["county_fips"]), {})
+    units = _unit_features(top["state_fips"], top["county_fips"], unit)
+    chosen = places.units_mostly_inside(units, gdf.geometry)
+    word = _unit_label(unit, True)
+    caveat = ""
+    if len(counties) > 1 and counties[1]["share"] >= 0.005:
+        parts = ", ".join(f"{c['name']} {round(c['share'] * 100)}%" for c in counties[:4]
+                          if c["share"] >= 0.005)
+        caveat = (f"The polygon crosses county lines ({parts}). A project area lies in one county, "
+                  f"so {top['name']} (the county holding most of it) was used and only its {word} "
+                  "were selected.")
+    if not chosen:
+        caveat = (caveat + " " if caveat else "") + (
+            f"No {_unit_label(unit)} lies mostly inside the polygon, so nothing was selected. "
+            "Try a smaller reporting unit, or click the units you want on the map.")
+    area_km2 = round(float(gdf.to_crs("EPSG:5070").geometry.area.sum()) / 1e6, 2)
+    return {
+        "polygon": {"type": "Feature", "properties": {"name": Path(filename).stem},
+                    "geometry": upload.simplify_for_storage(gdf)},
+        "state_fips": top["state_fips"], "county_fips": top["county_fips"],
+        "county_name": cty.get("county_name") or top["name"],
+        "state_name": state.get("state_name", ""),
+        "unit": unit, "geoids": chosen, "counties": counties, "notes": notes,
+        "caveat": caveat, "area_km2": area_km2, "filename": filename,
+        "method_text": f"{word} with more than half of their area inside the uploaded polygon",
+    }
 
 
 def place_area(name: str, state_fips: str, county_fips: str) -> dict:

@@ -142,8 +142,23 @@ def _clip_to_study_area(gdf: gpd.GeoDataFrame, study_area: gpd.GeoDataFrame):
         return gdf
 
 
+def _add_outline(m, outline) -> None:
+    """The analyst's uploaded study-area polygon, as a distinct dashed amber outline
+    (Prof. Shi 2026-11-13 #12). Not part of any layer group, so it is always visible."""
+    if outline is None or len(outline) == 0:
+        return
+    folium.GeoJson(
+        outline.to_crs("EPSG:4326").__geo_interface__,
+        name="Uploaded study area",
+        style_function=lambda _: {"fill": False, "color": "#b45309", "weight": 3,
+                                  "dashArray": "10 7", "opacity": 0.95},
+        tooltip="Uploaded study area",
+    ).add_to(m)
+
+
 def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "",
-                    subtitle: str = "Study area · full county boundary") -> str:
+                    subtitle: str = "Study area · full county boundary",
+                    outline: gpd.GeoDataFrame | None = None) -> str:
     """A lightweight locator map: the study-area (county) boundary drawn over
     OpenStreetMap base tiles, fit to the boundary's extent. Shown from step 1 so the
     Map View carries real context before the analysis runs (Prof. Shi 2026-07-27).
@@ -169,6 +184,7 @@ def render_base_map(study_area: gpd.GeoDataFrame, place_name: str = "",
         },
     ).add_to(fg)
     fg.add_to(m)
+    _add_outline(m, outline)
     folium.LayerControl(collapsed=False).add_to(m)
 
     if place_name:
@@ -237,6 +253,7 @@ def render_assessment_map(
     detail_payloads: dict | None = None,
     gate_zoom: int = GATE_ZOOM,
     landuse: gpd.GeoDataFrame | None = None,
+    outline: gpd.GeoDataFrame | None = None,
 ) -> str:
     """Render every confirmed layer onto a single Folium map.
 
@@ -281,6 +298,7 @@ def render_assessment_map(
         },
     ).add_to(fg_area)
     fg_area.add_to(m)
+    _add_outline(m, outline)
 
     # Filled in below for each layer with
     # (overview_feature_group_js_name, overview_geojson_layer_js_name), so
