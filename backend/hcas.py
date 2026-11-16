@@ -1436,8 +1436,20 @@ def _write_manifest(pid: str, manifest: dict) -> None:
     _manifest_path(pid).write_text(json.dumps(manifest, indent=2))
 
 
+def _user_data_root() -> Path:
+    """Where the user's own files live: uploaded layers, step 3 tables, saved
+    database packages. Unlike the fetched-layer cache these cannot be fetched
+    again, so a hosted server points HCAS_USER_DATA at its persistent volume
+    (the container's own disk is wiped on every restart and idle sleep).
+    Locally they sit beside the layer cache, as before."""
+    env = _os.environ.get("HCAS_USER_DATA")
+    return Path(env) if env else LAYER_CACHE_DIR
+
+
 def _user_layer_path(pid: str, layer: str) -> Path:
-    return _project_cache_dir(pid) / f"{layer}.user.geojson"
+    d = _user_data_root() / pid
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{layer}.user.geojson"
 
 
 def _fetched_layer_path(pid: str, layer: str, bbox) -> Path:
@@ -1738,6 +1750,8 @@ def _clear_project_layer_cache(pid: str) -> None:
     import shutil
 
     shutil.rmtree(_project_cache_dir(pid), ignore_errors=True)
+    if _user_data_root() != LAYER_CACHE_DIR:
+        shutil.rmtree(_user_data_root() / pid, ignore_errors=True)
 
 
 def clear_data_override(pid: str, layer: str, db: Path | None = None) -> dict:

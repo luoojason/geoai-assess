@@ -40,7 +40,7 @@ def _hcas():
 
 
 def package_dir(pid: str) -> Path:
-    d = _hcas().LAYER_CACHE_DIR / pid / "database"
+    d = _hcas()._user_data_root() / pid / "database"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

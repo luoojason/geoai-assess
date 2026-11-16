@@ -819,3 +819,22 @@ def test_step3_routes(tmp_path, monkeypatch):
     # a project whose step 2 is not confirmed has no plan yet
     other = hcas.create_project("o", *FRANKLIN, db=db, areal_unit="county")
     assert c.get(f"/hcas/projects/{other}/step3/plan", headers=h).status_code == 404
+
+
+def test_user_files_go_to_HCAS_USER_DATA_not_the_wiped_cache(tmp_path, monkeypatch):
+    """On Railway the image disk is wiped on every restart and idle sleep, so the
+    user's own files (uploads, step 3 tables, saved database packages) must land
+    on the volume named by HCAS_USER_DATA, not in the fetched-layer cache."""
+    from backend import hcas, hcas_db, hcas_userdata
+
+    monkeypatch.setattr(hcas, "LAYER_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setenv("HCAS_USER_DATA", str(tmp_path / "volume"))
+    vol = tmp_path / "volume" / "p1"
+    assert hcas._user_layer_path("p1", "parks").parent == vol
+    assert hcas_userdata._dir("p1") == vol / "userdata"
+    assert hcas_db.package_dir("p1") == vol / "database"
+    hcas._clear_project_layer_cache("p1")          # a geography change still wipes them
+    assert not vol.exists()
+
+    monkeypatch.delenv("HCAS_USER_DATA")           # local install: unchanged, beside the cache
+    assert hcas_userdata._dir("p2") == tmp_path / "cache" / "p2" / "userdata"

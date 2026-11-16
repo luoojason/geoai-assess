@@ -20,7 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ backend/
 COPY frontend/ frontend/
 
-ENV HCAS_DB=/data/hcas.db PYTHONUNBUFFERED=1 PORT=8000
+# User uploads and saved database packages go on the volume too: the image's
+# own disk is wiped whenever the service restarts or sleeps.
+ENV HCAS_DB=/data/hcas.db HCAS_USER_DATA=/data/user-data PYTHONUNBUFFERED=1 PORT=8000
 RUN rm -rf /app/cache && ln -s /data/osm-cache /app/cache
 
 EXPOSE 8000

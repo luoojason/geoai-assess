@@ -52,7 +52,7 @@ def _hcas():
 
 
 def _dir(pid: str) -> Path:
-    d = _hcas().LAYER_CACHE_DIR / pid / "userdata"
+    d = _hcas()._user_data_root() / pid / "userdata"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
