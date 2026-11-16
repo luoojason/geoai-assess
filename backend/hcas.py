@@ -2974,6 +2974,14 @@ def _execute_area(project: dict, which: str, metrics_wanted: list,
     table_values, measure_details = _indicator_values(
         metrics_wanted, spec, tables, table_errors, polygon=study_area)
     metrics.update(table_values)
+    # Step 3 (Prof. Shi 2026-11-13): a factor the analyst supplied their own GEOID table for
+    # takes its value from that table instead of the computed or fetched one.
+    from backend import hcas_userdata
+
+    user_values, user_details = hcas_userdata.apply_tables(project, which, metrics_wanted)
+    metrics.update(user_values)
+    table_values.update(user_values)
+    measure_details.update(user_details)
     set_progress(pid, 7, span(0.82), f"{tag}drawing the map…")
 
     # A failed fetch yields an empty layer, and an empty layer computes a
@@ -3653,6 +3661,7 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
           if f.get("metric") != NEEDS_DATA],
         *_awaiting_data_lines(factors),
         *_workflow_lines(project),
+        *__import__("backend.hcas_userdata", fromlist=["report_lines"]).report_lines(project),
         "\n## Results",
         *results_lines,
         *_comparison_lines(project, results),

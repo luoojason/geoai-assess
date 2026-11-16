@@ -195,6 +195,29 @@ def _add_metadata_table(gpkg: Path, rows: list[dict]) -> None:
         con.close()
 
 
+def _add_attribute_table(gpkg: Path, name: str, df) -> None:
+    """A plain table (the analyst's own GEOID table) as an attribute table of the GeoPackage."""
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_") or "user_table"
+    cols = [re.sub(r"[^A-Za-z0-9_]+", "_", str(c)) or "col" for c in df.columns]
+    con = sqlite3.connect(gpkg)
+    try:
+        con.execute(f'DROP TABLE IF EXISTS "{name}"')
+        con.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY AUTOINCREMENT, '
+                    + ", ".join(f'"{c}" TEXT' for c in cols) + ")")
+        con.executemany(f'INSERT INTO "{name}" (' + ", ".join(f'"{c}"' for c in cols) + ") VALUES ("
+                        + ", ".join("?" for _ in cols) + ")",
+                        [[str(v) for v in row] for row in df.itertuples(index=False, name=None)])
+        try:
+            con.execute("INSERT OR REPLACE INTO gpkg_contents (table_name, data_type, identifier, description, last_change) "
+                        "VALUES (?, 'attributes', ?, 'User-provided table', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                        (name, name))
+        except sqlite3.Error:
+            pass
+        con.commit()
+    finally:
+        con.close()
+
+
 def _readme(project: dict, rows: list[dict], fp: str) -> str:
     meta = project["meta"]
     lines = [
@@ -261,6 +284,7 @@ def build_package(pid: str, db: Path | None = None) -> dict:
                 put(outline, "uploaded_study_area")
         for layer, _info, gdf in layers:
             put(gdf, layer)
+        attr_tables = []
         for e in user:
             gdf = None
             try:
@@ -271,8 +295,14 @@ def build_package(pid: str, db: Path | None = None) -> dict:
                 logger.warning("database package: user data %s unreadable: %r", e.get("filename"), exc)
             if gdf is not None and isinstance(gdf, gpd.GeoDataFrame):
                 put(gdf, e.get("layer") or _slug(e.get("filename") or "user"))
+            elif gdf is not None:
+                name = "user_" + _slug(Path(e.get("filename") or "table").stem).replace("-", "_")
+                attr_tables.append((name, gdf))
+                e["layer"] = name
         if first:
             raise RuntimeError("There is nothing to save yet - run the data step first.")
+        for name, df in attr_tables:
+            _add_attribute_table(gpkg, name, df)
         _add_metadata_table(gpkg, rows)
         csv_buf = io.StringIO()
         w = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()))

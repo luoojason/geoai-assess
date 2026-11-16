@@ -602,6 +602,7 @@ function renderBar(){
 /* ---- selection / working copy ---- */
 function selectStep(n){
   if(n<1||n>8) return;
+  if(n!==3) S.showPlan3 = false;
   S.current = n;
   const row = stepRow(n);
   // A step that is mid-run has no row yet; keep its working copy null rather
@@ -630,7 +631,7 @@ function renderCmd(){
   $("nextbtn").disabled = S.busy || (!row && !form);
   $("prevbtn").disabled = S.busy || S.current===1;
   $("nextbtn").textContent = S.current===8 ? "Save report" : "Confirm →";
-  $("runbtn").textContent = row ? "Re-run" : "Run step";
+  $("runbtn").textContent = row ? "Re-run" : (S.current===3 ? "Gather data" : "Run step");
   $("prevbtn").textContent = "← Back";
   $("runbtn").title = "";
   // Step 1's "Run step" now lives on its map as "Update map"; step 2's "Re-run"
@@ -761,10 +762,11 @@ function renderCanvas(){
   else if(!row){
     body = `<div class="empty"><div class="big">Nothing here yet</div>
       <div>Run this step to generate it.</div></div>`;
-    // Uploading before the first run means this step never fetches the layers
-    // you've supplied yourself — not just a faster re-run.
-    if(n===3 && S.pid) body += dataUploadPanel();
+    // Step 3 does not start on its own (Prof. Shi 2026-11-13): the analyst first sees every
+    // confirmed factor with its data source and chooses, per factor, to fetch or upload.
+    if(n===3 && S.pid) body = step3PlanShell();
   }
+  else if(n===3 && S.showPlan3 && S.pid) body = step3PlanShell();
   else body = ({1:viewIntake,2:viewFactors,3:viewData,4:viewSolution,5:viewDatabase,
                 6:viewWorkflow,7:viewExecution,8:viewReport}[n] || viewRaw)(a);
   // A stale artifact was drafted from an earlier version of an upstream step.
@@ -779,6 +781,7 @@ function renderCanvas(){
   $("canvas").innerHTML = head + body;
   if(defining) loadStates();
   if(n===2 && row) wireFactors();
+  if(n===3 && S.pid && (!row || S.showPlan3) && S.running!==3) loadStep3Plan();
   if(n===7 && row) wireMapCheck();
   if(n===8 && row) wireReport();
   if(!REDUCED && $("canvas").animate)
@@ -1685,7 +1688,9 @@ function viewData(a){
     ? `<div class="warnbar" style="background:var(--amber-tint);color:var(--amber)">⚠<div>
         <b>These map features are out of date.</b> ${esc(a.data_freshness_warning)}</div></div>` : "";
   // Prof. Shi 2026-09-16 #2: saved data is reused, and can be fetched again on demand.
-  const refetch = `<div class="cmpbar"><button class="cbtn" onclick="runStep({refresh:true})" ${S.busy?"disabled":""}
+  const refetch = `<div class="cmpbar"><button class="cbtn" onclick="S.showPlan3=true;renderCanvas()" ${S.busy?"disabled":""}
+      title="Go back to the list of factors to change a data source or upload your own data">Change data choices</button>
+    <button class="cbtn" onclick="runStep({refresh:true})" ${S.busy?"disabled":""}
       title="Download every map layer again instead of reusing the saved copy">Re-fetch data ↻</button>
     <span class="hint">Downloaded map data is saved and reused — by this project and by any other covering the same
       area — for 30 days, so reopening a project does not fetch it again. Re-fetch downloads it fresh.</span></div>`;
@@ -1767,6 +1772,102 @@ function awaitingPanel(list){
       assessment, and the report lists them as not measured, so the gap is never hidden.</div>
     <ul style="margin:0;padding-left:18px;">${list.map(f=>`<li style="font-size:var(--fs-sm);margin:3px 0;"><b>${esc(f.factor)}</b>${
       f.data_needed?` — ${esc(f.data_needed)}`:""}</li>`).join("")}</ul></div>`;
+}
+
+/* Step 3 plan (Prof. Shi 2026-11-13): "Rather than directly starting the automatic
+   process, list all confirmed factors and for each factor allow the user to choose between
+   uploading their own data or let AI search and fetch data (provide data source
+   information)." */
+function step3PlanShell(){
+  return `<div class="panel"><div class="ph">Data for each factor</div>
+    <div class="subnote" style="margin:0 0 10px;">For every factor you confirmed, HCAS shows where it would get the data.
+      Keep “Fetch automatically”, or upload your own: a CSV with a Census GEOID column (tract or block group) and a value
+      column, or a zipped shapefile / GeoJSON of features. Nothing is fetched until you press <b>Gather data</b>.</div>
+    <div id="s3plan"><span class="spin"></span>Loading the factors…</div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="cbtn next" id="s3gather" onclick="runStep()" ${S.busy?"disabled":""}>Gather data</button>
+      <span class="hint">Factors set to “Fetch automatically” are gathered now. Your own data is used in place of fetching for its factor.</span></div></div>`;
+}
+function step3Missing(){
+  return ((S.s3||{}).factors||[]).filter(f=>f.choice==="upload"
+      && (!f.uploads.length || f.uploads.some(u=>u.needs_value_column))).map(f=>f.factor);
+}
+async function loadStep3Plan(){
+  const box = $("s3plan"); if(!box) return;
+  try{
+    S.s3 = await api(`/hcas/projects/${S.pid}/step3/plan`);
+    renderStep3Plan();
+  }catch(e){ box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+function renderStep3Plan(){
+  const box = $("s3plan"); if(!box || !S.s3) return;
+  box.innerHTML = S.s3.factors.map((f,i)=>{
+    const src = f.source||{};
+    const link = src.link ? ` · <a href="${esc(src.link)}" target="_blank" rel="noopener">source link</a>` : "";
+    const srcLine = f.awaiting_data
+      ? "No connected data source measures this yet. You can still upload data for it: it is kept with the project and listed in the report."
+      : `<b>${esc(src.name||"")}</b> — ${esc(src.provider||"")} · ${esc(src.vintage||"")}${src.level?" · "+esc(src.level):""}${link}`;
+    const up = f.uploads.map(u=>`<div class="s3up" style="margin-top:6px;font-size:var(--fs-sm);">
+        ✓ <b>${esc(u.filename)}</b> · ${plural(u.rows, u.kind==="table"?"row":"feature")}
+        ${u.kind==="table" && u.needs_value_column ? `<div style="margin-top:4px;">Which column holds the value?
+          <select id="s3col_${esc(u.id)}">${(u.numeric_columns||[]).map(c=>`<option>${esc(c)}</option>`).join("")}</select>
+          <button class="cbtn" onclick="s3Column('${esc(u.id)}')">Use this column</button></div>`
+          : u.kind==="table" ? ` · value column <b>${esc(u.value_col)}</b>` : ""}
+        <div class="subnote">${esc(u.note||"")}</div>
+        ${u.kind==="layer" ? `<button class="linkbtn" onclick="s3Preview('${esc(u.id)}')">show on a map</button> ` : ""}
+        <button class="linkbtn" onclick="s3Remove('${esc(u.id)}')">remove</button>
+        <div id="s3map_${esc(u.id)}"></div></div>`).join("");
+    const upload = f.choice==="upload" ? `<div style="margin:8px 0 0 24px;">
+        <input type="file" accept=".csv,.zip,.geojson,.json" onchange="s3Upload(${i}, this)">
+        <div class="hint">CSV with a GEOID column and a value column, or a zipped shapefile / GeoJSON.${
+          f.can_use_features ? "" : " (A feature file is stored and shown but cannot replace this metric, which needs several layers or a table.)"}</div>
+        ${up}<div id="s3msg_${i}" class="subnote" style="color:var(--red)"></div></div>` : "";
+    return `<div class="panel" style="padding:12px 14px;margin-bottom:10px;">
+      <div style="font-weight:600;">${esc(f.factor||"Factor")} <span class="tag muted" style="font-size:10px;">${esc(f.metric_label||"")}</span></div>
+      <div class="subnote" style="margin:4px 0 8px;">${srcLine}</div>
+      <label class="radioline"><input type="radio" name="s3ch_${i}" ${f.choice!=="upload"?"checked":""} onchange="s3Choose(${i},'fetch')">
+        <span>Fetch automatically</span></label>
+      <label class="radioline"><input type="radio" name="s3ch_${i}" ${f.choice==="upload"?"checked":""} onchange="s3Choose(${i},'upload')">
+        <span>Upload my own data</span></label>${upload}</div>`;
+  }).join("") || '<div class="empty" style="padding:10px;">No confirmed factors.</div>';
+}
+async function s3Choose(i, choice){
+  const f = S.s3.factors[i]; f.choice = choice;
+  renderStep3Plan();
+  try{ await api(`/hcas/projects/${S.pid}/step3/choice`,{method:"POST",body:JSON.stringify({key:f.key, choice})}); }catch(_){}
+}
+async function s3Upload(i, input){
+  const f = S.s3.factors[i], file = input.files && input.files[0]; if(!file) return;
+  const msg = $("s3msg_"+i); if(msg) msg.textContent = "Reading "+file.name+"…";
+  try{
+    const r = await fetch(`/hcas/projects/${S.pid}/step3/upload?key=${encodeURIComponent(f.key)}&filename=${encodeURIComponent(file.name)}&factor=${encodeURIComponent(f.factor)}`,
+      {method:"POST", headers:{"X-Requested-With":"geoai","Content-Type":"application/octet-stream"}, body:file});
+    const b = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(b.detail || (r.status+" "+r.statusText));
+    await loadStep3Plan();
+  }catch(e){ if($("s3msg_"+i)) $("s3msg_"+i).textContent = e.message; }
+}
+async function s3Column(id){
+  const col = $("s3col_"+id)?.value; if(!col) return;
+  try{ await api(`/hcas/projects/${S.pid}/step3/value-column`,{method:"POST",body:JSON.stringify({id, column:col})}); await loadStep3Plan(); }
+  catch(e){ setMsg(e.message); }
+}
+async function s3Remove(id){
+  try{ await api(`/hcas/projects/${S.pid}/step3/userdata/${id}`,{method:"DELETE"}); await loadStep3Plan(); }
+  catch(e){ setMsg(e.message); }
+}
+async function s3Preview(id){
+  const box = $("s3map_"+id); if(!box) return;
+  if(box.dataset.on){ box.innerHTML = ""; box.dataset.on = ""; return; }
+  box.dataset.on = "1"; box.innerHTML = '<div class="areamap" style="height:260px;margin-top:6px;"></div>';
+  try{
+    const L = await ensureLeaflet();
+    const gj = await api(`/hcas/projects/${S.pid}/step3/userdata/${id}/geojson`);
+    const m = L.map(box.firstChild);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(m);
+    const lyr = L.geoJSON(gj, {style:{color:"#b45309", weight:2, fillOpacity:0.2}, pointToLayer:(f,ll)=>L.circleMarker(ll,{radius:4,color:"#b45309"})}).addTo(m);
+    try{ m.fitBounds(lyr.getBounds(), {padding:[10,10]}); }catch(_){}
+  }catch(e){ box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
 }
 
 /* Bring-your-own-data (Xun Shi 2026-08-14, #all-aigis): download whatever this
@@ -2382,6 +2483,11 @@ function upsertLocalDraft(n, draft){
   if(row.status!=="confirmed"){ row.status="drafted"; row.ai_draft=draft; }
 }
 async function runStep(opts){
+  if(S.current===3 && S.pid){
+    const miss = step3Missing();
+    if(miss.length){ setMsg("Upload a file for "+miss.join(", ")+", or switch it to “Fetch automatically”."); return false; }
+    S.showPlan3 = false;
+  }
   if(S.busy) return;
   // Named `refetch`, not `refresh`: a local `refresh` shadowed the refresh()
   // function below, so `await refresh(true)` threw "Cannot read properties of
@@ -2508,7 +2614,7 @@ async function confirmStep(){
     // holds — landing on it is worse than landing on an empty page, because it
     // looks like a current result. Draft it again instead.
     const nextRow = stepRow(S.current);
-    autorun = !nextRow || nextRow.status === "stale";
+    autorun = (!nextRow || nextRow.status === "stale") && S.current !== 3;   // step 3 waits for the analyst's choices
   }catch(e){ setMsg("Confirm failed: "+e.message); }
   finally{ setBusy(false); }
   if(autorun) await runStep();

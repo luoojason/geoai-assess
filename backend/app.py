@@ -845,6 +845,93 @@ async def hcas_data_list(pid: str):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+class HcasChoiceRequest(BaseModel):
+    key: str
+    choice: str
+
+
+class HcasValueColumnRequest(BaseModel):
+    id: str
+    column: str
+
+
+@app.get("/hcas/projects/{pid}/step3/plan", dependencies=_assess_deps)
+async def hcas_step3_plan(pid: str):
+    """Step 3, before anything runs: every confirmed factor with the source HCAS would
+    fetch from and the analyst's choice (fetch automatically / upload own data)."""
+    from backend import hcas_userdata
+
+    try:
+        return await asyncio.to_thread(hcas_userdata.plan, pid)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'\""))
+
+
+@app.post("/hcas/projects/{pid}/step3/choice", dependencies=_assess_deps)
+async def hcas_step3_choice(pid: str, body: HcasChoiceRequest):
+    from backend import hcas_userdata
+
+    try:
+        hcas.get_project(pid)
+        return {"choices": hcas_userdata.set_choice(pid, body.key, body.choice)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/hcas/projects/{pid}/step3/upload", dependencies=_assess_deps)
+async def hcas_step3_upload(pid: str, request: Request, key: str, filename: str, factor: str = ""):
+    """The analyst's own data for one factor: a CSV with a GEOID column, or a zipped
+    shapefile / GeoJSON. Raw body, like the other uploads."""
+    from backend import hcas_userdata
+    from backend.gis.upload import MAX_BYTES, AreaUploadError
+
+    content = await request.body()
+    if len(content) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"The file is {len(content) / 1e6:.0f} MB; the limit is 20 MB.")
+    try:
+        return await asyncio.to_thread(hcas_userdata.add_upload, pid, key, filename, content, factor)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    except (hcas_userdata.UserDataError, AreaUploadError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/hcas/projects/{pid}/step3/value-column", dependencies=_assess_deps)
+async def hcas_step3_value_column(pid: str, body: HcasValueColumnRequest):
+    from backend import hcas_userdata
+
+    try:
+        return hcas_userdata.set_value_column(pid, body.id, body.column)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown upload")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/hcas/projects/{pid}/step3/userdata/{entry_id}", dependencies=_assess_deps)
+async def hcas_step3_remove(pid: str, entry_id: str):
+    from backend import hcas_userdata
+
+    try:
+        hcas_userdata.remove(pid, entry_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown upload")
+    return {"removed": entry_id}
+
+
+@app.get("/hcas/projects/{pid}/step3/userdata/{entry_id}/geojson", dependencies=_assess_deps)
+async def hcas_step3_preview(pid: str, entry_id: str):
+    """The outline of an uploaded feature file, for the preview map."""
+    from backend import hcas_userdata
+
+    try:
+        return await asyncio.to_thread(hcas_userdata.preview_geojson, pid, entry_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown upload")
+
+
 @app.get("/hcas/projects/{pid}/ai-history", dependencies=_assess_deps)
 async def hcas_ai_history(pid: str):
     """Every AI interaction of the project, oldest first (Prof. Shi 2026-11-13 #4)."""

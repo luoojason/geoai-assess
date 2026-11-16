@@ -625,3 +625,197 @@ def test_item4b_page_sends_the_project_id_relays_records_and_has_the_views():
     assert "flushPendingAi()" in _fn("ensureProject")
     assert "/ai-history" in _fn("showAiHistory") and "/export.json" in _fn("exportProject")
     assert 'onclick="showAiHistory()"' in HTML and 'onclick="exportProject()"' in HTML
+
+
+# ---------------------------------------------------------------- step 3: own data or fetch, per factor
+BG1, BG2, BG3 = "390490001001", "390490001002", "390490002001"
+
+
+def _s3_project(tmp_path, monkeypatch, geoids=(BG1, BG2)):
+    monkeypatch.setattr(hcas, "LAYER_CACHE_DIR", tmp_path / "cache")
+    db = tmp_path / "h.db"
+    monkeypatch.setattr(hcas, "DB_PATH", db)
+    pid = hcas.create_project("s3", *FRANKLIN, db=db, areal_unit="block_group", area_geoids=list(geoids))
+    factors = {"factors": [
+        {"factor": "Green space", "metric": "greenspace_coverage", "rationale": "r"},
+        {"factor": "Transit", "metric": "transit_access", "rationale": "r"},
+        {"factor": "Poverty", "metric": "poverty_rate", "rationale": "r"},
+        {"factor": "Mix", "metric": "near_major_road_exposure", "rationale": "r"},
+        {"factor": "Air", "metric": "needs_data", "rationale": "r", "data_needed": "monitor readings"},
+    ], "notes": "n"}
+    monkeypatch.setattr(hcas, "_draft", lambda project, step: (factors, "m", {}))
+    hcas.run_step(pid, 1, db=db)
+    hcas.confirm_step(pid, 1, {"kind": "us_sub_county"}, db=db)
+    hcas.run_step(pid, 2, db=db)
+    hcas.confirm_step(pid, 2, factors, db=db)
+    return pid, db
+
+
+def _csv(rows, header=("GEOID", "value")):
+    return ("\n".join([",".join(header)] + [",".join(str(c) for c in r) for r in rows]) + "\n").encode()
+
+
+def test_step3_plan_lists_every_factor_with_its_source_and_defaults_to_fetch(tmp_path, monkeypatch):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    plan = hcas_userdata.plan(pid, db=db)["factors"]
+    assert [f["factor"] for f in plan] == ["Green space", "Transit", "Poverty", "Mix", "Air"]
+    green, transit, poverty, mix, air = plan
+    assert green["choice"] == "fetch" and green["source"]["provider"].startswith("OpenStreetMap")
+    assert green["source"]["link"].startswith("https://") and green["source"]["vintage"]
+    assert poverty["source"]["link"].startswith("https://www.atsdr.cdc.gov") and "2022" in poverty["source"]["vintage"]
+    assert green["can_use_features"] is True and mix["can_use_features"] is False      # near_major_road: 2 layers
+    assert air["awaiting_data"] is True and air["key"].startswith("needs_data:")
+
+
+def test_step3_nothing_runs_until_the_analyst_presses_gather_data():
+    cs = _fn("confirmStep")
+    assert "S.current !== 3" in cs                              # confirming step 2 no longer auto-runs step 3
+    assert "step3PlanShell()" in _fn("renderCanvas") and "loadStep3Plan()" in _fn("renderCanvas")
+    assert "Gather data" in _fn("renderCmd") and "Gather data" in _fn("step3PlanShell")
+    assert "Fetch automatically" in _fn("renderStep3Plan") and "Upload my own data" in _fn("renderStep3Plan")
+    assert "step3Missing()" in _fn("runStep")
+
+
+def test_step3_csv_with_geoid_and_one_value_column_is_used_directly(tmp_path, monkeypatch):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    e = hcas_userdata.add_upload(pid, "poverty_rate", "pov.csv", _csv([(BG1, 10), (BG2, 20)]), "Poverty", db=db)
+    assert e["kind"] == "table" and e["value_col"] == "value" and e["used"] is True and e["geoid_len"] == 12
+    assert hcas_userdata.get_choices(pid)["poverty_rate"] == "upload"
+    project = hcas.get_project(pid, db=db)
+    vals, det = hcas_userdata.apply_tables(project, "project", ["poverty_rate"])
+    assert vals == {"poverty_rate": 15.0}
+    assert det["poverty_rate"]["source"] == "User-provided: pov.csv" and "2 of 2 units found" in det["poverty_rate"]["level"]
+
+
+def test_step3_csv_with_several_value_columns_asks_which_and_partial_match_is_stated(tmp_path, monkeypatch):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    e = hcas_userdata.add_upload(pid, "poverty_rate", "two.csv",
+                                 _csv([(BG1, 1, 100), (BG3, 3, 300)], header=("GEOID", "a", "b")), "Poverty", db=db)
+    assert e["needs_value_column"] is True and e["value_col"] is None and e["numeric_columns"] == ["a", "b"]
+    project = hcas.get_project(pid, db=db)
+    assert hcas_userdata.apply_tables(project, "project", ["poverty_rate"]) == ({}, {})   # not usable until chosen
+    with pytest.raises(hcas_userdata.UserDataError):
+        hcas_userdata.set_value_column(pid, e["id"], "nope")
+    hcas_userdata.set_value_column(pid, e["id"], "b")
+    vals, det = hcas_userdata.apply_tables(project, "project", ["poverty_rate"])
+    assert vals == {"poverty_rate": 100.0}                       # only BG1 of the two selected units is in the file
+    assert "1 of 2 units found" in det["poverty_rate"]["level"]
+
+
+def test_step3_tract_level_table_serves_block_group_units_and_unmatched_is_not_measured(tmp_path, monkeypatch):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    hcas_userdata.add_upload(pid, "poverty_rate", "tracts.csv", _csv([(BG1[:11], 8.0)]), db=db)
+    project = hcas.get_project(pid, db=db)
+    vals, _ = hcas_userdata.apply_tables(project, "project", ["poverty_rate"])
+    assert vals == {"poverty_rate": 8.0}                          # both block groups sit in that tract
+    hcas_userdata.remove(pid, hcas_userdata.list_entries(pid)[0]["id"])
+    hcas_userdata.add_upload(pid, "poverty_rate", "other.csv", _csv([("390490099001", 5)]), db=db)
+    vals, det = hcas_userdata.apply_tables(project, "project", ["poverty_rate"])
+    assert vals == {"poverty_rate": None} and "None of the" in det["poverty_rate"]["not_measured"]
+
+
+@pytest.mark.parametrize("content,message", [
+    (b"name,value\nA,1\n", "No Census GEOID column"),
+    (b"GEOID,name\n390490001001,a\n", "No numeric value column"),
+    (b"GEOID\n390490001001\n", "at least one value column"),
+    (b"GEOID,v\nabc,1\ndef,2\n", "must hold 11-digit tract or 12-digit"),
+])
+def test_step3_bad_csv_files_get_plain_errors(tmp_path, monkeypatch, content, message):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    with pytest.raises(hcas_userdata.UserDataError, match=message):
+        hcas_userdata.add_upload(pid, "poverty_rate", "bad.csv", content, db=db)
+
+
+def test_step3_feature_upload_replaces_a_single_layer_or_is_stored_and_flagged_unused(tmp_path, monkeypatch):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    pts = gpd.GeoDataFrame({"n": [1, 2]}, geometry=[Point(-83, 40), Point(-83.001, 40)], crs="EPSG:4326")
+    e = hcas_userdata.add_upload(pid, "transit_access", "stops.geojson", _geojson_bytes(pts), "Transit", db=db)
+    assert e["kind"] == "layer" and e["used"] is True and e["layer"] == "transit_stops"
+    mf = hcas._read_manifest(pid)["layers"]["transit_stops"]
+    assert mf["kind"] == "user" and mf["original_filename"] == "stops.geojson"      # the existing override, so step 3/7 use it
+    assert hcas._user_layer_path(pid, "transit_stops").exists()
+    e2 = hcas_userdata.add_upload(pid, "near_major_road_exposure", "bldg.geojson", _geojson_bytes(pts), "Mix", db=db)
+    assert e2["used"] is False and "several layers" in e2["note"]
+    assert "near_major_road_exposure" not in {k for k in hcas._read_manifest(pid)["layers"]}
+    hcas_userdata.remove(pid, e["id"])
+    assert "transit_stops" not in hcas._read_manifest(pid).get("layers", {})
+    assert not hcas._user_layer_path(pid, "transit_stops").exists()
+    with pytest.raises(hcas_userdata.UserDataError):
+        hcas_userdata.add_upload(pid, "transit_access", "x.txt", b"hello", db=db)
+
+
+def test_step3_report_cites_user_provided_files_and_says_when_unused(tmp_path, monkeypatch):
+    from backend import hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    pts = gpd.GeoDataFrame({"n": [1]}, geometry=[Point(-83, 40)], crs="EPSG:4326")
+    hcas_userdata.add_upload(pid, "poverty_rate", "pov.csv", _csv([(BG1, 10)]), "Poverty", db=db)
+    hcas_userdata.add_upload(pid, "near_major_road_exposure", "bldg.geojson", _geojson_bytes(pts), "Mix", db=db)
+    text = "\n".join(hcas_userdata.report_lines(hcas.get_project(pid, db=db)))
+    assert "## User-provided data" in text
+    assert "User-provided: pov.csv" in text and "used in the metric" in text
+    assert "User-provided: bldg.geojson" in text and "**not used in the metric**" in text
+    assert hcas_userdata.report_lines({"id": "nothing-here"}) == []
+
+
+def test_step3_user_data_goes_into_the_step5_package_and_changes_its_fingerprint(tmp_path, monkeypatch):
+    import sqlite3
+
+    from backend import hcas_db, hcas_userdata
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    area = gpd.GeoDataFrame({"n": [1]}, geometry=[box(-83, 40, -82.9, 40.1)], crs="EPSG:4326").to_crs("EPSG:5070")
+    monkeypatch.setattr(hcas, "_load_area", lambda project, which: area)
+    before = hcas_db.fingerprint(pid, db=db)
+    pts = gpd.GeoDataFrame({"n": [1]}, geometry=[Point(-83, 40)], crs="EPSG:4326")
+    hcas_userdata.add_upload(pid, "poverty_rate", "pov.csv", _csv([(BG1, 10)]), "Poverty", db=db)
+    hcas_userdata.add_upload(pid, "near_major_road_exposure", "bldg.geojson", _geojson_bytes(pts), "Mix", db=db)
+    assert hcas_db.fingerprint(pid, db=db) != before
+    hcas_db.build_package(pid, db=db)
+    with zipfile.ZipFile(hcas_db.latest_path(pid)) as zf:
+        gpkg = tmp_path / "p.gpkg"
+        gpkg.write_bytes(zf.read("database.gpkg"))
+        csv_text = zf.read("metadata.csv").decode()
+    con = sqlite3.connect(gpkg)
+    assert con.execute("SELECT COUNT(*) FROM user_pov").fetchone()[0] == 1          # the GEOID table
+    assert "bldg" in set(gpd.list_layers(gpkg)["name"]) or "bldg_geojson" in set(gpd.list_layers(gpkg)["name"]) \
+        or any("bldg" in n for n in gpd.list_layers(gpkg)["name"])                  # the feature file
+    assert "User-provided: pov.csv" in csv_text and "User-provided: bldg.geojson" in csv_text
+
+
+def test_step3_routes(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend.app import app
+
+    pid, db = _s3_project(tmp_path, monkeypatch)
+    c = TestClient(app)
+    h = {"X-Requested-With": "geoai"}
+    assert len(c.get(f"/hcas/projects/{pid}/step3/plan", headers=h).json()["factors"]) == 5
+    r = c.post(f"/hcas/projects/{pid}/step3/upload?key=poverty_rate&filename=p.csv&factor=Poverty",
+               content=_csv([(BG1, 1), (BG2, 2)]), headers=h)
+    assert r.status_code == 200 and r.json()["used"] is True
+    bad = c.post(f"/hcas/projects/{pid}/step3/upload?key=poverty_rate&filename=b.csv", content=b"x,y\n1,2\n", headers=h)
+    assert bad.status_code == 400 and "GEOID" in bad.json()["detail"]
+    assert c.post(f"/hcas/projects/{pid}/step3/choice", json={"key": "poverty_rate", "choice": "fetch"}, headers=h).status_code == 200
+    assert c.post(f"/hcas/projects/{pid}/step3/choice", json={"key": "poverty_rate", "choice": "maybe"}, headers=h).status_code == 400
+    plan = c.get(f"/hcas/projects/{pid}/step3/plan", headers=h).json()["factors"]
+    assert plan[2]["choice"] == "fetch" and len(plan[2]["uploads"]) == 1
+    eid = r.json()["id"]
+    assert c.delete(f"/hcas/projects/{pid}/step3/userdata/{eid}", headers=h).status_code == 200
+    assert c.delete(f"/hcas/projects/{pid}/step3/userdata/{eid}", headers=h).status_code == 404
+    # a project whose step 2 is not confirmed has no plan yet
+    other = hcas.create_project("o", *FRANKLIN, db=db, areal_unit="county")
+    assert c.get(f"/hcas/projects/{other}/step3/plan", headers=h).status_code == 404
