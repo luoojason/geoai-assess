@@ -807,6 +807,49 @@ async def hcas_data_list(pid: str):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.get("/hcas/projects/{pid}/database/status", dependencies=_assess_deps)
+async def hcas_database_status(pid: str):
+    """Should the analyst be asked 'Download and save the database?' (step 5)? True when
+    the database changed since it was last saved, or was never saved."""
+    from backend import hcas_db
+
+    try:
+        return await asyncio.to_thread(hcas_db.status, pid)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+
+
+@app.post("/hcas/projects/{pid}/database/save", dependencies=_assess_deps)
+async def hcas_database_save(pid: str):
+    """Build the project's database package, keep the latest copy on the server and
+    remember what went into it. Download it from /database.zip."""
+    from backend import hcas_db
+
+    try:
+        return await asyncio.to_thread(hcas_db.build_package, pid)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/hcas/projects/{pid}/database.zip", dependencies=_hcas_link_deps)
+async def hcas_database_download(pid: str):
+    """The latest saved database package for the project."""
+    from fastapi.responses import FileResponse
+
+    from backend import hcas_db
+
+    try:
+        hcas.get_project(pid)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown project {pid}")
+    path = hcas_db.latest_path(pid)
+    if path is None:
+        raise HTTPException(status_code=404, detail="The database has not been saved yet.")
+    return FileResponse(path, media_type="application/zip", filename=hcas_db.download_name(pid))
+
+
 @app.get("/hcas/projects/{pid}/data.zip", dependencies=_hcas_link_deps)
 async def hcas_data_export(pid: str):
     """Download every layer this project has fetched or the user has uploaded

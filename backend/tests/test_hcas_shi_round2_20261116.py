@@ -432,3 +432,98 @@ def test_step6_workflow_is_a_section_of_the_markdown_report():
     assert "Awaiting data: Air quality (needs monitor readings)" in text
     assert "Compare every result with the base area" in text
     assert hcas._workflow_lines({"steps": []}) == []
+
+
+# ---------------------------------------------------------------- step 5: Download and save the database?
+def _db_project(tmp_path, monkeypatch):
+    """A project with two cached layers and a user-uploaded layer, in an isolated cache dir."""
+    from backend import hcas_db  # noqa: F401  (imported so a syntax error fails here)
+
+    monkeypatch.setattr(hcas, "LAYER_CACHE_DIR", tmp_path / "cache")
+    db = tmp_path / "h.db"
+    pid = hcas.create_project("Pkg test", *FRANKLIN, db=db, areal_unit="block_group",
+                              area_geoids=["390490001001"])
+    sq = gpd.GeoDataFrame({"name": ["a"]}, geometry=[box(-83, 40, -82.99, 40.01)], crs="EPSG:4326")
+    cache = hcas._project_cache_dir(pid)
+    sq.to_file(cache / "greenspace.k1.geojson", driver="GeoJSON")
+    sq.to_file(hcas._user_layer_path(pid, "facilities"), driver="GeoJSON")
+    hcas._write_manifest(pid, {"layers": {
+        "greenspace": {"kind": "fetched", "feature_count": 1, "crs": "EPSG:4326", "at": 1.7e9, "bbox_key": "k1"},
+        "facilities": {"kind": "user", "feature_count": 1, "crs": "EPSG:4326", "at": 1.7e9,
+                       "original_filename": "my_clinics.geojson"},
+    }})
+    area = gpd.GeoDataFrame({"n": [1]}, geometry=[box(-83, 40, -82.9, 40.1)], crs="EPSG:4326").to_crs("EPSG:5070")
+    monkeypatch.setattr(hcas, "_load_area", lambda project, which: area)
+    return pid, db
+
+
+def test_step5_package_holds_layers_user_data_area_and_a_metadata_table(tmp_path, monkeypatch):
+    import sqlite3
+
+    from backend import hcas_db
+
+    pid, db = _db_project(tmp_path, monkeypatch)
+    out = hcas_db.build_package(pid, db=db)
+    assert out["filename"] == "pkg-test-database.zip" and out["bytes"] > 0
+    with zipfile.ZipFile(hcas_db.latest_path(pid)) as zf:
+        assert sorted(zf.namelist()) == ["README.txt", "database.gpkg", "metadata.csv"]
+        gpkg = tmp_path / "x.gpkg"
+        gpkg.write_bytes(zf.read("database.gpkg"))
+        readme = zf.read("README.txt").decode()
+        csv_text = zf.read("metadata.csv").decode()
+    layers = set(gpd.list_layers(gpkg)["name"])
+    assert {"project_area", "greenspace", "facilities"} <= layers
+    con = sqlite3.connect(gpkg)
+    rows = {r[0]: r for r in con.execute(
+        "SELECT layer, provider, vintage, fetched_at, user_provided FROM package_metadata")}
+    assert rows["greenspace"][4] == "0" and "OpenStreetMap" in rows["greenspace"][1] and rows["greenspace"][3]
+    assert rows["facilities"][4] == "1" and rows["facilities"][1] == "User-provided: my_clinics.geojson"
+    assert "project_area" in rows
+    assert "User-provided: my_clinics.geojson" in csv_text and "my_clinics" in readme
+
+
+def test_step5_question_is_asked_only_when_the_database_changed(tmp_path, monkeypatch):
+    from backend import hcas_db
+
+    pid, db = _db_project(tmp_path, monkeypatch)
+    assert hcas_db.status(pid, db=db)["ask"] is True            # never saved
+    hcas_db.build_package(pid, db=db)
+    st = hcas_db.status(pid, db=db)
+    assert st["ask"] is False and st["has_copy"] is True        # unchanged since the save
+    manifest = hcas._read_manifest(pid)
+    manifest["layers"]["greenspace"]["at"] = 1.8e9              # a layer was fetched again
+    hcas._write_manifest(pid, manifest)
+    assert hcas_db.status(pid, db=db)["ask"] is True
+    hcas_db.build_package(pid, db=db)
+    assert hcas_db.status(pid, db=db)["ask"] is False
+    hcas.update_project_scope(pid, db=db, area_geoids=["390490001002"])   # the area changed
+    assert hcas_db.status(pid, db=db)["ask"] is True
+
+
+def test_step5_routes_status_save_and_download(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import hcas_db
+    from backend.app import app
+
+    pid, db = _db_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(hcas, "DB_PATH", db)
+    c = TestClient(app)
+    h = {"X-Requested-With": "geoai"}
+    assert c.get(f"/hcas/projects/{pid}/database.zip", headers=h).status_code == 404   # nothing saved yet
+    assert c.get(f"/hcas/projects/{pid}/database/status", headers=h).json()["ask"] is True
+    assert c.post(f"/hcas/projects/{pid}/database/save", headers=h).status_code == 200
+    r = c.get(f"/hcas/projects/{pid}/database.zip", headers=h)
+    assert r.status_code == 200 and r.content[:2] == b"PK"
+    assert c.get(f"/hcas/projects/{pid}/database/status", headers=h).json()["ask"] is False
+    assert c.get("/hcas/projects/nope/database/status", headers=h).status_code == 404
+
+
+def test_step5_confirm_shows_an_in_page_dialog_not_a_browser_confirm():
+    cs = _fn("confirmStep")
+    assert "S.current===5" in cs and "askSaveDatabase()" in cs
+    dlg = _fn("askSaveDatabase")
+    assert "Download and save the database?" in dlg and "modal(" in dlg
+    assert "confirm(" not in dlg.replace("Confirm", "")
+    assert "/database/status" in dlg and "if(!st.ask) return;" in dlg      # unchanged: no question
+    assert "/database/save" in dlg and "database.zip" in dlg

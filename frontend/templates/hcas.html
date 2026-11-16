@@ -2443,10 +2443,47 @@ async function commitStep1(){
   const r = stepRow(1);
   return !!r && r.status!=="stale";
 }
+/* Step 5 (Prof. Shi 2026-11-13): on Confirm, ask "Download and save the database?".
+   Yes builds one package (every layer, the user's own data, the project area and a
+   metadata table), downloads it and keeps the latest copy on the server. It is only
+   asked when the database is new or changed since the last save. In-page dialog, not
+   a browser confirm(). Resolves once the analyst has answered; Confirm goes on either way. */
+async function askSaveDatabase(){
+  let st;
+  try{ st = await api(`/hcas/projects/${S.pid}/database/status`); }catch(_){ return; }
+  if(!st.ask) return;
+  await new Promise(resolve=>{
+    modal(`<h3>Download and save the database?</h3>
+      <p>Yes downloads the data from the online sources, puts it together with any data you uploaded,
+        and saves the whole package for this project, as one file on your computer and a copy with the project.</p>
+      <div id="dbMsg" class="subnote" style="min-height:20px;"></div>
+      <div class="acts"><button class="cbtn" id="dbNo">No</button>
+        <button class="cbtn next" id="dbYes">Yes</button></div>`);
+    $("dbNo").onclick = ()=>{ closeModal(); resolve(); };
+    $("dbYes").onclick = async ()=>{
+      $("dbYes").disabled = true; $("dbNo").disabled = true;
+      $("dbMsg").innerHTML = '<span class="spin"></span>Building the package…';
+      try{
+        const sum = await api(`/hcas/projects/${S.pid}/database/save`, {method:"POST", body:"{}"});
+        const r = await fetch(`/hcas/projects/${S.pid}/database.zip`, {headers:{"X-Requested-With":"geoai"}});
+        if(!r.ok) throw new Error("The saved package could not be downloaded ("+r.status+").");
+        const blob = await r.blob();
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = sum.filename || "database.zip";
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+        closeModal(); setMsg("Database saved: "+(sum.filename||"database.zip")); resolve();
+      }catch(e){
+        $("dbMsg").innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+        $("dbYes").disabled = false; $("dbYes").textContent = "Try again"; $("dbNo").disabled = false;
+        $("dbNo").textContent = "Continue without saving";
+      }
+    };
+  });
+}
 async function confirmStep(){
   if(step1Form() && !(await commitStep1())) return;
   const row=stepRow(S.current);
   if(!row||S.busy) return;
+  if(S.current===5 && S.pid) await askSaveDatabase();
   setBusy(true); setMsg("");
   let autorun=false;
   try{
