@@ -928,6 +928,40 @@ _CHAT_SYSTEM = (
 )
 
 
+def study_area_interface_note() -> str:
+    """What step 1 of the wizard really offers for defining a study area, as a
+    system-prompt section (Prof. Shi 2026-11-13 #17). The step-1 AI once told an
+    analyst Gary could be defined "as a named town/place" — an option that does
+    not exist on the screen. Built from the live reporting-unit list so the two
+    cannot drift apart."""
+    from backend.gis.profile import AREAL_UNITS
+
+    units = "; ".join(v["label"] for k, v in AREAL_UNITS.items() if k != "custom")
+    return (
+        "THE STEP-1 SCREEN, and the ONLY ways you may tell the analyst to define a study "
+        "area (never suggest an option that is not listed here):\n"
+        "- A 'Describe the location' box with a 'Find with AI' button. It understands a "
+        "ZIP code, a city or town (it finds the city's Census boundary and selects the block "
+        "groups inside it), a neighborhood or community, and a landmark.\n"
+        "- 'State' and 'County' lists.\n"
+        f"- A 'Reporting unit' list with exactly these choices: {units}. It is the building "
+        "block of the project area, and results are reported for each one. There is NO choice "
+        "called 'named town/place', 'city', 'neighborhood', 'community' or 'customized'.\n"
+        "- With 'Census block group' chosen, a 'Neighborhood or community' box with a "
+        "'Generate/Update AI's suggestion' button that picks the block groups for a "
+        "neighborhood.\n"
+        "- For any reporting unit except County: 'Whole county' or 'Only the ... I choose' "
+        "(pick from a list or click the units on the map).\n"
+        "- An 'Upload study area' button for the analyst's own boundary (a zipped shapefile "
+        "or GeoJSON); the units lying mostly inside it are selected.\n"
+        "- A 'Compare with a base area' checkbox for a larger or similar area to compare with.\n"
+        "A city such as Gary, Indiana: tell the analyst to type it in the location box and press "
+        "'Find with AI' (or choose Census block group and click the block groups on the map, or "
+        "upload the city boundary). If a place name could be in more than one state or county, "
+        "ask which one."
+    )
+
+
 def _llm_text(system: str, prompt: str, model: str = "claude-opus-4-8") -> tuple[str, dict]:
     """Free-form (non-structured) LLM call for the chatbot. Mirrors _llm_structured's
     provider selection (OpenRouter -> Anthropic -> claude CLI) but returns plain text."""
@@ -4210,10 +4244,12 @@ _AREA_SYSTEM = (
     "than one county or you are unsure, say so in `caveat` and pick the county holding "
     "most of it. If the text is not a US place at all, set `county` and `state` to the "
     "empty string and explain in `caveat`. Also classify how big the described place is "
-    "in `scale`: \"county\" (a whole county), \"town\" (a town, township or city that "
-    "is a county subdivision), \"zip\" (a ZIP code — put the five digits in `zip`), or "
+    "in `scale`: \"county\" (a whole county), \"town\" (a township or New England-style "
+    "town that is a county subdivision, not an incorporated city), \"zip\" (a ZIP code — put the five digits in `zip`), "
+    "\"place\" (a city, town or village that is a Census incorporated place, e.g. Gary, "
+    "Indiana or Columbus, Ohio — put its plain name in `town`), or "
     "\"community\" (a neighborhood, community, campus, landmark surroundings or any other "
-    "area smaller than a town). Put the town's plain name in `town` when scale is town; "
+    "area smaller than a town). Put the town's plain name in `town` when scale is town or place; "
     "leave `zip` and `town` empty otherwise."
 )
 
@@ -4224,7 +4260,7 @@ _AREA_SCHEMA = {
         "state": {"type": "string"},
         "interpretation": {"type": "string"},
         "caveat": {"type": "string"},
-        "scale": {"type": "string", "enum": ["county", "town", "zip", "community"]},
+        "scale": {"type": "string", "enum": ["county", "town", "place", "zip", "community"]},
         "zip": {"type": "string"},
         "town": {"type": "string"},
     },
@@ -4353,6 +4389,36 @@ def suggest_area(text: str, state_fips: str, county_fips: str) -> dict:
     if chosen:
         sel = bgs[bgs["GEOID"].astype(str).isin(chosen)]
         out["area_km2"] = round(float(sel.to_crs("EPSG:5070").geometry.area.sum()) / 1e6, 2)
+        if all(g in pops for g in chosen):
+            out["population"] = int(sum(pops[g] for g in chosen))
+    return out
+
+
+def place_area(name: str, state_fips: str, county_fips: str) -> dict:
+    """Block groups inside a city or town (a Census incorporated place) — Prof. Shi
+    2026-11-13 #17 ("Gary, Indiana" could not be delineated). The boundary is the
+    Census TIGERweb place; a block group is in when more than half of it lies inside."""
+    from backend.gis import places
+
+    if lookup_county(state_fips, county_fips) is None:
+        raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
+    place = places.fetch_place(state_fips, name)
+    if place is None:
+        return {"geoids": [], "place": name, "method_text": "",
+                "caveat": f"No Census city or town called “{name}” was found in this state, "
+                          "so no block groups were selected. Pick them on the map."}
+    bgs = _unit_features(state_fips, county_fips, "block_group")
+    chosen = places.units_mostly_inside(bgs, place.geometry)
+    nm = str(place.iloc[0]["NAME"])
+    out = {"geoids": chosen, "place": nm,
+           "method_text": f"block groups with more than half of their area inside the "
+                          f"Census boundary of {nm}",
+           "caveat": "" if chosen else f"No block group of this county lies mostly inside {nm}. "
+                                      "Check the county, or pick block groups on the map."}
+    if chosen:
+        sel = bgs[bgs["GEOID"].astype(str).isin(chosen)]
+        out["area_km2"] = round(float(sel.to_crs("EPSG:5070").geometry.area.sum()) / 1e6, 2)
+        pops = {str(g): p for g, p in zip(bgs["GEOID"], bgs["POP100"]) if p == p}
         if all(g in pops for g in chosen):
             out["population"] = int(sum(pops[g] for g in chosen))
     return out
@@ -4504,7 +4570,8 @@ def chat(
     convo.append(f"User: {message}")
 
     prompt = "\n\n".join(ctx) + "\n\n---\n\n" + "\n".join(convo) + "\n\nAssistant:"
-    reply, usage = _llm_text(_CHAT_SYSTEM, prompt)
+    system = _CHAT_SYSTEM + ((" " + study_area_interface_note()) if step == 1 else "")
+    reply, usage = _llm_text(system, prompt)
     return {"reply": reply, "usage": usage}
 
 
@@ -4518,5 +4585,5 @@ def chat_intake(message: str, history: list[dict] | None = None) -> dict:
         who = "User" if turn.get("role") == "user" else "Assistant"
         convo.append(f"{who}: {turn.get('content', '')}")
     convo.append(f"User: {message}")
-    reply, usage = _llm_text(_INTAKE_SYSTEM, "\n".join(convo) + "\n\nAssistant:")
+    reply, usage = _llm_text(_INTAKE_SYSTEM + " " + study_area_interface_note(), "\n".join(convo) + "\n\nAssistant:")
     return {"reply": reply, "usage": usage}

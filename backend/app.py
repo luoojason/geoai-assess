@@ -433,6 +433,12 @@ class HcasSuggestAreaRequest(BaseModel):
     county_fips: str
 
 
+class HcasPlaceAreaRequest(BaseModel):
+    name: str
+    state_fips: str
+    county_fips: str
+
+
 class HcasConfirmRequest(BaseModel):
     human_final: dict
     edit_seconds: Optional[float] = None
@@ -529,6 +535,18 @@ async def hcas_suggest_area(body: HcasSuggestAreaRequest):
     """AI-recommended block groups for a community or neighborhood name (#1)."""
     try:
         return await asyncio.to_thread(hcas.suggest_area, body.text, body.state_fips,
+                                       body.county_fips)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/hcas/place-area", dependencies=_assess_deps)
+async def hcas_place_area(body: HcasPlaceAreaRequest):
+    """Block groups inside a city or town's Census boundary (#17)."""
+    try:
+        return await asyncio.to_thread(hcas.place_area, body.name, body.state_fips,
                                        body.county_fips)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

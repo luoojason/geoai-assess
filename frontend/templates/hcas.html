@@ -1049,7 +1049,8 @@ function renderScope(w){
   if(mh) mh.textContent = a.unit === "county" ? ""
     : `Click to add or remove a ${one} to modify the ${w==="base"?"base":"project"} area`;
   if(a.unit === "county"){
-    box.innerHTML = `<div class="hint">The whole county is the ${w==="base"?"base":"project"} area.</div>`;
+    box.innerHTML = (a.aiFailed ? `<div class="aifail">AI could not define the specified area. Please manually define it on the map.</div>` : "")
+      + `<div class="hint">The whole county is the ${w==="base"?"base":"project"} area.</div>`;
     return;
   }
   const idx = featureIndex(a);
@@ -1174,7 +1175,7 @@ function styleAreaMap(w){
   a.layer.eachLayer(l=>l.setStyle(unitStyle(a, l.feature.properties.GEOID)));
 }
 
-async function suggestBlockGroups(w, textOverride){
+async function suggestBlockGroups(w, textOverride, asPlace){
   const a = AREA[w];
   const text = (textOverride || $(`${w}_name`)?.value || a.name || "").trim();
   const hint = $(`${w}_suggesthint`), btn = $(`${w}_suggestbtn`);
@@ -1183,11 +1184,15 @@ async function suggestBlockGroups(w, textOverride){
   a.suggesting = true; updateSuggestBtn(w);
   if(hint) hint.innerHTML = '<span class="spin"></span>Asking the AI which block groups make up this community…';
   try{
-    const r = await api("/hcas/suggest-area", {method:"POST",
-      body: JSON.stringify({text, state_fips:a.state_fips, county_fips:a.county_fips})});
+    // A city or town has a Census boundary of its own: select the block groups inside it.
+    const r = asPlace
+      ? await api("/hcas/place-area", {method:"POST",
+          body: JSON.stringify({name:text, state_fips:a.state_fips, county_fips:a.county_fips})})
+      : await api("/hcas/suggest-area", {method:"POST",
+          body: JSON.stringify({text, state_fips:a.state_fips, county_fips:a.county_fips})});
     a.mode = "selected";
     a.geoids = r.geoids || [];
-    if(r.place && !textOverride) a.name = r.place;
+    if(r.place && (!textOverride || asPlace)) a.name = r.place;
     a.suggestedText = (r.geoids||[]).length ? (a.name||"").trim() : null;
     a.suggesting = false;
     renderScope(w); renderAreaSum(w); styleAreaMap(w);
@@ -1227,9 +1232,9 @@ async function resolveArea(){
       const a = AREA.project;
       a.aiFailed = false; a.suggestedText = null;
       a.state_fips=r.state_fips; a.county_fips=r.county_fips; a.geoids=[];
-      a.unit = {zip:"zcta", town:"county_subdivision", community:"block_group"}[r.scale] || "county";
+      a.unit = {zip:"zcta", town:"county_subdivision", place:"block_group", community:"block_group"}[r.scale] || "county";
       a.mode = a.unit==="county" ? "all" : "selected";
-      const community = r.scale === "community";
+      const community = r.scale === "community", cityPlace = r.scale === "place";
       a.featuresKey="";
       await fillAreaSelects("project");
       await refreshArea("project");
@@ -1243,6 +1248,8 @@ async function resolveArea(){
         const hit = (a.features?.features||[]).find(f=>norm(f.properties.name)===norm(r.town));
         if(hit){ a.geoids=[hit.properties.GEOID]; what = ` Project area set to ${esc(hit.properties.name)}.`; }
         else{ a.aiFailed = true; what = ` Pick ${esc(r.town||"the town")} on the map.`; }
+      }else if(cityPlace){
+        what = " Selecting the block groups inside the city boundary…";
       }else if(community){
         what = " Suggesting the block groups for this community…";
       }
@@ -1250,7 +1257,8 @@ async function resolveArea(){
       hint.innerHTML=`<b>${esc(r.county_name)}, ${esc(r.state_name)}</b> — ${esc(String(r.interpretation||"resolved").replace(/\.?\s*$/,"."))}`
         + (r.caveat?` <span style="color:var(--amber)">${esc(r.caveat)}</span>`:"")
         + what + `<br>Not right? Change the project area below.`;
-      if(community) await suggestBlockGroups("project", text);
+      if(cityPlace) await suggestBlockGroups("project", r.town || text, true);
+      else if(community) await suggestBlockGroups("project", text);
       captureAiNote();
     }else{
       resolveFailed(hint, r.caveat||"Could not place that.");
