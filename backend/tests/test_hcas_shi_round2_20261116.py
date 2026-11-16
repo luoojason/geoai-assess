@@ -348,3 +348,87 @@ def test_item12_page_has_the_button_the_outline_and_saves_the_polygon():
     assert "/hcas/upload-area" in _fn("uploadArea")
     assert "dashArray" in _fn("drawAreaMap") and "a.polygon" in _fn("drawAreaMap")
     assert "area_polygon" in _fn("areaPayload")
+
+
+# ---------------------------------------------------------------- step 6 flowchart
+def _flowchart(workflow: dict) -> str:
+    """Run the page's own flowchartSvg() under node with the page's helpers stubbed."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    m = re.search(r"^function flowWrap\(.*?^function flowchartSvg\(.*?^}", HTML, re.S | re.M)
+    assert m
+    import tempfile
+
+    js = ("const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;');"
+          "const layerName = x => 'L-' + x; const measureLabel = x => 'M-' + x;"
+          + m.group(0) + "console.log(flowchartSvg(JSON.parse(require('fs').readFileSync(0, 'utf8'))));")
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "flow.js"
+        f.write_text(js, encoding="utf-8")
+        r = subprocess.run([node, str(f)], input=json.dumps(workflow), capture_output=True, text=True,
+                           encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+WF = {"kind": "workflow", "steps": [
+    {"action": "compute", "metric": "greenspace_coverage_ratio", "layers": ["greenspace"]},
+    {"action": "compute", "metric": "pedestrian_density", "layers": ["sidewalks", "roads"]},
+    {"action": "compute", "metric": "obesity", "source": "CDC PLACES"},
+    {"action": "awaiting_data", "factor": "Air quality", "data_needed": "monitor readings"},
+    {"action": "compare_with_base"},
+    {"action": "generate_interventions"},
+    {"action": "assemble_report"},
+]}
+
+
+def test_step6_flowchart_has_the_four_columns_and_every_node():
+    svg = _flowchart(WF)
+    assert svg.startswith("<svg") and "viewBox" in svg and 'width="100%"' in svg
+    for head in ("INPUT DATA", "PROCESSING", "METRICS", "OUTPUTS"):
+        assert head in svg
+    # layers, source, three operations, three metrics, one awaiting-data box and three outputs
+    assert svg.count("<rect") == 3 + 1 + 3 + 3 + 1 + 3
+    for label in ("L-greenspace", "L-sidewalks", "L-roads", "CDC PLACES", "M-greenspace_coverage_ratio",
+                  "Air quality", "interventions", "base area", "report"):
+        assert label in svg
+    assert 'stroke-dasharray="6 4"' in svg                 # awaiting data is drawn dashed
+    # one arrow per edge: layer->op (4), op->metric (3), metric->interventions (3), ->compare (3), compare->report, interventions->report
+    assert svg.count("marker-end") == 4 + 3 + 3 + 3 + 2
+
+
+def test_step6_flowchart_follows_the_artifact_and_boxes_never_overlap():
+    short = _flowchart({"steps": [{"action": "compute", "metric": "a", "layers": ["x"]},
+                                  {"action": "generate_interventions"}, {"action": "assemble_report"}]})
+    assert "L-x" in short and "base area" not in short and "Air quality" not in short
+    svg = _flowchart(WF)
+    rects = [tuple(float(v) for v in m) for m in re.findall(
+        r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"', svg)]
+    for i, (x1, y1, w1, h1) in enumerate(rects):
+        for x2, y2, w2, h2 in rects[i + 1:]:
+            apart = x1 + w1 <= x2 or x2 + w2 <= x1 or y1 + h1 <= y2 or y2 + h2 <= y1
+            assert apart, ((x1, y1), (x2, y2))
+    width = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+    assert all(x + w <= width for x, y, w, h in rects)      # nothing runs off the drawing
+
+
+def test_step6_flowchart_is_in_the_step6_page_and_the_report():
+    assert "flowchartSvg(a)" in _fn("viewWorkflow")
+    vr = _fn("viewReport")
+    assert "flowchartSvg(" in vr and "included in the report" in vr
+    assert "flowBlock" in _fn("downloadHtmlReport") and "flowchartSvg(" in _fn("downloadHtmlReport")
+    assert "https://" not in re.search(r"^function flowchartSvg\(.*?^}", HTML, re.S | re.M).group(0).replace(
+        "http://www.w3.org/2000/svg", "")        # no library, no CDN
+
+
+def test_step6_workflow_is_a_section_of_the_markdown_report():
+    project = {"steps": [{"step": 6, "ai_draft": WF}]}
+    text = "\n".join(hcas._workflow_lines(project))
+    assert "## Workflow" in text and "Compute `greenspace_coverage_ratio`" in text
+    assert "Awaiting data: Air quality (needs monitor readings)" in text
+    assert "Compare every result with the base area" in text
+    assert hcas._workflow_lines({"steps": []}) == []

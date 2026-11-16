@@ -1891,6 +1891,103 @@ function databaseCompact(a, which){
 }
 
 /* step 6 — workflow */
+/* Workflow flowchart (Prof. Shi 2026-11-13, step 6: "create a flowchart to illustrate the
+   workflow"). Input data layers -> processing operations -> metrics -> outputs, drawn as
+   inline SVG from the step-6 artifact, so it follows every edit. No library: the page
+   already has to cope with a blocked CDN. Colours are inline so the same SVG can be
+   pasted into the exported report. */
+function flowWrap(text, max){
+  const words = String(text==null?"":text).split(/\s+/).filter(Boolean);
+  const lines = []; let cur = "";
+  for(const w of words){
+    if(!cur) cur = w;
+    else if((cur+" "+w).length <= max) cur += " "+w;
+    else { lines.push(cur); cur = w; }
+  }
+  if(cur) lines.push(cur);
+  if(lines.length > 3){ lines.length = 3; lines[2] = lines[2].slice(0, Math.max(1, max-1)).replace(/\s+$/,"") + "…"; }
+  return lines.map(l => l.length > max+2 ? l.slice(0, max) + "…" : l);
+}
+function flowchartSvg(wf){
+  const steps = (wf && wf.steps) || [];
+  const W = 214, H = 58, GX = 56, PITCH = 72, TOP = 34, PAD = 6;
+  const colX = [0,1,2,3].map(i => PAD + i*(W+GX));
+  const width = PAD*2 + 4*W + 3*GX;
+  // ---- nodes
+  const computes = steps.filter(s => s.action==="compute");
+  const waits = steps.filter(s => s.action==="awaiting_data");
+  const hasBase = steps.some(s => s.action==="compare_with_base");
+  const layerIds = []; const srcNames = [];
+  computes.forEach(s => {
+    (s.layers||[]).forEach(l => { if(!layerIds.includes(l)) layerIds.push(l); });
+    if(!(s.layers||[]).length && s.source && !srcNames.includes(s.source)) srcNames.push(s.source);
+  });
+  const col0 = [
+    ...layerIds.map(l => ({id:"L:"+l, lines:flowWrap(layerName(l), 26), sub:"map layer", kind:"layer"})),
+    ...srcNames.map(n => ({id:"S:"+n, lines:flowWrap(n, 26), sub:"published data", kind:"layer"})),
+  ];
+  const col1 = computes.map((s,i) => ({id:"O:"+i, lines:flowWrap("Compute "+measureLabel(s.metric), 26), sub:"for each reporting unit", kind:"op"}));
+  const col2 = [
+    ...computes.map((s,i) => ({id:"M:"+i, lines:flowWrap(measureLabel(s.metric), 26), sub:"metric", kind:"metric"})),
+    ...waits.map((s,i) => ({id:"W:"+i, lines:flowWrap(s.factor||"Awaiting data", 26), sub:"awaiting data"+(s.data_needed?": "+s.data_needed:""), kind:"wait"})),
+  ];
+  const col3 = [];
+  if(hasBase) col3.push({id:"C", lines:["Compare with","base area"], sub:"output", kind:"out"});
+  col3.push({id:"I", lines:["Generate","interventions"], sub:"output", kind:"out"});
+  col3.push({id:"R", lines:["Assemble the","report"], sub:"output", kind:"out"});
+  const cols = [col0, col1, col2, col3];
+  const rows = Math.max(1, ...cols.map(c => c.length));
+  const height = TOP + rows*PITCH + 6;
+  // ---- positions (each column centred on the tallest one)
+  const pos = {};
+  cols.forEach((c, ci) => {
+    const off = TOP + (rows - c.length) * PITCH / 2;
+    c.forEach((n, ri) => { n.x = colX[ci]; n.y = off + ri*PITCH; pos[n.id] = n; });
+  });
+  // ---- edges
+  const edges = [];
+  computes.forEach((s,i) => {
+    const ins = (s.layers||[]).length ? s.layers.map(l => "L:"+l) : (s.source ? ["S:"+s.source] : []);
+    ins.forEach(id => edges.push([id, "O:"+i]));
+    edges.push(["O:"+i, "M:"+i]);
+    edges.push(["M:"+i, "I"]);
+    if(hasBase) edges.push(["M:"+i, "C"]);
+  });
+  if(hasBase) edges.push(["C", "R"]);
+  edges.push(["I", "R"]);
+  const col3x = colX[3];
+  const edgeSvg = edges.map(([a,b]) => {
+    const p = pos[a], q = pos[b]; if(!p || !q) return "";
+    if(p.x === q.x){   // inside the outputs column: straight down/up the side
+      const x = p.x + W/2, y1 = p.y + H, y2 = q.y;
+      return `<path d="M${x} ${y1} L${x} ${y2}" fill="none" stroke="#7c8a99" stroke-width="1.4" marker-end="url(#fcArrow)"/>`;
+    }
+    const x1 = p.x + W, y1 = p.y + H/2, x2 = q.x, y2 = q.y + H/2, mx = (x1+x2)/2;
+    return `<path d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2-2} ${y2}" fill="none" stroke="#7c8a99" stroke-width="1.4" marker-end="url(#fcArrow)"/>`;
+  }).join("");
+  const FILL = {layer:["#e6f4f1","#0f766e"], op:["#ffffff","#475569"], metric:["#f0f9ff","#0369a1"], wait:["#fffbeb","#b45309"], out:["#0f766e","#0f766e"]};
+  const nodeSvg = cols.flat().map(n => {
+    const [fill, stroke] = FILL[n.kind];
+    const dark = n.kind === "out";
+    const txt = dark ? "#ffffff" : "#1e293b", sub = dark ? "#d1fae5" : "#64748b";
+    const all = [...n.lines.map(t => ({t, b:true})), ...flowWrap(n.sub, 30).slice(0, n.kind==="wait" ? 2 : 1).map(t => ({t, b:false}))];
+    const lh = 14.5, y0 = n.y + H/2 - (all.length*lh)/2 + 11;
+    const tspans = all.map((l,i) => `<text x="${n.x+W/2}" y="${y0 + i*lh}" text-anchor="middle" font-size="${l.b?12.5:10.5}"
+        font-weight="${l.b?600:400}" fill="${l.b?txt:sub}" font-family="Inter,Segoe UI,Arial,sans-serif">${esc(l.t)}</text>`).join("");
+    return `<g><rect x="${n.x}" y="${n.y}" width="${W}" height="${H}" rx="9" fill="${fill}" stroke="${stroke}"
+        stroke-width="1.5"${n.kind==="wait" ? ' stroke-dasharray="6 4"' : ""}/>${tspans}</g>`;
+  }).join("");
+  const heads = ["Input data", "Processing", "Metrics", "Outputs"].map((t,i) =>
+    `<text x="${colX[i]+W/2}" y="18" text-anchor="middle" font-size="11" letter-spacing="1.2" fill="#64748b"
+       font-family="Inter,Segoe UI,Arial,sans-serif" font-weight="600">${t.toUpperCase()}</text>`).join("");
+  return `<svg class="flowchart" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%"
+      style="max-width:${width}px;height:auto;display:block" role="img"
+      aria-label="Workflow flowchart: input data layers, processing operations, metrics and outputs">
+    <defs><marker id="fcArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7c8a99"/></marker></defs>
+    ${heads}${edgeSvg}${nodeSvg}</svg>`;
+}
+
 function viewWorkflow(a){
   const steps = (a.steps||[]).map((s,i)=>{
     let lbl;
@@ -1906,7 +2003,10 @@ function viewWorkflow(a){
     else lbl = esc(s.action);
     return `<li><span class="n">${i+1}</span><span>${lbl}</span></li>`;
   }).join("");
-  return `<div class="panel"><div class="ph">Workflow</div>
+  return `<div class="panel"><div class="ph">Workflow flowchart</div>
+    <div class="flowwrap" style="overflow-x:auto;">${flowchartSvg(a)}</div>
+    <div class="subnote" style="margin-top:6px;">Drawn from the steps below, so it follows any change to them. It is included in the report.</div></div>
+    <div class="panel" style="margin-top:14px;"><div class="ph">Workflow steps</div>
     <ul class="flow">${steps||"<li>—</li>"}</ul></div>`;
 }
 
@@ -2101,6 +2201,9 @@ function viewReport(a){
     : `<div class="subnote" style="margin-top:14px;">No map available — re-run step 7 to include one in the report.</div>`)
     + (baseOk ? `<div class="panel" style="margin-top:14px;"><div class="ph">Base area map (included in the report)</div>
         <div class="mapview"><iframe class="mapframe" src="/hcas/projects/${S.pid}/map?which=base" title="Base area map"></iframe></div></div>` : "");
+  const s6 = stepRow(6);
+  const flowPanel = s6 ? `<div class="panel" style="margin-top:14px;"><div class="ph">Workflow flowchart (included in the report)</div>
+        <div style="overflow-x:auto;">${flowchartSvg(s6.human_final||s6.ai_draft)}</div></div>` : "";
   return `<div class="cols" style="align-items:flex-start;">
     <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Editable draft (Markdown)</div>
       <textarea id="report">${esc(a.markdown||"")}</textarea>
@@ -2109,7 +2212,7 @@ function viewReport(a){
         <button class="cbtn" onclick="downloadHtmlReport(this)">Download HTML (with map) ↧</button></div></div>
     <div style="flex:1;min-width:320px;"><div class="ph" style="margin-bottom:8px;">Preview</div>
       <div class="rprev" id="rprev">${mdToHtml(a.markdown||"")}</div>
-      ${mapPanel}</div></div>`;
+      ${flowPanel}${mapPanel}</div></div>`;
 }
 function wireReport(){
   const ta=$("report");
@@ -2145,13 +2248,15 @@ async function downloadHtmlReport(btn){
           h.replace(/&/g,"&amp;").replace(/"/g,"&quot;")}"></iframe>`; } }
     catch(_){}
   }
+  const s6 = stepRow(6);
+  const flowBlock = s6 ? `<h2>Workflow flowchart</h2>${flowchartSvg(s6.human_final||s6.ai_draft)}` : "";
   const title = esc(S.project?.meta.title||"HCAS report");
   const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222}
 h1,h2,h3{font-family:Georgia,'Times New Roman',serif;line-height:1.25}
 blockquote{margin:10px 0;padding:6px 14px;border-left:3px solid #c98a1b;background:#faf6ee}
 table{border-collapse:collapse;margin:10px 0} th,td{border:1px solid #ccc;padding:5px 10px;font-size:14px} th{background:#f4f4f4}</style></head>
-<body>${mdToHtml(md)}${mapBlock}${baseBlock}</body></html>`;
+<body>${mdToHtml(md)}${flowBlock}${mapBlock}${baseBlock}</body></html>`;
   dl(doc, (S.project?.meta.title||"report")+".html", "text/html");
   if(btn){ btn.disabled=false; btn.textContent="Download HTML (with map) ↧"; }
 }

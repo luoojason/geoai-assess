@@ -3448,6 +3448,42 @@ def _comparison_lines(project: dict, results: dict) -> list[str]:
     return out
 
 
+def _workflow_lines(project: dict) -> list[str]:
+    """The step-6 workflow as a report section (Prof. Shi 2026-11-13, step 6: a
+    flowchart of the workflow). The drawn flowchart (input data -> processing ->
+    metrics -> outputs) comes with the page and the HTML export; markdown carries the
+    same chain as text so it is in every format."""
+    row = next((s for s in project["steps"] if s["step"] == 6), None)
+    wf = (row.get("human_final") or row.get("ai_draft")) if row else None
+    steps = (wf or {}).get("steps") or []
+    if not steps:
+        return []
+    out = ["\n## Workflow",
+           "_The flowchart of this workflow (input data layers, processing operations, metrics "
+           "and outputs) is shown in the assessment app and included in the HTML export of this "
+           "report._\n"]
+    n = 0
+    for st in steps:
+        n += 1
+        act = st.get("action")
+        if act == "compute":
+            src = ", ".join(_layer_meta(l)[0] for l in st.get("layers") or []) or st.get("source") or ""
+            out.append(f"{n}. Compute `{st.get('metric')}`" + (f" from {src}" if src else "")
+                       + " for each reporting unit.")
+        elif act == "awaiting_data":
+            out.append(f"{n}. Awaiting data: {st.get('factor', '')}"
+                       + (f" (needs {st['data_needed']})" if st.get("data_needed") else "") + ".")
+        elif act == "compare_with_base":
+            out.append(f"{n}. Compare every result with the base area.")
+        elif act == "generate_interventions":
+            out.append(f"{n}. Generate interventions from all computed metrics.")
+        elif act == "assemble_report":
+            out.append(f"{n}. Assemble this report from the confirmed steps.")
+        else:
+            out.append(f"{n}. {act}")
+    return out
+
+
 def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
     area = _confirmed(project, 1)
     factors = _confirmed(project, 2)["factors"]
@@ -3605,6 +3641,7 @@ def _run_step_8(project: dict) -> tuple[dict, str | None, dict | None]:
         *[f"- {f['factor']} → `{f['metric']}`: {f['rationale']}" for f in factors
           if f.get("metric") != NEEDS_DATA],
         *_awaiting_data_lines(factors),
+        *_workflow_lines(project),
         "\n## Results",
         *results_lines,
         *_comparison_lines(project, results),
