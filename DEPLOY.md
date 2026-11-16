@@ -1,5 +1,8 @@
 # Hosting HCAS on the web
 
+> **Superseded (2026-11-15):** this is the original hosting plan. HCAS now runs on
+> Railway from `deploy/railway.Dockerfile`; see the Hosting section of README.md.
+
 Right now every tester downloads `HCAS-setup.zip`, installs Python, and runs a
 server on their own laptop. Hosting replaces all of that with a URL and a
 password. This file is what it takes, what it costs, and what it does not fix.
