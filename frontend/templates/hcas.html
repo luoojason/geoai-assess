@@ -546,15 +546,45 @@ async function api(path, opts={}){
 }
 
 /* ---- pipeline rail ---- */
+/* Prof. Shi 2026-11-13 #2/#3: no jumping forward. A step is open only once every
+   step before it is confirmed, and a confirmed step that has been changed on
+   screen (and not yet re-confirmed) locks everything after it. */
+function sortKeys(v){
+  if(Array.isArray(v)) return v.map(sortKeys);
+  if(v && typeof v==="object") return Object.keys(v).sort().reduce((o,k)=>(o[k]=sortKeys(v[k]),o),{});
+  return v;
+}
+function stepDirty(n){
+  const row = stepRow(n);
+  if(!row || row.status!=="confirmed" || S.current!==n || S.running===n || S.busy) return false;
+  try{
+    if(n===1) return step1Form() && !!$("f_title") && step1Changed();
+    if(S.edited==null) return false;
+    return JSON.stringify(sortKeys(S.edited)) !== JSON.stringify(sortKeys(row.human_final ?? row.ai_draft));
+  }catch(_){ return false; }
+}
+function reachable(n){
+  if(!S.pid) return n===1;
+  if(n===1 || n===S.current) return true;
+  const bs = byStep();
+  for(let k=1;k<n;k++){
+    if(!bs[k] || bs[k].status!=="confirmed" || stepDirty(k)) return false;
+  }
+  return true;
+}
+function railClick(n){ if(reachable(n)) selectStep(n); }
+let RAIL_SIG = "";
+function railSig(){ return [1,2,3,4,5,6,7,8].map(n=>reachable(n)?1:0).join("")+S.current; }
+setInterval(()=>{ const g=railSig(); if(g!==RAIL_SIG) renderRail(); }, 400);
 function renderRail(){
   const bs = byStep();
-  const confirmed = new Set(Object.values(bs).filter(s=>s.status==="confirmed").map(s=>s.step));
+  RAIL_SIG = railSig();
   $("steps").innerHTML = [1,2,3,4,5,6,7,8].map(n=>{
     const st = bs[n]?.status || "pending";
-    const locked = !S.pid || (!bs[n] && [...Array(n-1).keys()].some(i=>!confirmed.has(i+1)));
+    const ok = reachable(n);
     // Prof. Shi 2026-11-13 #1: a finished step keeps its number; the check goes at the end of the name.
     const tick = st==="confirmed" ? `<span class="pcheck" title="Confirmed">✓</span>` : "";
-    return `<div class="prow ${st} ${n===S.current?"active":""} ${locked&&n!==S.current?"locked":""}" onclick="selectStep(${n})">
+    return `<div class="prow ${st} ${n===S.current?"active":""} ${!ok?"locked":""}" ${ok?"":'aria-disabled="true"'} onclick="railClick(${n})">
       <span class="pdot ${st}">${n}</span><span class="plabel">${STEP_TITLES[n-1]}${tick}</span></div>`;
   }).join("");
 }
