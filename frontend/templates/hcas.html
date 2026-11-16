@@ -821,9 +821,11 @@ let STATES = [];
 function newAreaState(src){
   src = src || {};
   const geoids = (src.area_geoids||[]).slice();
+  // "Customized" is retired (#15): a saved project that used it opens as block groups.
+  const unit = src.areal_unit==="custom" ? "block_group" : (src.areal_unit||"");
   return { state_fips: src.state_fips||"", county_fips: src.county_fips||"",
-           unit: src.areal_unit||"", geoids, name: src.area_name||"",
-           mode: geoids.length || src.areal_unit==="custom" ? "selected" : "all",
+           unit, geoids, name: src.area_name||"", suggestNote: "",
+           mode: geoids.length ? "selected" : "all",
            features:null, featuresKey:"", map:null, layer:null, loading:null,
            suggestedText:null, suggesting:false, aiFailed:false };
 }
@@ -869,7 +871,8 @@ function areaEditorHtml(w){
       <div class="fld"><label>State</label><select id="${w}_state"></select></div>
       <div class="fld"><label>County</label><select id="${w}_county"></select></div>
     </div>
-    <div class="fld"><label>Reporting unit</label><select id="${w}_unit"></select></div>
+    <div class="fld"><label>Reporting unit</label><select id="${w}_unit"></select>
+      <div class="hint">The building block of your project area. Results are reported for each one.</div></div>
     <div id="${w}_scope" style="margin-top:8px;"></div>
     <div class="maprow"><div class="maphint" id="${w}_maphint"></div>${updateBtn}</div>
     <div class="areamap" id="${w}_map">Select a county to see it on the map.</div>
@@ -924,9 +927,15 @@ function unitWord(unit, plural){
 
 async function loadStates(){
   try{
-    const m = S.project?.meta;           // re-defining an existing project
     if(!STATES.length) STATES = (await api("/states")).states;
     if(!AREAL_UNITS.length) await loadUnits();
+    // Read the project only after the awaits: opening a project while the first
+    // draw of the form is still loading used to build the form from the project
+    // that was current BEFORE the open (#4a: blank title, default county).
+    const m = S.project?.meta;           // re-defining an existing project
+    if(!$("f_title")) return;            // the form is no longer on screen
+    if(S.pid && !m) return;              // project still loading: refresh() will redraw the form
+    if(S.pid && m && m.project_id && m.project_id !== S.pid) return;
     // The form is re-drawn whenever the canvas is (a failed run, a click on the
     // rail). Keep what the analyst has chosen so far instead of resetting it.
     const key = S.pid || "new";
@@ -935,12 +944,14 @@ async function loadStates(){
       AREA.project = newAreaState(m ? m : {state_fips:"39", county_fips:"", areal_unit:"county"});
       AREA.base = newAreaState(m?.base || {});
       AREA.compare = !!m?.base;
-      AREA.fields = {title:m?.title||"", notes:m?.notes||"", where:m?.location_query||""};
+      AREA.fields = {title:m?.title||"", notes:m?.notes||"", where:m?.location_query||"", ai_note:m?.ai_note||""};
+      restoreAiNote();
     }else{
       for(const w of ["project","base"]){ const a=AREA[w]; if(a){ a.map=null; a.layer=null; } }
     }
     const f = AREA.fields || {};
     $("f_title").value = f.title||""; $("f_tasks").value = f.notes||""; $("f_where").value = f.where||"";
+    if(f.ai_note && !$("f_wherehint").dataset.restored){ $("f_wherehint").dataset.restored="1"; $("f_wherehint").textContent = f.ai_note.split("\n")[0]; }
     $("f_title").oninput = e=>{ AREA.fields.title = e.target.value; };
     $("f_tasks").oninput = e=>{ AREA.fields.notes = e.target.value; };
     $("f_where").oninput = e=>{ AREA.fields.where = e.target.value; };
@@ -954,23 +965,30 @@ async function fillAreaSelects(w){
   const a = AREA[w]; if(!a) return;
   const st=$(`${w}_state`), co=$(`${w}_county`), un=$(`${w}_unit`);
   if(!st||!co||!un) return;
+  // Opening a project draws the form twice in a row (refresh, then selectStep).
+  // Two overlapping fills used to overwrite each other's county with the first
+  // one in the list (#4a: the area came back as the wrong county). Only the
+  // latest fill may touch the selects or the saved values.
+  const seq = a.fillSeq = (a.fillSeq||0) + 1;
   st.innerHTML = STATES.map(s=>`<option value="${s.state_fips}">${esc(s.state_name)}</option>`).join("");
   st.value = a.state_fips || "39"; a.state_fips = st.value;
   await loadCountiesFor(w);
+  if(a.fillSeq !== seq || $(`${w}_county`) !== co) return;
   if(a.county_fips) co.value = a.county_fips;
   a.county_fips = co.value;
   un.innerHTML = AREAL_UNITS.map(u=>`<option value="${esc(u.id)}">${esc(u.label)}</option>`).join("");
   un.value = a.unit || "county"; a.unit = un.value;
   st.onchange = async ()=>{ a.state_fips=st.value; await loadCountiesFor(w); a.county_fips=co.value;
-                            a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
-  co.onchange = ()=>{ a.county_fips=co.value; a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
-  un.onchange = ()=>{ a.unit=un.value; a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode=a.unit==="custom"?"selected":"all"; refreshArea(w); };
+                            a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode="all"; refreshArea(w); };
+  co.onchange = ()=>{ a.county_fips=co.value; a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode="all"; refreshArea(w); };
+  un.onchange = ()=>{ a.unit=un.value; a.geoids=[]; a.suggestedText=null; a.aiFailed=false; a.mode="all"; refreshArea(w); };
   refreshArea(w);
 }
 
 async function loadCountiesFor(w){
+  const sel = $(`${w}_county`);          // the element this call was made for
   const {counties} = await api(`/counties/${$(`${w}_state`).value}`);
-  $(`${w}_county`).innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
+  if(sel) sel.innerHTML = counties.map(c=>`<option value="${c.county_fips}">${esc(c.county_name)}</option>`).join("");
 }
 
 /* Re-draw one area's controls, map and summary after anything about it changed. */
@@ -1037,8 +1055,10 @@ function renderScope(w){
   const idx = featureIndex(a);
   const chips = a.geoids.length ? `<div class="chips">${a.geoids.map(g=>
       `<span class="chip">${esc(idx[g]?.name || g)}<button title="Remove" onclick="toggleUnit('${w}','${esc(g)}')">×</button></span>`).join("")}</div>` : "";
-  if(a.unit === "custom"){
-    box.innerHTML = `<div class="fld"><label>Community or neighborhood</label>
+  // A neighbourhood is described in words and the AI picks its block groups (#15,
+  // formerly the "Customized" unit): block groups are the building block.
+  const nb = a.unit === "block_group" ? `<div class="fld" style="margin-bottom:10px;">
+        <label>Neighborhood or community (optional)</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <input id="${w}_name" style="flex:1;min-width:180px;" value="${esc(a.name)}"
                  placeholder="e.g. Short North · German Village · Hanover downtown"
@@ -1046,17 +1066,12 @@ function renderScope(w){
                  onkeydown="if(event.key==='Enter'){event.preventDefault();suggestBlockGroups('${w}');}">
           <button class="cbtn" id="${w}_suggestbtn" onclick="suggestBlockGroups('${w}')" ${a.suggesting||!suggestIsStale(a)?"disabled":""}>${a.suggesting?"Suggesting…":SUGGEST_LABEL}</button>
         </div>
-        <div class="hint" id="${w}_suggesthint">The AI recommends the block groups that make up the community.
-          Click block groups on the map to add or remove them.</div></div>
-      ${a.geoids.length ? `<div class="hint" style="margin-top:6px;">${a.geoids.length} block group${a.geoids.length===1?"":"s"} selected
-        · <button class="linkbtn" onclick="clearUnits('${w}')">clear</button></div>` : ""}`;
-    return;
-  }
+        <div class="hint" id="${w}_suggesthint">${a.suggestNote || "The AI recommends the block groups that make up the neighborhood. Click block groups on the map to add or remove them."}</div></div>` : "";
   const opts = (a.features?.features||[]).map(f=>f.properties)
     .filter(p=>!a.geoids.includes(p.GEOID))
     .sort((x,y)=>String(x.name).localeCompare(String(y.name), undefined, {numeric:true}))
     .map(p=>`<option value="${esc(p.GEOID)}">${esc(p.name)}</option>`).join("");
-  box.innerHTML = (a.aiFailed ? `<div class="aifail">AI could not define the specified area. Please manually define it on the map.</div>` : "") + `
+  box.innerHTML = nb + (a.aiFailed ? `<div class="aifail">AI could not define the specified area. Please manually define it on the map.</div>` : "") + `
     <label class="radioline"><input type="radio" name="${w}_mode" ${a.mode==="all"?"checked":""}
         onchange="setMode('${w}','all')">
       <span>Whole county — results broken down by each ${esc(one)}</span></label>
@@ -1087,7 +1102,7 @@ function toggleUnit(w, geoid){
 function renderAreaSum(w){
   const a = AREA[w], box = $(`${w}_sum`); if(!box) return;
   if(!a.features){ box.innerHTML = ""; return; }
-  if(a.unit === "county" || (a.mode === "all" && a.unit !== "custom")){
+  if(a.unit === "county" || a.mode === "all"){
     const n = (a.features.features||[]).length;
     box.innerHTML = a.unit === "county" ? `Whole county`
       : `Whole county <span class="muted">· ${n.toLocaleString()} ${esc(unitWord(a.unit, n!==1))} in the breakdown</span>`;
@@ -1135,14 +1150,21 @@ async function drawAreaMap(w){
       }
     },
   }).addTo(a.map);
-  try{ a.map.fitBounds(a.layer.getBounds(), {padding:[8,8]}); }catch(_){}
+  // Zoom to the selected area when there is one (coming back to a step shows the
+  // confirmed area, not the whole county around it).
+  let fitTo = a.layer;
+  if(a.geoids.length){
+    const sel = []; a.layer.eachLayer(l=>{ if(a.geoids.includes(l.feature.properties.GEOID)) sel.push(l); });
+    if(sel.length) fitTo = L.featureGroup(sel);
+  }
+  try{ a.map.fitBounds(fitTo.getBounds(), {padding:[8,8], maxZoom:16}); }catch(_){}
   setTimeout(()=>a.map && a.map.invalidateSize(), 50);
 }
 function unitStyle(a, geoid){
   if(a.unit === "county")
     return {color:"#0f766e", weight:2, fillColor:"#0d9488", fillOpacity:0.08};
   const on = a.geoids.includes(geoid);
-  const whole = a.mode === "all" && a.unit !== "custom";
+  const whole = a.mode === "all";
   return on ? {color:"#0f766e", weight:1.6, fillColor:"#0d9488", fillOpacity:0.45}
     : {color: whole ? "#0f766e" : "#64748b", weight: whole ? 0.8 : 0.6,
        fillColor:"#0d9488", fillOpacity: whole ? 0.10 : 0.02};
@@ -1156,7 +1178,7 @@ async function suggestBlockGroups(w, textOverride){
   const a = AREA[w];
   const text = (textOverride || $(`${w}_name`)?.value || a.name || "").trim();
   const hint = $(`${w}_suggesthint`), btn = $(`${w}_suggestbtn`);
-  if(!text){ if(hint) hint.textContent = "Type the community or neighborhood name first."; return; }
+  if(!text){ if(hint) hint.textContent = "Type the neighborhood or community name first."; return; }
   a.name = text;
   a.suggesting = true; updateSuggestBtn(w);
   if(hint) hint.innerHTML = '<span class="spin"></span>Asking the AI which block groups make up this community…';
@@ -1170,11 +1192,13 @@ async function suggestBlockGroups(w, textOverride){
     a.suggesting = false;
     renderScope(w); renderAreaSum(w); styleAreaMap(w);
     const h = $(`${w}_suggesthint`);
-    if(h) h.innerHTML = r.geoids?.length
+    a.suggestNote = r.geoids?.length
       ? `<b>${r.geoids.length} block group${r.geoids.length===1?"":"s"} suggested</b> — ${esc(r.method_text||"")}.`
         + (r.caveat ? ` <span style="color:var(--amber)">${esc(r.caveat)}</span>` : "")
         + `<br>Click block groups on the map to add or remove them.`
       : `<span style="color:var(--red)">${esc(r.caveat || "No block groups could be suggested.")}</span>`;
+    if(h) h.innerHTML = a.suggestNote;
+    if(w==="project") captureAiNote();
     if(a.layer && r.geoids?.length){
       const sel = []; a.layer.eachLayer(l=>{ if(a.geoids.includes(l.feature.properties.GEOID)) sel.push(l); });
       if(sel.length) try{ a.map.fitBounds(L.featureGroup(sel).getBounds(), {padding:[30,30], maxZoom:15}); }catch(_){}
@@ -1203,8 +1227,9 @@ async function resolveArea(){
       const a = AREA.project;
       a.aiFailed = false; a.suggestedText = null;
       a.state_fips=r.state_fips; a.county_fips=r.county_fips; a.geoids=[];
-      a.unit = {zip:"zcta", town:"county_subdivision", community:"custom"}[r.scale] || "county";
+      a.unit = {zip:"zcta", town:"county_subdivision", community:"block_group"}[r.scale] || "county";
       a.mode = a.unit==="county" ? "all" : "selected";
+      const community = r.scale === "community";
       a.featuresKey="";
       await fillAreaSelects("project");
       await refreshArea("project");
@@ -1218,14 +1243,15 @@ async function resolveArea(){
         const hit = (a.features?.features||[]).find(f=>norm(f.properties.name)===norm(r.town));
         if(hit){ a.geoids=[hit.properties.GEOID]; what = ` Project area set to ${esc(hit.properties.name)}.`; }
         else{ a.aiFailed = true; what = ` Pick ${esc(r.town||"the town")} on the map.`; }
-      }else if(a.unit==="custom"){
+      }else if(community){
         what = " Suggesting the block groups for this community…";
       }
       renderScope("project"); renderAreaSum("project"); styleAreaMap("project");
       hint.innerHTML=`<b>${esc(r.county_name)}, ${esc(r.state_name)}</b> — ${esc(String(r.interpretation||"resolved").replace(/\.?\s*$/,"."))}`
         + (r.caveat?` <span style="color:var(--amber)">${esc(r.caveat)}</span>`:"")
         + what + `<br>Not right? Change the project area below.`;
-      if(a.unit==="custom") await suggestBlockGroups("project", text);
+      if(community) await suggestBlockGroups("project", text);
+      captureAiNote();
     }else{
       resolveFailed(hint, r.caveat||"Could not place that.");
     }
@@ -1237,6 +1263,19 @@ async function resolveArea(){
    place that" in small grey text let a run start against the wrong county. Seen
    in the 2026-08-09 sweep: the resolver errored, the form stayed on Ohio/Adams,
    and the project was created there. */
+/* What the assistant told the analyst on step 1 is part of the project (#4a): keep the
+   text that is on screen so it is still there when they come back. */
+function captureAiNote(){
+  if(!AREA.fields) return;
+  const w=$("f_wherehint"), sg=$("project_suggesthint");
+  AREA.fields.ai_note = [(w?.textContent||"").trim(), (sg?.textContent||"").trim()].join("\n");
+}
+function restoreAiNote(){
+  const note = AREA.fields?.ai_note; if(!note) return;
+  const [where, suggest] = note.split("\n");
+  const w=$("f_wherehint"); if(w && where) w.textContent = where;
+  if(suggest && AREA.project && !AREA.project.suggestNote) AREA.project.suggestNote = esc(suggest);
+}
 function resolveFailed(hint, why){
   // The two manual choices (whole county / only the ones I choose) are the way
   // forward now, so say plainly that the AI could not do it (Prof. Shi 2026-11-13 #12).
@@ -1262,15 +1301,12 @@ let AREAL_UNITS = [];
 function areaPayload(w){
   const a = AREA[w];
   if(!a || !a.state_fips || !a.county_fips) return {error:"Choose a state and county."};
-  const selected = a.unit === "custom" || (a.unit !== "county" && a.mode === "selected");
-  if(selected && !a.geoids.length){
-    return {error: a.unit === "custom"
-      ? `Select at least one block group for the ${w==="base"?"base":"project"} area — use “Generate/Update AI's suggestion” or click them on the map.`
-      : `Choose at least one ${unitWord(a.unit)} for the ${w==="base"?"base":"project"} area, or pick “Whole county”.`};
-  }
-  if(a.unit === "custom" && !(a.name||"").trim()) a.name = "Custom area";
+  const selected = a.unit !== "county" && a.mode === "selected";
+  if(selected && !a.geoids.length)
+    return {error: `Choose at least one ${unitWord(a.unit)} for the ${w==="base"?"base":"project"} area, or pick “Whole county”.`};
   return {state_fips:a.state_fips, county_fips:a.county_fips, areal_unit:a.unit||"county",
-          area_geoids: selected ? a.geoids.slice() : [], area_name: a.unit==="custom" ? a.name : ""};
+          area_geoids: selected ? a.geoids.slice() : [],
+          area_name: selected && a.unit==="block_group" ? (a.name||"").trim() : ""};
 }
 
 /* step 1 — study area (live base map since 2026-07-27).
@@ -2111,7 +2147,8 @@ function readStep1Form(){
     if(base.error) throw new Error(base.error);
   }
   return { title:($("f_title").value||"Untitled assessment"), ...area, base,
-           location_query:($("f_where")?.value||""), notes:($("f_tasks")?.value||"") };
+           location_query:($("f_where")?.value||""), notes:($("f_tasks")?.value||""),
+           ai_note:(AREA.fields?.ai_note||"") };
 }
 function step1Changed(){
   const m = S.project?.meta; if(!S.pid || !m) return true;
@@ -2125,7 +2162,7 @@ function step1Changed(){
 async function ensureProject(){
   const form = readStep1Form();
   if(S.pid){
-    if(step1Changed())
+    if(step1Changed() || (S.project?.meta?.ai_note||"") !== form.ai_note)
       await api(`/hcas/projects/${S.pid}`,{method:"PATCH",body:JSON.stringify(form)});
     S.redefining=false;
     return;
@@ -2601,6 +2638,12 @@ function dropResumeBar(){ const b=$("resumebar"); if(b) b.remove(); }
     $("resumebtn").onclick = ()=>{ bar.remove(); doOpen(last); };
     $("dismissresume").onclick = ()=>{ bar.remove(); try{ localStorage.removeItem("hcas_last_project"); }catch(_){} };
   }catch(_){ /* project deleted or server restarted with a fresh db: stay quiet */ }
+})();
+// /hcas?project=<id> opens that project straight away (a shareable link; also what the QA scripts use).
+(function deepLink(){
+  let id = null;
+  try{ id = new URLSearchParams(location.search).get("project"); }catch(_){}
+  if(id) doOpen(id);
 })();
 </script>
 </body>

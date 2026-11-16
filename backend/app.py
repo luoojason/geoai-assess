@@ -408,6 +408,7 @@ class HcasProjectRequest(BaseModel):
     # Sub-county project area (2026-09-16 #1): the selected Census units.
     area_geoids: list[str] = []
     area_name: str = ""
+    ai_note: str = ""
     base: Optional[HcasAreaSpec] = None
 
 
@@ -421,6 +422,7 @@ class HcasScopeRequest(BaseModel):
     notes: Optional[str] = None
     area_geoids: Optional[list[str]] = None
     area_name: Optional[str] = None
+    ai_note: Optional[str] = None
     # Absent keeps the base area; null removes it.
     base: Optional[HcasAreaSpec] = None
 
@@ -470,7 +472,9 @@ async def hcas_areal_units():
 
     return {
         "default": DEFAULT_AREAL_UNIT,
-        "units": [{"id": k, "label": v["label"]} for k, v in AREAL_UNITS.items()],
+        # "custom" (Customized) is retired (#15): a neighbourhood is block groups.
+        "units": [{"id": k, "label": v["label"]} for k, v in AREAL_UNITS.items()
+                  if k != "custom"],
     }
 
 
@@ -481,7 +485,7 @@ async def hcas_create_project(body: HcasProjectRequest):
             body.title, body.state_fips, body.county_fips, body.gate_mode,
             areal_unit=body.areal_unit, location_query=body.location_query,
             notes=body.notes, area_geoids=body.area_geoids, area_name=body.area_name,
-            base=body.base.model_dump() if body.base else None,
+            ai_note=body.ai_note, base=body.base.model_dump() if body.base else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -499,7 +503,8 @@ async def hcas_update_project(pid: str, body: HcasScopeRequest):
             pid, title=body.title, state_fips=body.state_fips,
             county_fips=body.county_fips, areal_unit=body.areal_unit,
             location_query=body.location_query, notes=body.notes,
-            area_geoids=body.area_geoids, area_name=body.area_name, **kwargs,
+            area_geoids=body.area_geoids, area_name=body.area_name,
+            ai_note=body.ai_note, **kwargs,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown project {pid}")

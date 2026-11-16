@@ -68,9 +68,12 @@ def _llm_with(step2):
 
 
 class TestAreaDefinition:
-    def test_customized_needs_block_groups(self, tmp_path):
-        with pytest.raises(ValueError, match="at least one block group"):
-            hcas.create_project("t", *FRANKLIN, db=tmp_path / "h.db", areal_unit="custom")
+    def test_customized_is_read_as_block_group(self, tmp_path):
+        # Prof. Shi 2026-11-13 #15: "Customized" is gone; an old request for it is block groups.
+        db = tmp_path / "h.db"
+        pid = hcas.create_project("t", *FRANKLIN, db=db, areal_unit="custom",
+                                  area_geoids=["390490001001"])
+        assert hcas.get_project(pid, db=db)["meta"]["areal_unit"] == "block_group"
 
     def test_whole_county_has_nothing_to_select(self, tmp_path):
         with pytest.raises(ValueError, match="whole-county"):
@@ -82,11 +85,13 @@ class TestAreaDefinition:
             hcas.create_project("t", *FRANKLIN, db=tmp_path / "h.db", areal_unit="block_group",
                                 area_geoids=["391130001001"])
 
-    def test_the_reporting_unit_list_offers_customized(self):
-        from backend.gis.profile import AREAL_UNITS
+    def test_the_reporting_unit_list_no_longer_offers_customized(self):
+        import asyncio
+        from backend.app import hcas_areal_units
 
-        assert list(AREAL_UNITS)[:3] == ["county", "county_subdivision", "zcta"]
-        assert AREAL_UNITS["custom"]["label"].startswith("Customized")
+        ids = [u["id"] for u in asyncio.run(hcas_areal_units())["units"]]
+        assert ids[:3] == ["county", "county_subdivision", "zcta"]
+        assert "custom" not in ids and "block_group" in ids
 
 
 class TestCustomArea:
@@ -115,7 +120,7 @@ class TestCustomArea:
         draft = hcas.run_step(pid, 3, db=db)
         west, south, east, north = seen[0]
         assert west >= -83.0001 and east <= -82.9799 and south >= 39.9499 and north <= 39.9601
-        assert draft["study_area"]["kind"] == "custom"
+        assert draft["study_area"]["kind"] == "units"
         assert draft["study_area"]["population"] == 4000
         assert "2 selected block groups" in draft["areal_unit"]["note"]
 
@@ -125,7 +130,7 @@ class TestCustomArea:
         a7 = hcas.run_step(pid, 7, db=db)
         rows = a7["by_unit"]["rows"]
         assert sorted(r["geoid"] for r in rows) == ["390490001001", "390490001002"]
-        assert a7["study_area"]["kind"] == "custom"
+        assert a7["study_area"]["kind"] == "units"
 
     def test_a_single_unit_area_has_no_breakdown(self, tmp_path):
         pid, db = self._project(tmp_path, geoids=("390490001001",))

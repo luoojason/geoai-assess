@@ -1177,7 +1177,7 @@ def _build_area(spec: dict) -> dict:
     summary = areas.describe_selection(chosen, pops, _unit_label(unit))
     county_place = build_place_name(state, county)
     n = summary["count"]
-    if unit == "custom":
+    if unit == "custom" or (unit == "block_group" and (spec.get("area_name") or "").strip()):
         name = spec.get("area_name") or "Custom area"
         label = f"{name}, {county_place}"
         text = f"{name} — {n} {_unit_label('block_group', n != 1)} selected in {county_place}"
@@ -3289,7 +3289,7 @@ def export_audit_csv(db: Path | None = None) -> str:
         "copied_from",
     ])
     for r in rows:
-        meta, data = json.loads(r["meta_json"]), json.loads(r["data_json"])
+        meta, data = _load_meta(r["meta_json"]), json.loads(r["data_json"])
         usage = data.get("usage") or {}
         w.writerow([
             r["id"], meta.get("title"), r["step"], r["status"],
@@ -3728,6 +3728,19 @@ def _draft(project: dict, step: int) -> tuple[dict, str | None, dict | None]:
 # Machine
 # ---------------------------------------------------------------------------
 
+def _load_meta(raw: str) -> dict:
+    """Project meta from its JSON, with the retired "Customized" reporting unit
+    read as block group (Prof. Shi 2026-11-13 #15): a saved project that used
+    `custom` opens with the same selected block groups and the same name."""
+    meta = json.loads(raw)
+    if meta.get("areal_unit") == "custom":
+        meta["areal_unit"] = "block_group"
+    base = meta.get("base")
+    if isinstance(base, dict) and base.get("areal_unit") == "custom":
+        base["areal_unit"] = "block_group"
+    return meta
+
+
 def _clean_area(state_fips: str, county_fips: str, areal_unit: str | None,
                 area_geoids, area_name: str | None) -> dict:
     """Validate one area definition (project or base) and return its meta fields.
@@ -3743,17 +3756,14 @@ def _clean_area(state_fips: str, county_fips: str, areal_unit: str | None,
     if lookup_county(state_fips, county_fips) is None:
         raise ValueError(f"Unknown county FIPS {state_fips}-{county_fips}")
     unit = areal_unit or DEFAULT_AREAL_UNIT
+    if unit == "custom":              # retired option (#15): a neighbourhood is block groups
+        unit = "block_group"
     if unit not in AREAL_UNITS:
         raise ValueError(f"areal_unit must be one of {', '.join(AREAL_UNITS)}")
     geoids = [str(g).strip() for g in (area_geoids or []) if str(g).strip()]
     geoids = list(dict.fromkeys(geoids))            # de-duplicate, keep order
     if unit == "county" and geoids:
         raise ValueError("A whole-county project has no sub-areas to select.")
-    if unit == "custom" and not geoids:
-        raise ValueError(
-            "A customized area needs at least one block group — use “Suggest block groups” "
-            "or click block groups on the map."
-        )
     if any(not g.isdigit() for g in geoids):
         raise ValueError("Area identifiers must be Census GEOIDs (digits only).")
     prefix = f"{state_fips}{county_fips}"
@@ -3785,6 +3795,7 @@ def create_project(
     area_geoids: list | None = None,
     area_name: str = "",
     base: dict | None = None,
+    ai_note: str = "",
 ) -> str:
     db = db or DB_PATH
     area = _clean_area(state_fips, county_fips, areal_unit, area_geoids, area_name)
@@ -3799,6 +3810,7 @@ def create_project(
         "gate_mode": gate_mode,
         "location_query": location_query,
         "notes": notes,
+        "ai_note": ai_note or "",
         "current_step": 1,
         "created_at": time.time(),
     }
@@ -3824,6 +3836,7 @@ def update_project_scope(
     area_geoids: list | None = None,
     area_name: str | None = None,
     base: Any = _UNSET,
+    ai_note: str | None = None,
 ) -> dict:
     """Redefine an existing project instead of starting a new one.
 
@@ -3842,7 +3855,7 @@ def update_project_scope(
         row = conn.execute("SELECT meta_json FROM projects WHERE id = ?", (pid,)).fetchone()
         if row is None:
             raise KeyError(pid)
-        meta = json.loads(row["meta_json"])
+        meta = _load_meta(row["meta_json"])
         new_state = state_fips or meta["state_fips"]
         new_county = county_fips or meta["county_fips"]
         new_unit = areal_unit if areal_unit is not None else meta.get("areal_unit")
@@ -3874,6 +3887,8 @@ def update_project_scope(
             meta["location_query"] = location_query
         if notes is not None:
             meta["notes"] = notes
+        if ai_note is not None:       # the assistant's note on step 1; not part of the scope
+            meta["ai_note"] = ai_note
         conn.execute("UPDATE projects SET meta_json = ? WHERE id = ?", (json.dumps(meta), pid))
 
         stale = 0
@@ -3914,7 +3929,7 @@ def copy_project(pid: str, title: str | None = None, db: Path | None = None) -> 
         row = conn.execute("SELECT meta_json FROM projects WHERE id = ?", (pid,)).fetchone()
         if row is None:
             raise KeyError(pid)
-        meta = json.loads(row["meta_json"])
+        meta = _load_meta(row["meta_json"])
         meta["title"] = (title or "").strip() or f"{meta.get('title') or 'Untitled assessment'} (copy)"
         meta["copied_from"] = pid
         meta["created_at"] = time.time()
@@ -3964,7 +3979,7 @@ def list_projects(db: Path | None = None, limit: int = 50) -> list[dict]:
 
     out = []
     for r in rows:
-        meta = json.loads(r["meta_json"])
+        meta = _load_meta(r["meta_json"])
         steps = by_pid.get(r["id"], [])
         confirmed = [s for s in steps if s["status"] == "confirmed"]
         place = None
@@ -4004,7 +4019,7 @@ def get_project(pid: str, db: Path | None = None) -> dict:
         ).fetchall()
     return {
         "id": pid,
-        "meta": json.loads(row["meta_json"]),
+        "meta": _load_meta(row["meta_json"]),
         "steps": [
             {
                 "step": a["step"],
