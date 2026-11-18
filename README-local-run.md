@@ -32,8 +32,8 @@ Note for testing from mainland China: the Anthropic API and OpenStreetMap server
 ## Setup
 
 ```bash
-git clone <this repo>
-cd geoai-assess
+git clone https://github.com/luoojason/hcas.git
+cd hcas
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
